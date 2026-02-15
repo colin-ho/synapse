@@ -340,6 +340,18 @@ _synapse_accept() {
     fi
 }
 
+# Accept the suggestion on Tab, or fall through to normal tab completion
+_synapse_tab_accept() {
+    if [[ -n "$_SYNAPSE_CURRENT_SUGGESTION" ]] && [[ -n "$POSTDISPLAY" ]]; then
+        _synapse_report_interaction "accept"
+        BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
+        CURSOR=${#BUFFER}
+        _synapse_clear_suggestion
+    else
+        zle expand-or-complete
+    fi
+}
+
 # Accept the next word from the suggestion
 _synapse_accept_word() {
     if [[ -n "$_SYNAPSE_CURRENT_SUGGESTION" ]] && [[ -n "$POSTDISPLAY" ]]; then
@@ -416,9 +428,12 @@ _synapse_init() {
     zle -N synapse-accept _synapse_accept
     zle -N synapse-accept-word _synapse_accept_word
     zle -N synapse-dismiss _synapse_dismiss
+    zle -N synapse-tab-accept _synapse_tab_accept
 
     # Keybindings
-    bindkey '^[[C' synapse-accept         # Right arrow
+    bindkey '\t' synapse-tab-accept       # Tab (accept suggestion or normal completion)
+    bindkey '^[[C' synapse-accept         # Right arrow (normal mode)
+    bindkey '^[OC' synapse-accept         # Right arrow (application mode)
     bindkey '^[[1;5C' synapse-accept-word # Ctrl+Right arrow
     bindkey '^[' synapse-dismiss          # Escape
 
