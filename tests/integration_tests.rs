@@ -248,9 +248,7 @@ fn spawn_mock_daemon(
                     } else {
                         r#"{"type":"ack"}"#.to_string()
                     };
-                    let _ = writer
-                        .write_all(format!("{response}\n").as_bytes())
-                        .await;
+                    let _ = writer.write_all(format!("{response}\n").as_bytes()).await;
                     let _ = writer.flush().await;
                     line.clear();
                 }
@@ -281,7 +279,11 @@ async fn roundtrip(
         .await
         .unwrap();
     writer.flush().await.unwrap();
-    reader.next_line().await.unwrap().expect("expected a response line")
+    reader
+        .next_line()
+        .await
+        .unwrap()
+        .expect("expected a response line")
 }
 
 #[tokio::test]
@@ -301,7 +303,10 @@ async fn test_client_reconnect_same_daemon() {
         let mut lines = BufReader::new(reader).lines();
 
         let resp = roundtrip(&mut lines, &mut writer, r#"{"type":"ping"}"#).await;
-        assert!(resp.contains("pong"), "First connection ping failed: {resp}");
+        assert!(
+            resp.contains("pong"),
+            "First connection ping failed: {resp}"
+        );
     }
     // Stream is dropped here — server sees EOF on this connection
 
@@ -315,7 +320,10 @@ async fn test_client_reconnect_same_daemon() {
         let mut lines = BufReader::new(reader).lines();
 
         let resp = roundtrip(&mut lines, &mut writer, r#"{"type":"ping"}"#).await;
-        assert!(resp.contains("pong"), "Second connection ping failed: {resp}");
+        assert!(
+            resp.contains("pong"),
+            "Second connection ping failed: {resp}"
+        );
 
         // Also verify suggest works on the new connection
         let resp = roundtrip(
@@ -323,7 +331,10 @@ async fn test_client_reconnect_same_daemon() {
             &mut writer,
             r#"{"type":"suggest","session_id":"abc123","buffer":"git","cursor_pos":3,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}"#,
         ).await;
-        assert!(resp.contains("git status"), "Suggest after reconnect failed: {resp}");
+        assert!(
+            resp.contains("git status"),
+            "Suggest after reconnect failed: {resp}"
+        );
     }
 
     daemon.abort();
@@ -381,7 +392,10 @@ async fn test_client_reconnect_after_daemon_restart() {
             &mut writer,
             r#"{"type":"suggest","session_id":"abc123","buffer":"git","cursor_pos":3,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}"#,
         ).await;
-        assert!(resp.contains("git status"), "Suggest on new daemon failed: {resp}");
+        assert!(
+            resp.contains("git status"),
+            "Suggest on new daemon failed: {resp}"
+        );
     }
 
     daemon2.abort();
@@ -428,11 +442,8 @@ async fn test_read_detects_server_close() {
     drop(server_lines);
 
     // Client should now get EOF
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        lines.next_line(),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(std::time::Duration::from_millis(500), lines.next_line()).await;
 
     match result {
         Ok(Ok(None)) => {} // EOF — expected
