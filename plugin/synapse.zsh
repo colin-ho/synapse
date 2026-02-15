@@ -37,6 +37,7 @@ typeset -gi _SYNAPSE_DROPDOWN_MAX_VISIBLE=8
 typeset -gi _SYNAPSE_DROPDOWN_SCROLL=0
 typeset -g _SYNAPSE_DROPDOWN_SELECTED=""
 typeset -g _SYNAPSE_DROPDOWN_INSERT_KEY=""
+typeset -gi _SYNAPSE_HISTORY_BROWSING=0
 
 # --- Modules ---
 zmodload zsh/net/socket 2>/dev/null || { return; }
@@ -594,6 +595,7 @@ _synapse_report_interaction() {
 
 # Override self-insert to trigger suggestions on every keypress
 _synapse_self_insert() {
+    _SYNAPSE_HISTORY_BROWSING=0
     # Check if we should report ignore (user typed something different)
     if [[ -n "$_SYNAPSE_CURRENT_SUGGESTION" ]]; then
         local next_char="${KEYS}"
@@ -612,6 +614,7 @@ _synapse_self_insert() {
 
 # Override backward-delete-char to re-suggest
 _synapse_backward_delete_char() {
+    _SYNAPSE_HISTORY_BROWSING=0
     zle .backward-delete-char
     _synapse_suggest
 }
@@ -668,6 +671,15 @@ _synapse_dismiss() {
     fi
 }
 
+# --- History Navigation ---
+
+# Override up-arrow to track history browsing state
+_synapse_up_line_or_history() {
+    _SYNAPSE_HISTORY_BROWSING=1
+    _synapse_clear_suggestion
+    zle .up-line-or-history
+}
+
 # --- Dropdown Widgets ---
 
 # Open dropdown: triggered by Down Arrow
@@ -677,6 +689,16 @@ _synapse_dropdown_open() {
         _synapse_dropdown_down_impl
         _synapse_render_dropdown
         zle -R
+        return
+    fi
+
+    # If user is browsing history (via up arrow), pass through to history navigation
+    if [[ $_SYNAPSE_HISTORY_BROWSING -eq 1 ]]; then
+        zle .down-line-or-history
+        # If we returned to the newest entry, stop history browsing mode
+        if [[ "$HISTNO" -eq "$HISTCMD" ]]; then
+            _SYNAPSE_HISTORY_BROWSING=0
+        fi
         return
     fi
 
@@ -808,7 +830,8 @@ _synapse_precmd() {
         fi
     fi
 
-    # Clear any leftover ghost text and dropdown
+    # Clear any leftover ghost text, dropdown, and history browsing state
+    _SYNAPSE_HISTORY_BROWSING=0
     _synapse_clear_dropdown
     _synapse_clear_suggestion
 }
@@ -856,6 +879,7 @@ _synapse_init() {
     zle -N synapse-dropdown-accept _synapse_dropdown_accept
     zle -N synapse-dropdown-dismiss _synapse_dropdown_dismiss
     zle -N synapse-dropdown-close-and-insert _synapse_dropdown_close_and_insert
+    zle -N synapse-up-line-or-history _synapse_up_line_or_history
 
     # Create dropdown keymap (based on main, with overrides)
     # Delete and recreate to pick up any main keymap changes on reload
@@ -883,6 +907,8 @@ _synapse_init() {
     bindkey '^[OC' synapse-accept         # Right arrow (application mode)
     bindkey '^[[1;5C' synapse-accept-word # Ctrl+Right arrow
     bindkey '^[' synapse-dismiss          # Escape
+    bindkey '^[[A' synapse-up-line-or-history  # Up arrow (normal) — history + flag
+    bindkey '^[OA' synapse-up-line-or-history  # Up arrow (application) — history + flag
     bindkey '^[[B' synapse-dropdown-open  # Down arrow (normal) — opens dropdown
     bindkey '^[OB' synapse-dropdown-open  # Down arrow (application) — opens dropdown
 
