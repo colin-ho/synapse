@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::spec::{ArgSpec, CommandSpec, GeneratorSpec, OptionSpec, SubcommandSpec};
+use crate::spec::{ArgSpec, CommandSpec, OptionSpec, SubcommandSpec};
 
 /// Auto-generate specs from project files at the given root.
 pub fn generate_specs(root: &Path) -> Vec<CommandSpec> {
@@ -105,10 +105,7 @@ fn generate_package_json_spec(root: &Path) -> Option<CommandSpec> {
             .keys()
             .map(|name| SubcommandSpec {
                 name: name.clone(),
-                description: scripts
-                    .get(name)
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
+                description: scripts.get(name).and_then(|v| v.as_str()).map(String::from),
                 ..Default::default()
             })
             .collect();
@@ -124,10 +121,7 @@ fn generate_package_json_spec(root: &Path) -> Option<CommandSpec> {
         for name in scripts.keys() {
             subcommands.push(SubcommandSpec {
                 name: name.clone(),
-                description: scripts
-                    .get(name)
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
+                description: scripts.get(name).and_then(|v| v.as_str()).map(String::from),
                 ..Default::default()
             });
         }
@@ -148,12 +142,40 @@ fn generate_cargo_spec(root: &Path) -> Option<CommandSpec> {
 
     let content = std::fs::read_to_string(&path).ok()?;
     let mut subcommands = vec![
-        SubcommandSpec { name: "build".into(), aliases: vec!["b".into()], description: Some("Compile the current package".into()), ..Default::default() },
-        SubcommandSpec { name: "test".into(), aliases: vec!["t".into()], description: Some("Run tests".into()), ..Default::default() },
-        SubcommandSpec { name: "run".into(), aliases: vec!["r".into()], description: Some("Run a binary".into()), ..Default::default() },
-        SubcommandSpec { name: "check".into(), aliases: vec!["c".into()], description: Some("Analyze without building".into()), ..Default::default() },
-        SubcommandSpec { name: "clippy".into(), description: Some("Run Clippy lints".into()), ..Default::default() },
-        SubcommandSpec { name: "fmt".into(), description: Some("Format code".into()), ..Default::default() },
+        SubcommandSpec {
+            name: "build".into(),
+            aliases: vec!["b".into()],
+            description: Some("Compile the current package".into()),
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "test".into(),
+            aliases: vec!["t".into()],
+            description: Some("Run tests".into()),
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "run".into(),
+            aliases: vec!["r".into()],
+            description: Some("Run a binary".into()),
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "check".into(),
+            aliases: vec!["c".into()],
+            description: Some("Analyze without building".into()),
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "clippy".into(),
+            description: Some("Run Clippy lints".into()),
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "fmt".into(),
+            description: Some("Format code".into()),
+            ..Default::default()
+        },
     ];
 
     if content.contains("[workspace]") {
@@ -191,10 +213,15 @@ fn generate_cargo_spec(root: &Path) -> Option<CommandSpec> {
 }
 
 fn generate_docker_compose_spec(root: &Path) -> Option<CommandSpec> {
-    let compose_path = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
-        .iter()
-        .map(|f| root.join(f))
-        .find(|p| p.exists())?;
+    let compose_path = [
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+    ]
+    .iter()
+    .map(|f| root.join(f))
+    .find(|p| p.exists())?;
 
     let content = std::fs::read_to_string(compose_path).ok()?;
 
@@ -233,17 +260,59 @@ fn generate_docker_compose_spec(root: &Path) -> Option<CommandSpec> {
     };
 
     let subcommands = vec![
-        SubcommandSpec { name: "up".into(), description: Some("Start services".into()), args: service_args.clone(), options: vec![
-            OptionSpec { short: Some("-d".into()), long: Some("--detach".into()), description: Some("Run in background".into()), ..Default::default() },
-            OptionSpec { long: Some("--build".into()), description: Some("Build before starting".into()), ..Default::default() },
-        ], ..Default::default() },
-        SubcommandSpec { name: "down".into(), description: Some("Stop services".into()), ..Default::default() },
-        SubcommandSpec { name: "logs".into(), description: Some("View logs".into()), args: service_args.clone(), options: vec![
-            OptionSpec { short: Some("-f".into()), long: Some("--follow".into()), description: Some("Follow output".into()), ..Default::default() },
-        ], ..Default::default() },
-        SubcommandSpec { name: "restart".into(), description: Some("Restart services".into()), args: service_args.clone(), ..Default::default() },
-        SubcommandSpec { name: "ps".into(), description: Some("List containers".into()), ..Default::default() },
-        SubcommandSpec { name: "build".into(), description: Some("Build services".into()), args: service_args, ..Default::default() },
+        SubcommandSpec {
+            name: "up".into(),
+            description: Some("Start services".into()),
+            args: service_args.clone(),
+            options: vec![
+                OptionSpec {
+                    short: Some("-d".into()),
+                    long: Some("--detach".into()),
+                    description: Some("Run in background".into()),
+                    ..Default::default()
+                },
+                OptionSpec {
+                    long: Some("--build".into()),
+                    description: Some("Build before starting".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "down".into(),
+            description: Some("Stop services".into()),
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "logs".into(),
+            description: Some("View logs".into()),
+            args: service_args.clone(),
+            options: vec![OptionSpec {
+                short: Some("-f".into()),
+                long: Some("--follow".into()),
+                description: Some("Follow output".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "restart".into(),
+            description: Some("Restart services".into()),
+            args: service_args.clone(),
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "ps".into(),
+            description: Some("List containers".into()),
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "build".into(),
+            description: Some("Build services".into()),
+            args: service_args,
+            ..Default::default()
+        },
     ];
 
     Some(CommandSpec {

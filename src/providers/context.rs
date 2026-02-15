@@ -13,13 +13,17 @@ use crate::providers::{ProviderSuggestion, SuggestionProvider};
 pub struct ContextCommand {
     pub command: String,
     pub relevance: f64,
+    #[allow(dead_code)]
     pub trigger_prefix: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct DirectoryContext {
+    #[allow(dead_code)]
     pub project_root: PathBuf,
+    #[allow(dead_code)]
     pub project_type: Option<String>,
+    #[allow(dead_code)]
     pub git_branch: Option<String>,
     pub commands: Vec<ContextCommand>,
 }
@@ -117,11 +121,13 @@ impl ContextProvider {
         ctx
     }
 
+    #[allow(dead_code)]
     pub async fn invalidate(&self, path: &Path) {
         // Invalidate cache entries whose project root is a prefix of the changed path
         self.cache.invalidate(path).await;
     }
 
+    #[allow(dead_code)]
     pub fn start_watcher(&self, _cwd: &Path) {
         // File watching via notify will be initialized when connections come in.
         // For now, cache TTL handles staleness.
@@ -145,7 +151,7 @@ impl SuggestionProvider for ContextProvider {
         for cmd in &ctx.commands {
             if cmd.command.starts_with(buffer) && cmd.command.len() > buffer.len() {
                 let score = cmd.relevance;
-                if best.as_ref().map_or(true, |(s, _)| score > *s) {
+                if best.as_ref().is_none_or(|(s, _)| score > *s) {
                     best = Some((score, cmd));
                 }
             }
@@ -168,11 +174,7 @@ impl SuggestionProvider for ContextProvider {
         self.config.enabled
     }
 
-    async fn suggest_multi(
-        &self,
-        request: &SuggestRequest,
-        max: usize,
-    ) -> Vec<ProviderSuggestion> {
+    async fn suggest_multi(&self, request: &SuggestRequest, max: usize) -> Vec<ProviderSuggestion> {
         if request.buffer.is_empty() {
             return Vec::new();
         }
@@ -194,7 +196,11 @@ impl SuggestionProvider for ContextProvider {
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(max);
         results
     }
@@ -284,7 +290,11 @@ fn scan_makefile(root: &Path) -> Option<Vec<ContextCommand>> {
         }
     }
 
-    if commands.is_empty() { None } else { Some(commands) }
+    if commands.is_empty() {
+        None
+    } else {
+        Some(commands)
+    }
 }
 
 fn scan_package_json(root: &Path) -> Option<Vec<ContextCommand>> {
@@ -319,7 +329,11 @@ fn scan_package_json(root: &Path) -> Option<Vec<ContextCommand>> {
         });
     }
 
-    if commands.is_empty() { None } else { Some(commands) }
+    if commands.is_empty() {
+        None
+    } else {
+        Some(commands)
+    }
 }
 
 fn scan_cargo_toml(root: &Path) -> Option<Vec<ContextCommand>> {
@@ -329,12 +343,36 @@ fn scan_cargo_toml(root: &Path) -> Option<Vec<ContextCommand>> {
     }
 
     let mut commands = vec![
-        ContextCommand { command: "cargo build".into(), relevance: 0.7, trigger_prefix: "cargo".into() },
-        ContextCommand { command: "cargo test".into(), relevance: 0.7, trigger_prefix: "cargo".into() },
-        ContextCommand { command: "cargo run".into(), relevance: 0.7, trigger_prefix: "cargo".into() },
-        ContextCommand { command: "cargo check".into(), relevance: 0.7, trigger_prefix: "cargo".into() },
-        ContextCommand { command: "cargo clippy".into(), relevance: 0.6, trigger_prefix: "cargo".into() },
-        ContextCommand { command: "cargo fmt".into(), relevance: 0.6, trigger_prefix: "cargo".into() },
+        ContextCommand {
+            command: "cargo build".into(),
+            relevance: 0.7,
+            trigger_prefix: "cargo".into(),
+        },
+        ContextCommand {
+            command: "cargo test".into(),
+            relevance: 0.7,
+            trigger_prefix: "cargo".into(),
+        },
+        ContextCommand {
+            command: "cargo run".into(),
+            relevance: 0.7,
+            trigger_prefix: "cargo".into(),
+        },
+        ContextCommand {
+            command: "cargo check".into(),
+            relevance: 0.7,
+            trigger_prefix: "cargo".into(),
+        },
+        ContextCommand {
+            command: "cargo clippy".into(),
+            relevance: 0.6,
+            trigger_prefix: "cargo".into(),
+        },
+        ContextCommand {
+            command: "cargo fmt".into(),
+            relevance: 0.6,
+            trigger_prefix: "cargo".into(),
+        },
     ];
 
     // Check for workspace
@@ -372,18 +410,38 @@ fn scan_pyproject(root: &Path) -> Option<Vec<ContextCommand>> {
         // Check for poetry or pip
         if let Ok(content) = std::fs::read_to_string(root.join("pyproject.toml")) {
             if content.contains("[tool.poetry]") {
-                commands.push(ContextCommand { command: "poetry install".into(), relevance: 0.7, trigger_prefix: "poetry".into() });
-                commands.push(ContextCommand { command: "poetry run".into(), relevance: 0.7, trigger_prefix: "poetry".into() });
+                commands.push(ContextCommand {
+                    command: "poetry install".into(),
+                    relevance: 0.7,
+                    trigger_prefix: "poetry".into(),
+                });
+                commands.push(ContextCommand {
+                    command: "poetry run".into(),
+                    relevance: 0.7,
+                    trigger_prefix: "poetry".into(),
+                });
             }
             if content.contains("[tool.ruff]") {
-                commands.push(ContextCommand { command: "ruff check .".into(), relevance: 0.6, trigger_prefix: "ruff".into() });
+                commands.push(ContextCommand {
+                    command: "ruff check .".into(),
+                    relevance: 0.6,
+                    trigger_prefix: "ruff".into(),
+                });
             }
         }
     }
 
-    commands.push(ContextCommand { command: "pip install -e .".into(), relevance: 0.5, trigger_prefix: "pip".into() });
+    commands.push(ContextCommand {
+        command: "pip install -e .".into(),
+        relevance: 0.5,
+        trigger_prefix: "pip".into(),
+    });
 
-    if commands.is_empty() { None } else { Some(commands) }
+    if commands.is_empty() {
+        None
+    } else {
+        Some(commands)
+    }
 }
 
 fn scan_docker_compose(root: &Path) -> Option<Vec<ContextCommand>> {
@@ -401,10 +459,26 @@ fn scan_docker_compose(root: &Path) -> Option<Vec<ContextCommand>> {
 
     let content = std::fs::read_to_string(path).ok()?;
     let mut commands = vec![
-        ContextCommand { command: "docker compose up".into(), relevance: 0.7, trigger_prefix: "docker".into() },
-        ContextCommand { command: "docker compose up -d".into(), relevance: 0.7, trigger_prefix: "docker".into() },
-        ContextCommand { command: "docker compose down".into(), relevance: 0.7, trigger_prefix: "docker".into() },
-        ContextCommand { command: "docker compose logs".into(), relevance: 0.6, trigger_prefix: "docker".into() },
+        ContextCommand {
+            command: "docker compose up".into(),
+            relevance: 0.7,
+            trigger_prefix: "docker".into(),
+        },
+        ContextCommand {
+            command: "docker compose up -d".into(),
+            relevance: 0.7,
+            trigger_prefix: "docker".into(),
+        },
+        ContextCommand {
+            command: "docker compose down".into(),
+            relevance: 0.7,
+            trigger_prefix: "docker".into(),
+        },
+        ContextCommand {
+            command: "docker compose logs".into(),
+            relevance: 0.6,
+            trigger_prefix: "docker".into(),
+        },
     ];
 
     // Extract service names (simple YAML parsing — look for top-level keys under services:)
@@ -479,5 +553,9 @@ fn scan_justfile(root: &Path) -> Option<Vec<ContextCommand>> {
         }
     }
 
-    if commands.is_empty() { None } else { Some(commands) }
+    if commands.is_empty() {
+        None
+    } else {
+        Some(commands)
+    }
 }

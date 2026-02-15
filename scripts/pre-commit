@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "==> Running cargo fmt --check"
+if ! cargo fmt --check; then
+    echo ""
+    echo "ERROR: cargo fmt found formatting issues."
+    echo "Run 'cargo fmt' to fix them, then try committing again."
+    exit 1
+fi
+
+echo "==> Running cargo clippy -- -D warnings"
+if ! cargo clippy -- -D warnings; then
+    echo ""
+    echo "ERROR: cargo clippy found warnings treated as errors."
+    echo "Fix the issues above, then try committing again."
+    exit 1
+fi
+
+echo "==> Pre-commit checks passed."

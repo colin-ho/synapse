@@ -6,11 +6,13 @@ use crate::protocol::{SuggestRequest, SuggestionResponse};
 
 #[derive(Debug, Clone)]
 pub struct SessionState {
+    #[allow(dead_code)]
     pub id: String,
     pub cwd: String,
     pub last_buffer: String,
     pub last_suggestion: Option<SuggestionResponse>,
     pub recent_commands: Vec<String>,
+    #[allow(dead_code)]
     pub connected_at: std::time::Instant,
     pub last_activity: std::time::Instant,
 }
@@ -35,6 +37,12 @@ pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, SessionState>>>,
 }
 
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionManager {
     pub fn new() -> Self {
         Self {
@@ -42,6 +50,7 @@ impl SessionManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get_or_create(&self, session_id: &str) -> SessionState {
         let mut sessions = self.sessions.write().await;
         sessions
@@ -74,11 +83,13 @@ impl SessionManager {
         sessions.get(session_id).map(|s| s.last_buffer.clone())
     }
 
+    #[allow(dead_code)]
     pub async fn remove(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
         sessions.remove(session_id);
     }
 
+    #[allow(dead_code)]
     pub async fn prune_inactive(&self, max_idle: std::time::Duration) {
         let mut sessions = self.sessions.write().await;
         let now = std::time::Instant::now();

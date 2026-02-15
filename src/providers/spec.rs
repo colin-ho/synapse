@@ -59,20 +59,20 @@ impl SpecProvider {
         let mut current_args = &spec.args;
         let remaining_tokens = &tokens[1..];
 
-        let mut consumed = 0;
+        let mut _consumed = 0;
         let mut skip_next = false;
 
         for (i, token) in remaining_tokens.iter().enumerate() {
             if skip_next {
                 skip_next = false;
-                consumed = i + 1;
+                _consumed = i + 1;
                 continue;
             }
 
             // Check if this token is a complete subcommand match
-            let sub_match = current_subcommands.iter().find(|s| {
-                s.name == *token || s.aliases.iter().any(|a| a == token)
-            });
+            let sub_match = current_subcommands
+                .iter()
+                .find(|s| s.name == *token || s.aliases.iter().any(|a| a == token));
 
             if let Some(sub) = sub_match {
                 // If this is the last token and there's no trailing space, it's being typed
@@ -82,7 +82,7 @@ impl SpecProvider {
                 current_subcommands = &sub.subcommands;
                 current_options = &sub.options;
                 current_args = &sub.args;
-                consumed = i + 1;
+                _consumed = i + 1;
             } else if token.starts_with('-') {
                 // Check if this option takes an arg — if so, skip the next token
                 if let Some(opt) = find_option(current_options, token) {
@@ -90,10 +90,10 @@ impl SpecProvider {
                         skip_next = true;
                     }
                 }
-                consumed = i + 1;
+                _consumed = i + 1;
             } else {
                 // Positional arg or partial token
-                consumed = i;
+                _consumed = i;
                 break;
             }
         }
@@ -188,8 +188,9 @@ impl SpecProvider {
         // Complete arguments (generators, templates, static suggestions)
         if !partial.starts_with('-') {
             for arg in current_args {
-                let mut arg_suggestions =
-                    self.resolve_arg_completions(arg, partial, cwd, spec.source).await;
+                let mut arg_suggestions = self
+                    .resolve_arg_completions(arg, partial, cwd, spec.source)
+                    .await;
                 for s in &mut arg_suggestions {
                     s.text = format!("{}{}", prefix, s.text);
                 }
@@ -200,11 +201,7 @@ impl SpecProvider {
         suggestions
     }
 
-    async fn complete_command_name(
-        &self,
-        partial: &str,
-        cwd: &Path,
-    ) -> Vec<ProviderSuggestion> {
+    async fn complete_command_name(&self, partial: &str, cwd: &Path) -> Vec<ProviderSuggestion> {
         let all_names = self.store.all_command_names(cwd).await;
         all_names
             .into_iter()
@@ -305,7 +302,11 @@ impl SuggestionProvider for SpecProvider {
         completions.retain(|s| !s.text.is_empty() && s.text != request.buffer);
 
         // Return the highest scoring completion
-        completions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        completions.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         completions.into_iter().next()
     }
 
@@ -317,18 +318,18 @@ impl SuggestionProvider for SpecProvider {
         true
     }
 
-    async fn suggest_multi(
-        &self,
-        request: &SuggestRequest,
-        max: usize,
-    ) -> Vec<ProviderSuggestion> {
+    async fn suggest_multi(&self, request: &SuggestRequest, max: usize) -> Vec<ProviderSuggestion> {
         let cwd = Path::new(&request.cwd);
         let mut completions = self.complete(&request.buffer, cwd).await;
 
         // Filter out empty text entries and entries matching the buffer exactly
         completions.retain(|s| !s.text.is_empty() && s.text != request.buffer);
 
-        completions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        completions.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         completions.truncate(max);
         completions
     }
@@ -378,7 +379,7 @@ fn tokenize(input: &str) -> Vec<String> {
 }
 
 fn find_option<'a>(options: &'a [OptionSpec], token: &str) -> Option<&'a OptionSpec> {
-    options.iter().find(|opt| {
-        opt.long.as_deref() == Some(token) || opt.short.as_deref() == Some(token)
-    })
+    options
+        .iter()
+        .find(|opt| opt.long.as_deref() == Some(token) || opt.short.as_deref() == Some(token))
 }

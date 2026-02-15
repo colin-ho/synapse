@@ -81,7 +81,10 @@ async fn test_git_multi_suggestions() {
 
     let req = make_request("git ", dir.path().to_str().unwrap());
     let results = provider.suggest_multi(&req, 10).await;
-    assert!(results.len() > 1, "Expected multiple suggestions for 'git '");
+    assert!(
+        results.len() > 1,
+        "Expected multiple suggestions for 'git '"
+    );
 
     // All should be from Spec source
     for r in &results {
@@ -99,7 +102,9 @@ async fn test_git_checkout_alias() {
     let results = provider.suggest_multi(&req, 10).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
-        texts.iter().any(|t| t.contains("checkout") || t.contains("cherry-pick")),
+        texts
+            .iter()
+            .any(|t| t.contains("checkout") || t.contains("cherry-pick")),
         "Expected checkout or cherry-pick in suggestions, got: {:?}",
         texts
     );
@@ -198,7 +203,10 @@ description = "Build the project"
     assert_eq!(spec.subcommands.len(), 2);
     assert_eq!(spec.subcommands[0].name, "serve");
     assert_eq!(spec.subcommands[0].options.len(), 1);
-    assert_eq!(spec.subcommands[0].options[0].long.as_deref(), Some("--port"));
+    assert_eq!(
+        spec.subcommands[0].options[0].long.as_deref(),
+        Some("--port")
+    );
     assert!(spec.subcommands[0].options[0].takes_arg);
     assert_eq!(spec.subcommands[1].name, "build");
 }
@@ -307,7 +315,11 @@ async fn test_suggest_multi_truncates() {
 
     let req = make_request("git ", dir.path().to_str().unwrap());
     let results = provider.suggest_multi(&req, 3).await;
-    assert!(results.len() <= 3, "Expected at most 3 results, got {}", results.len());
+    assert!(
+        results.len() <= 3,
+        "Expected at most 3 results, got {}",
+        results.len()
+    );
 }
 
 // --- Protocol types ---

@@ -16,8 +16,10 @@ pub struct CommandSpec {
     #[serde(default)]
     pub aliases: Vec<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub description: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub version_command: Option<String>,
     #[serde(default)]
     pub subcommands: Vec<SubcommandSpec>,
@@ -75,8 +77,10 @@ pub struct OptionSpec {
     #[serde(default)]
     pub takes_arg: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     pub arg_generator: Option<GeneratorSpec>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub exclusive_with: Vec<String>,
 }
 
@@ -88,8 +92,10 @@ pub struct ArgSpec {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub required: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     pub variadic: bool,
     #[serde(default)]
     pub suggestions: Vec<String>,
@@ -109,6 +115,7 @@ pub struct GeneratorSpec {
     #[serde(default)]
     pub strip_prefix: Option<String>,
     #[serde(default = "default_cache_ttl")]
+    #[allow(dead_code)]
     pub cache_ttl_secs: u64,
     #[serde(default = "default_generator_timeout")]
     pub timeout_ms: u64,
@@ -138,18 +145,20 @@ pub enum ArgTemplate {
 
 impl CommandSpec {
     /// Find a subcommand by name or alias
+    #[allow(dead_code)]
     pub fn find_subcommand(&self, name: &str) -> Option<&SubcommandSpec> {
-        self.subcommands.iter().find(|s| {
-            s.name == name || s.aliases.iter().any(|a| a == name)
-        })
+        self.subcommands
+            .iter()
+            .find(|s| s.name == name || s.aliases.iter().any(|a| a == name))
     }
 }
 
 impl SubcommandSpec {
     /// Find a nested subcommand by name or alias
+    #[allow(dead_code)]
     pub fn find_subcommand(&self, name: &str) -> Option<&SubcommandSpec> {
-        self.subcommands.iter().find(|s| {
-            s.name == name || s.aliases.iter().any(|a| a == name)
-        })
+        self.subcommands
+            .iter()
+            .find(|s| s.name == name || s.aliases.iter().any(|a| a == name))
     }
 }

@@ -19,13 +19,16 @@ pub enum Request {
 pub struct SuggestRequest {
     pub session_id: String,
     pub buffer: String,
+    #[allow(dead_code)]
     pub cursor_pos: usize,
     pub cwd: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub last_exit_code: i32,
     #[serde(default)]
     pub recent_commands: Vec<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub env_hints: HashMap<String, String>,
 }
 

@@ -9,6 +9,7 @@ pub struct AiCacheKey {
     pub git_branch: Option<String>,
 }
 
+#[allow(dead_code)]
 pub fn create_context_cache<V: Clone + Send + Sync + 'static>() -> Cache<PathBuf, V> {
     Cache::builder()
         .max_capacity(200)
@@ -16,6 +17,7 @@ pub fn create_context_cache<V: Clone + Send + Sync + 'static>() -> Cache<PathBuf
         .build()
 }
 
+#[allow(dead_code)]
 pub fn create_ai_cache() -> Cache<AiCacheKey, String> {
     Cache::builder()
         .max_capacity(500)

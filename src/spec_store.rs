@@ -128,7 +128,7 @@ impl SpecStore {
             if let Ok(entries) = std::fs::read_dir(&spec_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().map_or(false, |e| e == "toml") {
+                    if path.extension().is_some_and(|e| e == "toml") {
                         if let Ok(content) = std::fs::read_to_string(&path) {
                             match toml::from_str::<CommandSpec>(&content) {
                                 Ok(mut spec) => {
@@ -191,9 +191,8 @@ impl SpecStore {
             return cached;
         }
 
-        let timeout = Duration::from_millis(
-            generator.timeout_ms.min(self.config.generator_timeout_ms),
-        );
+        let timeout =
+            Duration::from_millis(generator.timeout_ms.min(self.config.generator_timeout_ms));
 
         let result = match tokio::time::timeout(timeout, async {
             Command::new("sh")
@@ -248,9 +247,7 @@ impl SpecStore {
         };
 
         // Cache the result
-        self.generator_cache
-            .insert(cache_key, result.clone())
-            .await;
+        self.generator_cache.insert(cache_key, result.clone()).await;
 
         result
     }

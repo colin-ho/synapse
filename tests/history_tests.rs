@@ -84,12 +84,7 @@ async fn test_extended_history_format() {
 #[tokio::test]
 async fn test_frequency_ranking() {
     let _lock = HISTFILE_LOCK.lock().unwrap();
-    let file = write_history_file(&[
-        "git status",
-        "git status",
-        "git status",
-        "git stash",
-    ]);
+    let file = write_history_file(&["git status", "git status", "git status", "git stash"]);
     std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
     let provider = HistoryProvider::new(HistoryConfig {
