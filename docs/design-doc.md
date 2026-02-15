@@ -534,8 +534,32 @@ The `log_level` config option sets the default level; the `--verbose` flag overr
 # Install the daemon binary
 cargo install synapse
 
-# Add the plugin to .zshrc
-echo 'source $(synapse --shell-init)' >> ~/.zshrc
+# Permanent setup: appends init to ~/.zshrc (idempotent)
+synapse setup
+
+# Or add it manually to any RC file
+synapse setup --rc-file ~/.zshrc
+```
+
+This appends `eval "$(synapse init)"` to the RC file if not already present.
+
+### Instant activation (any terminal)
+
+```bash
+eval "$(synapse init)"
+```
+
+This exports `SYNAPSE_BIN`, sources the Zsh plugin, and auto-starts the daemon. When run from a `target/{debug,release}` build directory, `synapse init` automatically detects **dev mode** and sets up a unique per-workspace socket at `/tmp/synapse-dev-{hash}.sock` with reload support and cleanup traps, so multiple worktrees can run simultaneously without conflicts.
+
+### Dev workflow
+
+```bash
+# Build and activate from a worktree
+cargo build && eval "$(./target/debug/synapse init)"
+
+# Or use the convenience script (builds, then delegates to synapse init)
+source dev/test.sh
+source dev/test.sh --release
 ```
 
 ### With Oh My Zsh
@@ -563,6 +587,8 @@ synapse daemon status
 
 ```
 synapse/
+├── dev/
+│   └── test.sh                      # Dev convenience script (build + synapse init)
 ├── plugin/
 │   └── synapse.zsh                  # Zsh widget, keybindings, dropdown UI
 ├── specs/
