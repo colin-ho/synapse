@@ -122,11 +122,18 @@ fn print_shell_init() {
         println!("{}", plugin_path.display());
     } else {
         // Fallback: check alongside the binary
-        let alt = exe.parent().unwrap_or(std::path::Path::new(".")).join("plugin").join("synapse.zsh");
+        let alt = exe
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("plugin")
+            .join("synapse.zsh");
         if alt.exists() {
             println!("{}", alt.display());
         } else {
-            eprintln!("Warning: plugin file not found. Expected at {}", plugin_path.display());
+            eprintln!(
+                "Warning: plugin file not found. Expected at {}",
+                plugin_path.display()
+            );
             println!("{}", plugin_path.display());
         }
     }
@@ -144,8 +151,10 @@ fn stop_daemon() -> anyhow::Result<()> {
     let pid_str = std::fs::read_to_string(&pid_path)?;
     let pid: i32 = pid_str.trim().parse()?;
 
-    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGTERM)
-    {
+    match nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGTERM,
+    ) {
         Ok(()) => {
             eprintln!("Sent SIGTERM to daemon (PID {pid})");
             // Clean up files
@@ -206,8 +215,7 @@ async fn start_daemon(
         _ => "trace",
     };
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     if let Some(log_path) = log_file {
         if let Some(parent) = log_path.parent() {
@@ -222,9 +230,7 @@ async fn start_daemon(
             .with_writer(file)
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
     if !foreground {
@@ -311,8 +317,8 @@ async fn start_daemon(
 
     // Cleanup
     tracing::info!("Shutting down");
-    let _ = std::fs::remove_file(&config.socket_path());
-    let _ = std::fs::remove_file(&config.pid_path());
+    let _ = std::fs::remove_file(config.socket_path());
+    let _ = std::fs::remove_file(config.pid_path());
 
     result
 }
@@ -395,19 +401,21 @@ async fn handle_connection(
         tracing::trace!("Received: {trimmed}");
 
         let response = match serde_json::from_str::<Request>(trimmed) {
-            Ok(request) => handle_request(
-                request,
-                &history_provider,
-                &context_provider,
-                &ai_provider,
-                &spec_provider,
-                &ranker,
-                &session_manager,
-                &interaction_logger,
-                &config,
-                writer.clone(),
-            )
-            .await,
+            Ok(request) => {
+                handle_request(
+                    request,
+                    &history_provider,
+                    &context_provider,
+                    &ai_provider,
+                    &spec_provider,
+                    &ranker,
+                    &session_manager,
+                    &interaction_logger,
+                    &config,
+                    writer.clone(),
+                )
+                .await
+            }
             Err(e) => {
                 tracing::warn!("Parse error: {e}");
                 Response::Error {
@@ -509,7 +517,8 @@ async fn handle_request(
 
                 tokio::spawn(async move {
                     // Debounce: wait before calling AI
-                    tokio::time::sleep(std::time::Duration::from_millis(cfg.general.debounce_ms)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(cfg.general.debounce_ms))
+                        .await;
 
                     // Check if buffer has changed since we started
                     if let Some(current_buffer) = sm.get_last_buffer(&session_id).await {
@@ -578,9 +587,7 @@ async fn handle_request(
 
             let items = ranked.iter().map(|r| r.to_suggestion_item()).collect();
 
-            Response::SuggestionList(SuggestionListResponse {
-                suggestions: items,
-            })
+            Response::SuggestionList(SuggestionListResponse { suggestions: items })
         }
 
         Request::Interaction(report) => {

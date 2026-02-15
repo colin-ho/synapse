@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -94,21 +94,6 @@ pub struct LoggingConfig {
 }
 
 // --- Defaults ---
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            history: HistoryConfig::default(),
-            context: ContextConfig::default(),
-            ai: AiConfig::default(),
-            spec: SpecConfig::default(),
-            weights: WeightsConfig::default(),
-            security: SecurityConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
-}
 
 impl Default for GeneralConfig {
     fn default() -> Self {
@@ -258,13 +243,17 @@ impl Config {
         sock.with_extension("pid")
     }
 
+    #[allow(dead_code)]
     pub fn lock_path(&self) -> PathBuf {
         let sock = self.socket_path();
         sock.with_extension("lock")
     }
 
     pub fn interaction_log_path(&self) -> PathBuf {
-        let path = self.logging.interaction_log.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
+        let path = self
+            .logging
+            .interaction_log
+            .replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
         PathBuf::from(path)
     }
 }

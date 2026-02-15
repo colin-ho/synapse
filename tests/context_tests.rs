@@ -21,7 +21,11 @@ fn make_request(buffer: &str, cwd: &str) -> SuggestRequest {
 #[tokio::test]
 async fn test_cargo_context() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .unwrap();
 
     let provider = ContextProvider::new(ContextConfig {
         enabled: true,
@@ -109,7 +113,11 @@ async fn test_yarn_detection() {
 #[tokio::test]
 async fn test_empty_buffer_returns_none() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .unwrap();
 
     let provider = ContextProvider::new(ContextConfig {
         enabled: true,

@@ -49,7 +49,10 @@ async fn test_daemon_lifecycle() {
                 } else {
                     r#"{"type":"ack"}"#
                 };
-                writer.write_all(format!("{response}\n").as_bytes()).await.unwrap();
+                writer
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
                 writer.flush().await.unwrap();
                 line.clear();
             }
@@ -78,7 +81,10 @@ async fn test_daemon_lifecycle() {
     assert!(response.contains("pong"), "Expected pong, got: {response}");
 
     // Send shutdown
-    writer.write_all(b"{\"type\":\"shutdown\"}\n").await.unwrap();
+    writer
+        .write_all(b"{\"type\":\"shutdown\"}\n")
+        .await
+        .unwrap();
     writer.flush().await.unwrap();
 
     let mut ack = String::new();
@@ -95,8 +101,7 @@ async fn test_daemon_lifecycle() {
 #[test]
 fn test_protocol_serialization() {
     // Test that ping request parses correctly
-    let req: synapse::protocol::Request =
-        serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
+    let req: synapse::protocol::Request = serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
     assert!(matches!(req, synapse::protocol::Request::Ping));
 
     // Test suggest request
@@ -154,7 +159,11 @@ fn test_weights_normalization() {
         recency: 1.0,
     };
     let normalized = weights.normalized();
-    let sum = normalized.history + normalized.context + normalized.ai + normalized.spec + normalized.recency;
+    let sum = normalized.history
+        + normalized.context
+        + normalized.ai
+        + normalized.spec
+        + normalized.recency;
     assert!((sum - 1.0).abs() < 0.001);
     assert!((normalized.history - 0.2).abs() < 0.001);
 }

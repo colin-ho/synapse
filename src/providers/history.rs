@@ -24,22 +24,17 @@ pub struct HistoryProvider {
 
 impl HistoryProvider {
     pub fn new(config: HistoryConfig) -> Self {
-        let provider = Self {
+        Self {
             entries: Arc::new(RwLock::new(BTreeMap::new())),
             config,
             max_epoch: Arc::new(RwLock::new(0)),
-        };
-        provider
+        }
     }
 
     pub async fn load_history(&self) {
         let histfile = std::env::var("HISTFILE")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".zsh_history")
-            });
+            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".zsh_history"));
 
         if !histfile.exists() {
             tracing::warn!("History file not found: {}", histfile.display());
@@ -84,7 +79,12 @@ impl HistoryProvider {
             }
 
             // Only take first line for multi-line commands stored in history
-            let cmd = command.lines().next().unwrap_or(&command).trim().to_string();
+            let cmd = command
+                .lines()
+                .next()
+                .unwrap_or(&command)
+                .trim()
+                .to_string();
             if cmd.is_empty() {
                 continue;
             }
@@ -144,7 +144,7 @@ impl HistoryProvider {
                 break;
             }
             let score = compute_score(entry, max_epoch);
-            if best.as_ref().map_or(true, |(s, _)| score > *s) {
+            if best.as_ref().is_none_or(|(s, _)| score > *s) {
                 best = Some((score, entry));
             }
         }
@@ -175,7 +175,10 @@ impl HistoryProvider {
                 continue;
             }
 
-            let distance = levenshtein(query, &entry.command[..query.len().min(entry.command.len())]);
+            let distance = levenshtein(
+                query,
+                &entry.command[..query.len().min(entry.command.len())],
+            );
             let max_distance = (query.len() as f64 * 0.3).ceil() as usize; // 30% threshold
 
             if distance <= max_distance && entry.command.len() > query.len() {
@@ -184,7 +187,7 @@ impl HistoryProvider {
                 let fuzzy_penalty = 1.0 - (distance as f64 / query.len() as f64);
                 let score = base_score * fuzzy_penalty * 0.8; // 0.8 base penalty for fuzzy
 
-                if best.as_ref().map_or(true, |(s, _)| score > *s) {
+                if best.as_ref().is_none_or(|(s, _)| score > *s) {
                     best = Some((score, entry));
                 }
             }
@@ -226,11 +229,7 @@ impl SuggestionProvider for HistoryProvider {
         true
     }
 
-    async fn suggest_multi(
-        &self,
-        request: &SuggestRequest,
-        max: usize,
-    ) -> Vec<ProviderSuggestion> {
+    async fn suggest_multi(&self, request: &SuggestRequest, max: usize) -> Vec<ProviderSuggestion> {
         let buffer = request.buffer.as_str();
         if buffer.is_empty() {
             return Vec::new();
@@ -322,6 +321,7 @@ fn increment_last_char(s: &str) -> Option<String> {
 }
 
 /// Simple Levenshtein distance
+#[allow(clippy::needless_range_loop)]
 pub fn levenshtein(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
@@ -339,7 +339,11 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
 
     for i in 1..=m {
         for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
             dp[i][j] = (dp[i - 1][j] + 1)
                 .min(dp[i][j - 1] + 1)
                 .min(dp[i - 1][j - 1] + cost);

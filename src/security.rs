@@ -43,6 +43,7 @@ impl Scrubber {
         result
     }
 
+    #[allow(dead_code)]
     pub fn scrub_env_hints(
         &self,
         env_hints: &std::collections::HashMap<String, String>,

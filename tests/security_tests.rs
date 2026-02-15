@@ -29,7 +29,10 @@ fn test_path_scrubbing() {
 
     let path = format!("{home_str}/projects/myapp");
     let scrubbed = scrubber.scrub_path(&path);
-    assert!(scrubbed.starts_with("~"), "Expected ~ prefix, got: {scrubbed}");
+    assert!(
+        scrubbed.starts_with("~"),
+        "Expected ~ prefix, got: {scrubbed}"
+    );
     assert!(scrubbed.contains("projects/myapp"));
 }
 

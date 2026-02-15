@@ -34,6 +34,7 @@ impl InteractionLogger {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn log_interaction(
         &self,
         session_id: &str,

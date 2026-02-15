@@ -83,13 +83,18 @@ impl AiProvider {
         }
     }
 
-    fn build_prompt(&self, request: &SuggestRequest, project_type: Option<&str>, git_branch: Option<&str>) -> String {
+    fn build_prompt(
+        &self,
+        request: &SuggestRequest,
+        project_type: Option<&str>,
+        git_branch: Option<&str>,
+    ) -> String {
         let (cwd, recent, buffer) = if let Some(ref scrubber) = self.scrubber {
             let cwd = scrubber.scrub_path(&request.cwd);
             let recent = scrubber.scrub_commands(&request.recent_commands);
             // Scrub the buffer too — it's the most likely place for sensitive data
             // (e.g. "export API_KEY=sk-...", "curl -u admin:pass ...")
-            let scrubbed_buffer = scrubber.scrub_commands(&[request.buffer.clone()]);
+            let scrubbed_buffer = scrubber.scrub_commands(std::slice::from_ref(&request.buffer));
             let buffer = if scrubbed_buffer.is_empty() {
                 // Buffer matched a blocklist pattern — don't send it to the API
                 return String::new();
@@ -98,7 +103,11 @@ impl AiProvider {
             };
             (cwd, recent, buffer)
         } else {
-            (request.cwd.clone(), request.recent_commands.clone(), request.buffer.clone())
+            (
+                request.cwd.clone(),
+                request.recent_commands.clone(),
+                request.buffer.clone(),
+            )
         };
 
         let recent_str = recent.join(", ");
@@ -124,7 +133,12 @@ impl AiProvider {
         prompt
     }
 
-    fn cache_key(&self, request: &SuggestRequest, project_type: Option<String>, git_branch: Option<String>) -> AiCacheKey {
+    fn cache_key(
+        &self,
+        request: &SuggestRequest,
+        project_type: Option<String>,
+        git_branch: Option<String>,
+    ) -> AiCacheKey {
         // Use first few chars as prefix for cache key
         let prefix_len = (request.buffer.len() / 2).max(3).min(request.buffer.len());
         AiCacheKey {
@@ -159,7 +173,11 @@ impl AiProvider {
 
         // Take first line only
         let first_line = text.lines().next()?.trim().to_string();
-        if first_line.is_empty() { None } else { Some(first_line) }
+        if first_line.is_empty() {
+            None
+        } else {
+            Some(first_line)
+        }
     }
 
     async fn call_anthropic(&self, prompt: &str) -> Option<String> {
@@ -175,7 +193,8 @@ impl AiProvider {
             "temperature": self.config.temperature,
         });
 
-        let resp = self.client
+        let resp = self
+            .client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &api_key)
             .header("anthropic-version", "2023-06-01")
@@ -199,7 +218,11 @@ impl AiProvider {
             .as_str()?;
 
         let first_line = text.lines().next()?.trim().to_string();
-        if first_line.is_empty() { None } else { Some(first_line) }
+        if first_line.is_empty() {
+            None
+        } else {
+            Some(first_line)
+        }
     }
 
     async fn call_openai(&self, prompt: &str) -> Option<String> {
@@ -221,7 +244,8 @@ impl AiProvider {
             format!("{}/v1/chat/completions", self.config.endpoint)
         };
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&endpoint)
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
@@ -245,7 +269,11 @@ impl AiProvider {
             .as_str()?;
 
         let first_line = text.lines().next()?.trim().to_string();
-        if first_line.is_empty() { None } else { Some(first_line) }
+        if first_line.is_empty() {
+            None
+        } else {
+            Some(first_line)
+        }
     }
 
     async fn call_backend(&self, prompt: &str) -> Option<String> {
@@ -308,7 +336,12 @@ impl SuggestionProvider for AiProvider {
         let result = self.call_backend(&prompt).await;
 
         match result {
-            Some(text) if text.starts_with(&request.buffer) || request.buffer.starts_with(&text[..text.len().min(request.buffer.len())]) => {
+            Some(text)
+                if text.starts_with(&request.buffer)
+                    || request
+                        .buffer
+                        .starts_with(&text[..text.len().min(request.buffer.len())]) =>
+            {
                 // Cache the result
                 self.cache.insert(key, text.clone()).await;
 

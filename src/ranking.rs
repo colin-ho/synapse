@@ -40,7 +40,7 @@ impl Ranker {
             let recency_bonus = compute_recency_bonus(&s.text, recent_commands);
             let score = weight * s.score + self.weights.recency * recency_bonus;
 
-            if best.as_ref().map_or(true, |b| score > b.score) {
+            if best.as_ref().is_none_or(|b| score > b.score) {
                 best = Some(RankedSuggestion {
                     text: s.text,
                     source: s.source,
@@ -86,7 +86,7 @@ impl Ranker {
         let mut deduped: HashMap<String, RankedSuggestion> = HashMap::new();
         for s in scored {
             let existing = deduped.get(&s.text);
-            if existing.map_or(true, |e| s.score > e.score) {
+            if existing.is_none_or(|e| s.score > e.score) {
                 deduped.insert(s.text.clone(), s);
             }
         }

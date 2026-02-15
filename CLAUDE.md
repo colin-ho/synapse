@@ -24,6 +24,13 @@ Run the daemon in foreground for development:
 cargo run -- daemon start --foreground -vv
 ```
 
+## Setup
+
+Install pre-commit hooks (runs `cargo fmt --check` and `cargo clippy` before each commit):
+```bash
+./scripts/setup-hooks.sh
+```
+
 ## Architecture
 
 ### Two-Process Model
