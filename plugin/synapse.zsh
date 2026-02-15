@@ -21,6 +21,7 @@ typeset -g _SYNAPSE_CURRENT_SOURCE=""
 typeset -g _SYNAPSE_RECONNECT_ATTEMPTS=0
 typeset -g _SYNAPSE_MAX_RECONNECT=3
 typeset -g _SYNAPSE_LAST_RECONNECT_MINUTE=0
+typeset -gi _SYNAPSE_REQUEST_FAILURES=0
 typeset -gi _SYNAPSE_RECENT_CMD_MAX=10
 typeset -ga _SYNAPSE_RECENT_COMMANDS=()
 
@@ -147,6 +148,7 @@ _synapse_connect() {
     zsocket "$sock" 2>/dev/null || return 1
     _SYNAPSE_SOCKET_FD="$REPLY"
     _SYNAPSE_CONNECTED=1
+    _SYNAPSE_REQUEST_FAILURES=0
 
     # Register async handler for pushed updates
     zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler
@@ -183,8 +185,15 @@ _synapse_request() {
     # Read response with timeout (50ms)
     local response=""
     if read -t 0.05 -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
+        _SYNAPSE_REQUEST_FAILURES=0
         echo "$response"
         return 0
+    fi
+
+    # Track consecutive failures to detect dead connections
+    (( _SYNAPSE_REQUEST_FAILURES++ ))
+    if (( _SYNAPSE_REQUEST_FAILURES >= 3 )); then
+        _synapse_disconnect
     fi
 
     return 1
@@ -501,7 +510,10 @@ _synapse_parse_suggestion_list() {
 
 # Request a suggestion for the current buffer
 _synapse_suggest() {
-    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return
+    # Try quick reconnect if disconnected (daemon may have restarted)
+    if [[ $_SYNAPSE_CONNECTED -eq 0 ]]; then
+        _synapse_connect 2>/dev/null || return
+    fi
 
     local buffer="$BUFFER"
     local cursor="$CURSOR"
@@ -553,6 +565,9 @@ _synapse_async_handler() {
             _synapse_show_suggestion "$text"
             zle -R  # Redraw
         fi
+    else
+        # EOF or read error — daemon connection lost
+        _synapse_disconnect
     fi
 }
 
