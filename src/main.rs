@@ -294,12 +294,7 @@ source "{plugin}"
 
 /// Idempotently append the init line to a shell RC file.
 fn setup_shell_rc(rc_file: &str) -> anyhow::Result<()> {
-    let path = rc_file.replace(
-        '~',
-        &dirs::home_dir()
-            .unwrap_or_default()
-            .to_string_lossy(),
-    );
+    let path = rc_file.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
     let path = PathBuf::from(path);
 
     let init_line = r#"eval "$(synapse init)""#;
