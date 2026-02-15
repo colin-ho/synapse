@@ -12,6 +12,8 @@ pub struct Config {
     pub weights: WeightsConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
+    #[serde(skip)]
+    cli_socket_override: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,12 +229,16 @@ impl Config {
 
     pub fn with_socket_override(mut self, path: Option<PathBuf>) -> Self {
         if let Some(p) = path {
-            self.general.socket_path = Some(p.to_string_lossy().into_owned());
+            self.cli_socket_override = Some(p.to_string_lossy().into_owned());
         }
         self
     }
 
     pub fn socket_path(&self) -> PathBuf {
+        if let Some(ref path) = self.cli_socket_override {
+            return PathBuf::from(path);
+        }
+
         if let Ok(path) = std::env::var("SYNAPSE_SOCKET") {
             if !path.is_empty() {
                 return PathBuf::from(path);

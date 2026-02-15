@@ -188,6 +188,19 @@ fn test_socket_path_env_override() {
 }
 
 #[test]
+fn test_socket_path_cli_override_beats_env() {
+    let _guard = SOCKET_ENV_LOCK.lock().unwrap();
+    unsafe { std::env::set_var("SYNAPSE_SOCKET", "/tmp/test-env.sock") };
+    let config = synapse::config::Config::default()
+        .with_socket_override(Some(std::path::PathBuf::from("/tmp/test-cli.sock")));
+    assert_eq!(
+        config.socket_path(),
+        std::path::PathBuf::from("/tmp/test-cli.sock")
+    );
+    unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
+}
+
+#[test]
 fn test_socket_path_env_empty_ignored() {
     let _guard = SOCKET_ENV_LOCK.lock().unwrap();
     unsafe { std::env::set_var("SYNAPSE_SOCKET", "") };
