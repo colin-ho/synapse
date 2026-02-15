@@ -104,21 +104,33 @@ _synapse_ensure_daemon() {
     bin="$(_synapse_find_binary)" || return 1
     local lock_file="$(_synapse_lock_path)"
 
-    # Use flock to prevent race conditions
-    (
-        flock -n 9 || return 0  # Another shell is starting it
-        # Double-check after acquiring lock
-        _synapse_daemon_running && return 0
-        "$bin" daemon start &>/dev/null &
-        disown
-        # Wait briefly for daemon to start
-        local i
-        for i in 1 2 3 4 5; do
-            sleep 0.1
-            _synapse_daemon_running && return 0
-        done
-        return 1
-    ) 9>"$lock_file"
+    # Use zsystem flock (from zsh/system) — works on both macOS and Linux
+    local lock_fd
+    if ! zsystem flock -t 0 -f lock_fd "$lock_file" 2>/dev/null; then
+        return 0  # Another shell is starting it
+    fi
+
+    # Double-check after acquiring lock
+    if _synapse_daemon_running; then
+        exec {lock_fd}>&-
+        return 0
+    fi
+
+    "$bin" daemon start &>/dev/null &
+    disown
+
+    # Wait briefly for daemon to start
+    local i
+    for i in 1 2 3 4 5; do
+        sleep 0.1
+        if _synapse_daemon_running; then
+            exec {lock_fd}>&-
+            return 0
+        fi
+    done
+
+    exec {lock_fd}>&-
+    return 1
 }
 
 # --- Connection Management ---
