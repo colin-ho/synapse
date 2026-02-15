@@ -1,8 +1,11 @@
 use std::io::Write;
+use std::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use assert_cmd::Command;
+
+static SOCKET_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_cli_help() {
@@ -166,4 +169,39 @@ fn test_weights_normalization() {
         + normalized.recency;
     assert!((sum - 1.0).abs() < 0.001);
     assert!((normalized.history - 0.2).abs() < 0.001);
+}
+
+#[test]
+fn test_socket_path_env_override() {
+    let _guard = SOCKET_ENV_LOCK.lock().unwrap();
+    unsafe { std::env::set_var("SYNAPSE_SOCKET", "/tmp/test-override.sock") };
+    let config = synapse::config::Config::default();
+    assert_eq!(
+        config.socket_path(),
+        std::path::PathBuf::from("/tmp/test-override.sock")
+    );
+    assert_eq!(
+        config.pid_path(),
+        std::path::PathBuf::from("/tmp/test-override.pid")
+    );
+    unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
+}
+
+#[test]
+fn test_socket_path_env_empty_ignored() {
+    let _guard = SOCKET_ENV_LOCK.lock().unwrap();
+    unsafe { std::env::set_var("SYNAPSE_SOCKET", "") };
+    let config = synapse::config::Config::default();
+    // Should fall through to default, not use empty string
+    assert_ne!(config.socket_path(), std::path::PathBuf::from(""));
+    unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
+}
+
+#[test]
+fn test_cli_socket_path_flag() {
+    Command::cargo_bin("synapse")
+        .unwrap()
+        .args(["daemon", "status", "--socket-path", "/tmp/nonexistent.sock"])
+        .assert()
+        .success();
 }

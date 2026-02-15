@@ -225,7 +225,20 @@ impl Config {
         Config::default()
     }
 
+    pub fn with_socket_override(mut self, path: Option<PathBuf>) -> Self {
+        if let Some(p) = path {
+            self.general.socket_path = Some(p.to_string_lossy().into_owned());
+        }
+        self
+    }
+
     pub fn socket_path(&self) -> PathBuf {
+        if let Ok(path) = std::env::var("SYNAPSE_SOCKET") {
+            if !path.is_empty() {
+                return PathBuf::from(path);
+            }
+        }
+
         if let Some(ref path) = self.general.socket_path {
             return PathBuf::from(path);
         }

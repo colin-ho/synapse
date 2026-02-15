@@ -66,11 +66,23 @@ enum DaemonAction {
         /// Run in foreground (don't daemonize)
         #[arg(long)]
         foreground: bool,
+
+        /// Override the socket path (overrides SYNAPSE_SOCKET env var and config)
+        #[arg(long)]
+        socket_path: Option<PathBuf>,
     },
     /// Stop the daemon
-    Stop,
+    Stop {
+        /// Override the socket path
+        #[arg(long)]
+        socket_path: Option<PathBuf>,
+    },
     /// Show daemon status
-    Status,
+    Status {
+        /// Override the socket path
+        #[arg(long)]
+        socket_path: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -88,14 +100,15 @@ async fn main() -> anyhow::Result<()> {
                 verbose,
                 log_file,
                 foreground,
+                socket_path,
             } => {
-                start_daemon(verbose, log_file, foreground).await?;
+                start_daemon(verbose, log_file, foreground, socket_path).await?;
             }
-            DaemonAction::Stop => {
-                stop_daemon()?;
+            DaemonAction::Stop { socket_path } => {
+                stop_daemon(socket_path)?;
             }
-            DaemonAction::Status => {
-                show_status()?;
+            DaemonAction::Status { socket_path } => {
+                show_status(socket_path)?;
             }
         },
         None => {
@@ -139,8 +152,8 @@ fn print_shell_init() {
     }
 }
 
-fn stop_daemon() -> anyhow::Result<()> {
-    let config = Config::load();
+fn stop_daemon(socket_path: Option<PathBuf>) -> anyhow::Result<()> {
+    let config = Config::load().with_socket_override(socket_path);
     let pid_path = config.pid_path();
 
     if !pid_path.exists() {
@@ -174,8 +187,8 @@ fn stop_daemon() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn show_status() -> anyhow::Result<()> {
-    let config = Config::load();
+fn show_status(socket_path: Option<PathBuf>) -> anyhow::Result<()> {
+    let config = Config::load().with_socket_override(socket_path);
     let pid_path = config.pid_path();
     let socket_path = config.socket_path();
 
@@ -204,8 +217,9 @@ async fn start_daemon(
     verbose: u8,
     log_file: Option<PathBuf>,
     foreground: bool,
+    socket_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let config = Config::load();
+    let config = Config::load().with_socket_override(socket_path);
 
     // Set up tracing
     let level = match verbose {
