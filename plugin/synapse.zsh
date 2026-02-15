@@ -2,8 +2,14 @@
 # Synapse — Intelligent Zsh command suggestions via ghost text
 # Source this file in your .zshrc or use: source $(synapse --shell-init)
 
-# Guard against double-sourcing
-[[ -n "$_SYNAPSE_LOADED" ]] && return
+# Guard against double-sourcing (dev reload bypasses this)
+if [[ -n "$_SYNAPSE_LOADED" ]]; then
+    if [[ -n "$_SYNAPSE_DEV_RELOAD" ]]; then
+        _synapse_cleanup 2>/dev/null
+    else
+        return
+    fi
+fi
 _SYNAPSE_LOADED=1
 
 # --- Configuration ---
@@ -43,6 +49,11 @@ _synapse_generate_session_id() {
 
 # Find the daemon binary
 _synapse_find_binary() {
+    # Allow explicit override via env var
+    if [[ -n "$SYNAPSE_BIN" ]] && [[ -x "$SYNAPSE_BIN" ]]; then
+        echo "$SYNAPSE_BIN"
+        return 0
+    fi
     local bin
     # Check common locations
     for bin in \
@@ -56,7 +67,9 @@ _synapse_find_binary() {
 
 # Get socket path (mirrors Rust logic)
 _synapse_socket_path() {
-    if [[ -n "$XDG_RUNTIME_DIR" ]]; then
+    if [[ -n "$SYNAPSE_SOCKET" ]]; then
+        echo "$SYNAPSE_SOCKET"
+    elif [[ -n "$XDG_RUNTIME_DIR" ]]; then
         echo "${XDG_RUNTIME_DIR}/synapse.sock"
     else
         echo "/tmp/synapse-$(id -u).sock"
@@ -780,6 +793,18 @@ _synapse_preexec() {
     _synapse_clear_suggestion
 }
 
+# --- Cleanup (for dev reload) ---
+
+_synapse_cleanup() {
+    _synapse_disconnect
+    _synapse_clear_dropdown
+    _synapse_clear_suggestion
+    add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
+    add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
+    bindkey -D synapse-dropdown &>/dev/null
+    unset _SYNAPSE_LOADED
+}
+
 # --- Setup ---
 
 _synapse_init() {
@@ -801,7 +826,9 @@ _synapse_init() {
     zle -N synapse-dropdown-close-and-insert _synapse_dropdown_close_and_insert
 
     # Create dropdown keymap (based on main, with overrides)
-    bindkey -N synapse-dropdown main
+    # Delete and recreate to pick up any main keymap changes on reload
+    bindkey -D synapse-dropdown &>/dev/null
+    bindkey -N synapse-dropdown main &>/dev/null
     bindkey -M synapse-dropdown '^[[B' synapse-dropdown-down     # Down arrow (normal)
     bindkey -M synapse-dropdown '^[OB' synapse-dropdown-down     # Down arrow (application)
     bindkey -M synapse-dropdown '^[[A' synapse-dropdown-up       # Up arrow (normal)
@@ -815,7 +842,7 @@ _synapse_init() {
     # In dropdown keymap, any normal character closes dropdown and inserts
     local key
     for key in {a..z} {A..Z} {0..9} ' ' '/' '.' '-' '_' '~'; do
-        bindkey -M synapse-dropdown "$key" synapse-dropdown-close-and-insert
+        bindkey -M synapse-dropdown -- "$key" synapse-dropdown-close-and-insert
     done
 
     # Main keymap bindings
