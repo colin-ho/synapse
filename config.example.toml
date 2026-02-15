@@ -30,11 +30,19 @@ fallback_to_local = true                # if API fails, skip AI layer silently
 rate_limit_rpm = 30                     # max API requests per minute
 max_concurrent_requests = 2             # max in-flight API requests
 
+[spec]
+enabled = true
+auto_generate = true                   # auto-generate specs from project files
+generator_timeout_ms = 500             # max time for generator commands
+max_list_results = 10                  # max items in dropdown list
+trust_project_generators = false       # allow .synapse/specs/ generators to run shell commands
+
 [weights]
 # Weights are normalized to sum to 1.0
-history = 0.35
-context = 0.2
-ai = 0.3
+history = 0.30
+context = 0.15
+ai = 0.25
+spec = 0.15
 recency = 0.15
 
 [security]

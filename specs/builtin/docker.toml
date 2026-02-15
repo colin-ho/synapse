@@ -1,0 +1,311 @@
+name = "docker"
+version_command = "docker --version"
+description = "Container runtime"
+
+[[subcommands]]
+name = "build"
+description = "Build an image from a Dockerfile"
+
+  [[subcommands.options]]
+  short = "-t"
+  long = "--tag"
+  takes_arg = true
+  description = "Name and optionally a tag (name:tag)"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--file"
+  takes_arg = true
+  description = "Name of the Dockerfile"
+
+  [[subcommands.options]]
+  long = "--no-cache"
+  description = "Do not use cache when building"
+
+  [[subcommands.options]]
+  long = "--target"
+  takes_arg = true
+  description = "Set the target build stage"
+
+  [[subcommands.options]]
+  long = "--platform"
+  takes_arg = true
+  description = "Set platform for build"
+
+  [[subcommands.options]]
+  long = "--build-arg"
+  takes_arg = true
+  description = "Set build-time variables"
+
+[[subcommands]]
+name = "run"
+description = "Create and run a new container"
+
+  [[subcommands.options]]
+  short = "-d"
+  long = "--detach"
+  description = "Run container in background"
+
+  [[subcommands.options]]
+  short = "-it"
+  description = "Interactive terminal"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--publish"
+  takes_arg = true
+  description = "Publish port (host:container)"
+
+  [[subcommands.options]]
+  short = "-v"
+  long = "--volume"
+  takes_arg = true
+  description = "Bind mount a volume"
+
+  [[subcommands.options]]
+  long = "--name"
+  takes_arg = true
+  description = "Assign a name to the container"
+
+  [[subcommands.options]]
+  short = "-e"
+  long = "--env"
+  takes_arg = true
+  description = "Set environment variables"
+
+  [[subcommands.options]]
+  long = "--rm"
+  description = "Automatically remove container when it exits"
+
+  [[subcommands.options]]
+  short = "-w"
+  long = "--workdir"
+  takes_arg = true
+  description = "Working directory inside the container"
+
+  [[subcommands.args]]
+  name = "image"
+  [subcommands.args.generator]
+  command = "docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "exec"
+description = "Execute a command in a running container"
+
+  [[subcommands.options]]
+  short = "-it"
+  description = "Interactive terminal"
+
+  [[subcommands.options]]
+  short = "-d"
+  long = "--detach"
+  description = "Run in background"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "ps"
+description = "List containers"
+
+  [[subcommands.options]]
+  short = "-a"
+  long = "--all"
+  description = "Show all containers"
+
+  [[subcommands.options]]
+  short = "-q"
+  long = "--quiet"
+  description = "Only display container IDs"
+
+[[subcommands]]
+name = "images"
+description = "List images"
+
+  [[subcommands.options]]
+  short = "-a"
+  long = "--all"
+  description = "Show all images"
+
+  [[subcommands.options]]
+  short = "-q"
+  long = "--quiet"
+  description = "Only show image IDs"
+
+[[subcommands]]
+name = "pull"
+description = "Download an image from a registry"
+
+[[subcommands]]
+name = "push"
+description = "Upload an image to a registry"
+
+[[subcommands]]
+name = "stop"
+description = "Stop running containers"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "rm"
+description = "Remove containers"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--force"
+  description = "Force removal"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps -a --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "rmi"
+description = "Remove images"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--force"
+  description = "Force removal"
+
+  [[subcommands.args]]
+  name = "image"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "logs"
+description = "Fetch the logs of a container"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--follow"
+  description = "Follow log output"
+
+  [[subcommands.options]]
+  long = "--tail"
+  takes_arg = true
+  description = "Number of lines to show from end"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "compose"
+description = "Docker Compose commands"
+
+  [[subcommands.subcommands]]
+  name = "up"
+  description = "Create and start containers"
+
+    [[subcommands.subcommands.options]]
+    short = "-d"
+    long = "--detach"
+    description = "Run in background"
+
+    [[subcommands.subcommands.options]]
+    long = "--build"
+    description = "Build images before starting"
+
+  [[subcommands.subcommands]]
+  name = "down"
+  description = "Stop and remove containers"
+
+    [[subcommands.subcommands.options]]
+    short = "-v"
+    long = "--volumes"
+    description = "Remove named volumes"
+
+  [[subcommands.subcommands]]
+  name = "logs"
+  description = "View container logs"
+
+    [[subcommands.subcommands.options]]
+    short = "-f"
+    long = "--follow"
+    description = "Follow log output"
+
+  [[subcommands.subcommands]]
+  name = "build"
+  description = "Build or rebuild services"
+
+    [[subcommands.subcommands.options]]
+    long = "--no-cache"
+    description = "Do not use cache"
+
+  [[subcommands.subcommands]]
+  name = "ps"
+  description = "List containers"
+
+  [[subcommands.subcommands]]
+  name = "exec"
+  description = "Execute a command in a running container"
+
+  [[subcommands.subcommands]]
+  name = "restart"
+  description = "Restart services"
+
+  [[subcommands.subcommands]]
+  name = "pull"
+  description = "Pull service images"
+
+[[subcommands]]
+name = "network"
+description = "Manage networks"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List networks"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a network"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove networks"
+
+  [[subcommands.subcommands]]
+  name = "inspect"
+  description = "Inspect a network"
+
+[[subcommands]]
+name = "volume"
+description = "Manage volumes"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List volumes"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a volume"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove volumes"
+
+  [[subcommands.subcommands]]
+  name = "inspect"
+  description = "Inspect a volume"
+
+  [[subcommands.subcommands]]
+  name = "prune"
+  description = "Remove unused volumes"

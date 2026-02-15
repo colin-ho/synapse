@@ -1,0 +1,149 @@
+name = "npm"
+version_command = "npm --version"
+description = "Node.js package manager"
+
+[[subcommands]]
+name = "run"
+aliases = ["run-script"]
+description = "Run a script defined in package.json"
+
+  [[subcommands.args]]
+  name = "script"
+  [subcommands.args.generator]
+  command = "node -e \"try{const p=require('./package.json');Object.keys(p.scripts||{}).forEach(s=>console.log(s))}catch(e){}\""
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "install"
+aliases = ["i", "add"]
+description = "Install a package"
+
+  [[subcommands.options]]
+  long = "--save-dev"
+  short = "-D"
+  description = "Save as devDependency"
+
+  [[subcommands.options]]
+  long = "--save-exact"
+  short = "-E"
+  description = "Save exact version"
+
+  [[subcommands.options]]
+  long = "--global"
+  short = "-g"
+  description = "Install globally"
+
+  [[subcommands.options]]
+  long = "--legacy-peer-deps"
+  description = "Ignore peer dependency conflicts"
+
+[[subcommands]]
+name = "uninstall"
+aliases = ["remove", "rm", "un"]
+description = "Remove a package"
+
+  [[subcommands.options]]
+  long = "--save-dev"
+  short = "-D"
+  description = "Remove from devDependencies"
+
+[[subcommands]]
+name = "test"
+aliases = ["t"]
+description = "Run the test script"
+
+[[subcommands]]
+name = "start"
+description = "Run the start script"
+
+[[subcommands]]
+name = "init"
+description = "Create a package.json"
+
+  [[subcommands.options]]
+  short = "-y"
+  long = "--yes"
+  description = "Accept all defaults"
+
+[[subcommands]]
+name = "publish"
+description = "Publish a package"
+
+  [[subcommands.options]]
+  long = "--access"
+  takes_arg = true
+  description = "Set access level (public/restricted)"
+
+  [[subcommands.options]]
+  long = "--tag"
+  takes_arg = true
+  description = "Publish with a given tag"
+
+  [[subcommands.options]]
+  long = "--dry-run"
+  description = "Do everything except publish"
+
+[[subcommands]]
+name = "exec"
+aliases = ["x"]
+description = "Run a command from a local or remote npm package"
+
+[[subcommands]]
+name = "ci"
+description = "Clean install from package-lock.json"
+
+[[subcommands]]
+name = "outdated"
+description = "Check for outdated packages"
+
+[[subcommands]]
+name = "update"
+aliases = ["up"]
+description = "Update packages"
+
+[[subcommands]]
+name = "audit"
+description = "Run a security audit"
+
+  [[subcommands.options]]
+  long = "--fix"
+  description = "Automatically fix vulnerabilities"
+
+[[subcommands]]
+name = "cache"
+description = "Manage the npm cache"
+
+  [[subcommands.subcommands]]
+  name = "clean"
+  description = "Clean the cache"
+
+    [[subcommands.subcommands.options]]
+    long = "--force"
+    description = "Force clean"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List cache contents"
+
+  [[subcommands.subcommands]]
+  name = "verify"
+  description = "Verify cache integrity"
+
+[[subcommands]]
+name = "ls"
+aliases = ["list"]
+description = "List installed packages"
+
+  [[subcommands.options]]
+  long = "--all"
+  description = "Show all packages"
+
+  [[subcommands.options]]
+  long = "--depth"
+  takes_arg = true
+  description = "Dependency depth"
+
+  [[subcommands.options]]
+  short = "-g"
+  long = "--global"
+  description = "List global packages"

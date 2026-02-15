@@ -8,6 +8,7 @@ pub struct Config {
     pub history: HistoryConfig,
     pub context: ContextConfig,
     pub ai: AiConfig,
+    pub spec: SpecConfig,
     pub weights: WeightsConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
@@ -56,10 +57,24 @@ pub struct AiConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+pub struct SpecConfig {
+    pub enabled: bool,
+    pub auto_generate: bool,
+    pub generator_timeout_ms: u64,
+    pub max_list_results: usize,
+    /// Whether to run generator commands from project-level specs (.synapse/specs/).
+    /// Disabled by default for security: a malicious repo could include specs with
+    /// arbitrary shell commands that execute during completion.
+    pub trust_project_generators: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct WeightsConfig {
     pub history: f64,
     pub context: f64,
     pub ai: f64,
+    pub spec: f64,
     pub recency: f64,
 }
 
@@ -87,6 +102,7 @@ impl Default for Config {
             history: HistoryConfig::default(),
             context: ContextConfig::default(),
             ai: AiConfig::default(),
+            spec: SpecConfig::default(),
             weights: WeightsConfig::default(),
             security: SecurityConfig::default(),
             logging: LoggingConfig::default(),
@@ -143,12 +159,25 @@ impl Default for AiConfig {
     }
 }
 
+impl Default for SpecConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_generate: true,
+            generator_timeout_ms: 500,
+            max_list_results: 10,
+            trust_project_generators: false,
+        }
+    }
+}
+
 impl Default for WeightsConfig {
     fn default() -> Self {
         Self {
-            history: 0.35,
-            context: 0.2,
-            ai: 0.3,
+            history: 0.30,
+            context: 0.15,
+            ai: 0.25,
+            spec: 0.15,
             recency: 0.15,
         }
     }
@@ -242,7 +271,7 @@ impl Config {
 
 impl WeightsConfig {
     pub fn normalized(&self) -> WeightsConfig {
-        let sum = self.history + self.context + self.ai + self.recency;
+        let sum = self.history + self.context + self.ai + self.spec + self.recency;
         if sum == 0.0 {
             return WeightsConfig::default();
         }
@@ -250,6 +279,7 @@ impl WeightsConfig {
             history: self.history / sum,
             context: self.context / sum,
             ai: self.ai / sum,
+            spec: self.spec / sum,
             recency: self.recency / sum,
         }
     }

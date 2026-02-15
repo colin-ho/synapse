@@ -6,7 +6,7 @@ use moka::future::Cache;
 use tokio::sync::RwLock;
 
 use crate::config::ContextConfig;
-use crate::protocol::{SuggestRequest, SuggestionSource};
+use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderSuggestion, SuggestionProvider};
 
 #[derive(Debug, Clone)]
@@ -155,6 +155,8 @@ impl SuggestionProvider for ContextProvider {
             text: cmd.command.clone(),
             source: SuggestionSource::Context,
             score,
+            description: None,
+            kind: SuggestionKind::Command,
         })
     }
 
@@ -164,6 +166,37 @@ impl SuggestionProvider for ContextProvider {
 
     fn is_available(&self) -> bool {
         self.config.enabled
+    }
+
+    async fn suggest_multi(
+        &self,
+        request: &SuggestRequest,
+        max: usize,
+    ) -> Vec<ProviderSuggestion> {
+        if request.buffer.is_empty() {
+            return Vec::new();
+        }
+
+        let cwd = Path::new(&request.cwd);
+        let ctx = self.get_context(cwd).await;
+        let buffer = &request.buffer;
+
+        let mut results: Vec<ProviderSuggestion> = ctx
+            .commands
+            .iter()
+            .filter(|cmd| cmd.command.starts_with(buffer) && cmd.command.len() > buffer.len())
+            .map(|cmd| ProviderSuggestion {
+                text: cmd.command.clone(),
+                source: SuggestionSource::Context,
+                score: cmd.relevance,
+                description: None,
+                kind: SuggestionKind::Command,
+            })
+            .collect();
+
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(max);
+        results
     }
 }
 

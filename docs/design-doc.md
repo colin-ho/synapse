@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Synapse** is a Zsh plugin that provides intelligent, real-time command suggestions by combining shell history, contextual project awareness, and AI-powered completions. It displays a single ghost-text suggestion inline as the user types, similar to zsh-autosuggestions but significantly smarter.
+**Synapse** is a Zsh plugin that provides intelligent, real-time command suggestions by combining shell history, contextual project awareness, spec-based CLI completions, and AI-powered suggestions. It offers two interaction modes: inline ghost text as the user types, and an on-demand dropdown menu showing multiple ranked suggestions.
 
 The goal is to reduce the cognitive load of remembering exact commands, flags, and workflows — especially across different project types and tools.
 
@@ -11,19 +11,19 @@ The goal is to reduce the cognitive load of remembering exact commands, flags, a
 ## Goals & Non-Goals
 
 ### Goals
-- Provide fast (<50ms p95) suggestions for the common case (history + context)
+- Provide fast (<50ms p95) suggestions for the common case (history + context + spec)
 - Gracefully augment with AI suggestions when simpler strategies lack confidence
 - Be project-aware: understand git state, package managers, Makefiles, Docker, etc.
-- Feel seamless — no UI beyond ghost text; no popups, no menus
-- Work offline (history + context layers function without network)
+- Offer structured CLI completions via a spec system (subcommands, options, arguments)
+- Provide both inline ghost text and an optional dropdown menu for exploring multiple suggestions
+- Work offline (history + context + spec layers function without network)
 - Be easy to install and configure
 
 ### Non-Goals
 - Full shell replacement (this is a plugin, not a new terminal)
 - IDE-level code intelligence (we're completing commands, not source code)
 - Windows support (Zsh is Unix-only; targeting macOS and Linux)
-- Multiple suggestion dropdown/menu (single ghost-text suggestion only for v1)
-- Plugin ecosystem for custom context providers (may revisit post-v1)
+- Plugin ecosystem for custom context providers (may revisit later)
 
 ---
 
@@ -51,24 +51,23 @@ The goal is to reduce the cognitive load of remembering exact commands, flags, a
 │  ┌────────────────────────────────────────────┐   │
 │  │           Suggestion Pipeline              │   │
 │  │                                            │   │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐ │   │
-│  │  │ History  │  │ Context  │  │    AI    │ │   │
-│  │  │ (fast)   │  │ (medium) │  │ (slow)   │ │   │
-│  │  │ <5ms     │  │ <20ms    │  │ <500ms   │ │   │
-│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘ │   │
-│  │       │              │              │       │   │
-│  │       └──────────────┼──────────────┘       │   │
-│  │                      ▼                      │   │
-│  │               Ranking / Merge               │   │
-│  │                      │                      │   │
-│  └──────────────────────┼──────────────────────┘   │
-│                         ▼                          │
-│  ┌──────────────────────────────────────────────┐  │
-│  │          Interaction Logger                   │  │
-│  │  (records suggest / accept / dismiss / ignore)│  │
-│  └──────────────────────────────────────────────┘  │
-│                                                    │
-│                 Best suggestion                    │
+│  │  ┌────────┐ ┌────────┐ ┌──────┐ ┌──────┐  │   │
+│  │  │History │ │Context │ │ Spec │ │  AI  │  │   │
+│  │  │ <5ms   │ │ <20ms  │ │<10ms │ │<500ms│  │   │
+│  │  └───┬────┘ └───┬────┘ └──┬───┘ └──┬───┘  │   │
+│  │      │          │         │        │       │   │
+│  │      └──────────┼─────────┼────────┘       │   │
+│  │                 ▼         ▼                │   │
+│  │           Ranking / Merge / Dedup          │   │
+│  │                    │                       │   │
+│  └────────────────────┼──────────────────────┘   │
+│                       ▼                          │
+│  ┌──────────────────────────────────────────┐    │
+│  │        Interaction Logger                 │    │
+│  │  (records accept / dismiss / ignore)      │    │
+│  └──────────────────────────────────────────┘    │
+│                                                   │
+│          Best suggestion / Suggestion list        │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -84,7 +83,7 @@ They communicate over a **Unix domain socket** at `$XDG_RUNTIME_DIR/synapse.sock
 The daemon serves all terminal sessions from one process. Each connection is tracked with a session ID assigned on connect.
 
 **Pros:**
-- Shared history index and context caches across sessions — lower total memory
+- Shared history index, context caches, and spec store across sessions — lower total memory
 - AI rate limiting is centralized — one token bucket for all sessions
 - Single process to manage (start/stop/monitor)
 - Cross-session learning: a command run in session A immediately improves suggestions in session B
@@ -120,7 +119,8 @@ If the daemon crashes or is unreachable:
 **Responsibilities:**
 - Hook into `zle` to capture the input buffer on every keypress
 - Send a request to the daemon with the current context (including a session ID)
-- Render the returned suggestion as dimmed ghost text after the cursor
+- Render the returned suggestion as dimmed ghost text after the cursor (inline mode)
+- Render a dropdown menu of multiple suggestions on demand (dropdown mode)
 - Accept suggestion on right arrow / end-of-line; partial accept on `Ctrl+Right` (word-by-word)
 - Start the daemon automatically if it's not running (with lock file coordination)
 - Report user interactions back to the daemon (accept, dismiss, ignore)
@@ -134,10 +134,21 @@ Zsh's `zle` is synchronous by default — widgets run to completion before the e
 3. When the daemon pushes an update, Zsh invokes `_synapse_async_handler` during the next editor idle cycle
 4. The handler reads the update, replaces the ghost text via `POSTDISPLAY`, and triggers a redraw with `zle -R`
 
-This is the same mechanism used by `zsh-async` and other production Zsh plugins. Key considerations:
+Key considerations:
 - `zle -F` only fires when `zle` is active (user is at the prompt). This is fine — we only show suggestions while the user is typing.
 - The fd must be non-blocking (`zmodload zsh/system; sysopen -o nonblock`) to avoid hanging the shell.
-- If `zle -F` proves unreliable on a specific terminal emulator, the fallback is synchronous-only mode: the widget waits up to 50ms for a response and shows whatever it gets (history/context only, no AI upgrades).
+- Async updates are suppressed while the dropdown is open to avoid visual disruption.
+
+**Dropdown Menu:**
+
+The dropdown is triggered by pressing `Down Arrow` and rendered below the command line using `POSTDISPLAY` with `region_highlight` for styling:
+
+- Items are displayed as a scrollable list (max 8 visible at a time)
+- The selected item is highlighted with `standout`, unselected items are dimmed
+- A status line at the bottom shows the current position (e.g., `[3/12]`) and source of the selected suggestion
+- Navigation uses a dedicated `synapse-dropdown` keymap entered via `recursive-edit`, providing modal key handling without interfering with normal Zsh editing
+- When an item is accepted, its text replaces the current buffer
+- Typing any alphanumeric character while the dropdown is open inserts the character and dismisses the dropdown
 
 **Context payload sent to daemon (JSON):**
 
@@ -170,12 +181,24 @@ Actions:
 - **ignore**: user continued typing something different than the suggestion
 
 **Keybindings:**
+
 | Key | Action |
 |---|---|
 | `→` (Right arrow) | Accept full suggestion |
 | `Ctrl+→` | Accept next word |
 | `Tab` | Accept full suggestion (configurable) |
 | `Esc` | Dismiss suggestion |
+| `↓` (Down arrow) | Open dropdown menu |
+
+**Dropdown keybindings (while dropdown is open):**
+
+| Key | Action |
+|---|---|
+| `↓` (Down arrow) | Move selection down (wraps) |
+| `↑` (Up arrow) | Move selection up (wraps) |
+| `Enter` / `Tab` / `→` | Accept selected suggestion |
+| `Esc` | Dismiss dropdown |
+| Any letter/digit | Insert character, dismiss dropdown |
 
 ### 2. Daemon (`src/`)
 
@@ -184,9 +207,10 @@ The daemon is a single Rust binary that runs in the background. It manages the s
 #### 2a. History Provider
 
 - Parses `~/.zsh_history` (or `$HISTFILE`) on startup and watches for changes
-- Builds a trie or prefix index for fast lookup
+- Builds a BTreeMap prefix index for fast lookup
 - Uses fuzzy matching (substring + Levenshtein) when prefix match fails
 - Ranks by recency and frequency (weighted combination)
+- Supports `suggest_multi()` for returning top-N matches to the dropdown
 - **Target latency:** <5ms
 
 #### 2b. Context Provider
@@ -196,22 +220,79 @@ Gathers project-level signals to suggest commands relevant to the current enviro
 | Signal | What it provides |
 |---|---|
 | `Makefile` | `make` targets |
-| `package.json` | `npm run` / `yarn` / `pnpm` scripts |
+| `package.json` | `npm run` / `yarn` / `pnpm` / `bun` scripts |
 | `Cargo.toml` | `cargo` subcommands |
 | `pyproject.toml` / `setup.py` | Python tooling commands |
 | `docker-compose.yml` | `docker compose` services |
+| `Justfile` | `just` recipes |
 | `.git/` | Branch names, recent refs, common git workflows |
-| `Procfile` / `Justfile` | Task runner targets |
-| `.env` files | Awareness of environment variables (keys only — values are never read) |
-| Executable scan | Commands available in `$PATH` and local `./node_modules/.bin`, `.venv/bin`, etc. |
 
 **Directory scanning:** The context provider walks up from the cwd toward the filesystem root, stopping at the git root (if inside a repo) or after `scan_depth` levels (configurable, default 3). This handles monorepos where the user may be deeply nested.
 
-**File change detection:** Uses OS-native file watching — `kqueue` on macOS, `inotify` on Linux — via the `notify` crate. The daemon registers watches on detected project files and their parent directories. When a file changes, the cache for that directory subtree is invalidated. No polling.
+**Caching:** Context is cached per-cwd with a 5-minute TTL via `moka::future::Cache`.
 
 **Target latency:** <20ms
 
-#### 2c. AI Provider
+#### 2c. Spec Provider
+
+The spec provider offers structured CLI completions inspired by [Fig's autocomplete specs](https://fig.io/docs/getting-started). Each CLI tool can have a **spec** that defines its subcommand tree, options, arguments, and dynamic generators.
+
+**Spec format (TOML):**
+
+```toml
+name = "git"
+description = "The fast distributed version control system"
+
+[[subcommands]]
+name = "commit"
+description = "Record changes to the repository"
+
+  [[subcommands.options]]
+  short = "-m"
+  long = "--message"
+  takes_arg = true
+  description = "Commit message"
+
+  [[subcommands.options]]
+  long = "--amend"
+  description = "Amend previous commit"
+
+[[subcommands]]
+name = "checkout"
+aliases = ["co"]
+description = "Switch branches or restore working tree files"
+
+  [[subcommands.args]]
+  name = "branch"
+  [subcommands.args.generator]
+  command = "git branch --no-color 2>/dev/null"
+  strip_prefix = "* "
+  cache_ttl_secs = 10
+```
+
+**Spec resolution (3-tier priority):**
+
+1. **Project user specs** (`.synapse/specs/*.toml` in project root) — highest priority, user-defined overrides
+2. **Project auto-generated specs** — generated at runtime by scanning project files (Makefile targets, package.json scripts, Cargo.toml, docker-compose services, Justfile recipes)
+3. **Built-in specs** — embedded in the binary via `include_str!` for common tools (git, cargo, npm, docker)
+
+**Completion algorithm:**
+
+1. Tokenize the input buffer (respecting quotes and escaping)
+2. Look up the root command spec by name or alias
+3. Walk the spec tree, consuming complete tokens to resolve the current subcommand context
+4. Generate completions for the partial token: matching subcommands, options (when prefix starts with `-`), and arguments (static suggestions, generators, templates)
+5. Score completions by prefix-match similarity
+
+**Generators:** Shell commands executed via `tokio::process::Command` with configurable timeout. Results are cached in `moka::future::Cache` with per-generator TTL (default 30s). Generators run in the project root directory.
+
+**Argument templates:** Common argument types (`file_paths`, `directories`, `env_vars`, `history`) that delegate to the shell or other providers.
+
+**Built-in specs:** git (20+ subcommands with options and branch/remote/tag generators), cargo, npm, docker (including `docker compose` with service name extraction).
+
+**Target latency:** <10ms (cached spec lookup + tree walk)
+
+#### 2d. AI Provider
 
 - Calls an LLM for intelligent suggestions when the other providers lack confidence
 - Supports multiple backends via a provider trait:
@@ -228,7 +309,7 @@ Gathers project-level signals to suggest commands relevant to the current enviro
 - Max concurrent requests: `max_concurrent_requests` (default: 2)
 - If the bucket is empty, the AI provider is silently skipped for that suggestion cycle
 
-**Target latency:** <500ms (but non-blocking; user sees history/context suggestion first)
+**Target latency:** <500ms (but non-blocking; user sees history/context/spec suggestion first)
 
 **Example prompt sent to LLM:**
 
@@ -246,7 +327,9 @@ Current input: "git push ori"
 
 Note: multi-line commands are never suggested. If the LLM returns multiple lines, only the first line is used.
 
-#### 2d. Ranking & Merge
+#### 2e. Ranking & Merge
+
+**Single suggestion (inline ghost text):**
 
 When multiple providers return suggestions, they are ranked by a weighted score:
 
@@ -254,16 +337,22 @@ When multiple providers return suggestions, they are ranked by a weighted score:
 score = (w_history × history_score)
       + (w_context × context_score)
       + (w_ai × ai_score)
+      + (w_spec × spec_score)
       + (w_recency × recency_bonus)
 ```
 
 Default weights (configurable, normalized to sum to 1.0):
-- `w_history`: 0.35
-- `w_context`: 0.2
-- `w_ai`: 0.3
+- `w_history`: 0.30
+- `w_context`: 0.15
+- `w_ai`: 0.25
+- `w_spec`: 0.15
 - `w_recency`: 0.15
 
 If the AI suggestion arrives after the initial response has been sent, and it scores higher, the daemon pushes an **update** over the socket to replace the displayed suggestion.
+
+**Multiple suggestions (dropdown list):**
+
+The `rank_multi()` function collects suggestions from all providers via `suggest_multi()`, applies per-source weights, deduplicates by text (keeping the highest-scoring entry), sorts by final score, and truncates to `max_list_results` (default 10). Each suggestion carries metadata: `text`, `source`, `confidence`, `description`, and `kind` (command, subcommand, option, argument, file, history).
 
 ---
 
@@ -302,13 +391,13 @@ The scrubbing blocklist is configurable in `config.toml` under `[security]`.
 
 Messages over the Unix socket use newline-delimited JSON.
 
-**Request (Zsh → Daemon):**
+**Suggest request (Zsh → Daemon):**
 
 ```json
 {"type": "suggest", "session_id": "a1b2c3", "buffer": "docker com", "cursor_pos": 10, "cwd": "/app", "last_exit_code": 0, "recent_commands": ["git status", "docker ps"], "env_hints": {"NODE_ENV": "development"}}
 ```
 
-**Response (Daemon → Zsh):**
+**Suggestion response (Daemon → Zsh):**
 
 ```json
 {"type": "suggestion", "text": "docker compose up -d", "source": "history", "confidence": 0.92}
@@ -318,6 +407,22 @@ Messages over the Unix socket use newline-delimited JSON.
 
 ```json
 {"type": "update", "text": "docker compose up --build -d", "source": "ai", "confidence": 0.95}
+```
+
+**List suggestions request (Zsh → Daemon):**
+
+```json
+{"type": "list_suggestions", "session_id": "a1b2c3", "buffer": "git co", "cursor_pos": 6, "cwd": "/app", "max_results": 10}
+```
+
+**Suggestion list response (Daemon → Zsh):**
+
+```json
+{"type": "suggestion_list", "suggestions": [
+  {"text": "git commit", "source": "spec", "confidence": 0.92, "description": "Record changes to the repository", "kind": "subcommand"},
+  {"text": "git checkout", "source": "spec", "confidence": 0.88, "description": "Switch branches or restore working tree files", "kind": "subcommand"},
+  {"text": "git commit --amend", "source": "history", "confidence": 0.75, "kind": "history"}
+]}
 ```
 
 **Interaction feedback (Zsh → Daemon):**
@@ -334,6 +439,10 @@ Messages over the Unix socket use newline-delimited JSON.
 {"type": "reload_config"}
 {"type": "clear_cache"}
 ```
+
+**Suggestion sources:** `history`, `context`, `ai`, `spec`
+
+**Suggestion kinds:** `command`, `subcommand`, `option`, `argument`, `file`, `history`
 
 ---
 
@@ -371,10 +480,18 @@ fallback_to_local = true                # if API fails, skip AI layer
 rate_limit_rpm = 30                     # max API requests per minute
 max_concurrent_requests = 2             # max in-flight API requests
 
+[spec]
+enabled = true
+auto_generate = true                    # auto-generate specs from project files
+generator_timeout_ms = 500              # max time for generator commands
+max_list_results = 10                   # max items in dropdown list
+
 [weights]
-history = 0.35
-context = 0.2
-ai = 0.3
+# Weights are normalized to sum to 1.0
+history = 0.30
+context = 0.15
+ai = 0.25
+spec = 0.15
 recency = 0.15
 
 [security]
@@ -447,70 +564,44 @@ synapse daemon status
 ```
 synapse/
 ├── plugin/
-│   └── synapse.zsh                  # Zsh widget and keybindings
+│   └── synapse.zsh                  # Zsh widget, keybindings, dropdown UI
+├── specs/
+│   └── builtin/                     # Embedded CLI specs (compiled into binary)
+│       ├── git.toml
+│       ├── cargo.toml
+│       ├── npm.toml
+│       └── docker.toml
 ├── src/
 │   ├── main.rs                      # Daemon entrypoint, socket server, CLI
+│   ├── lib.rs                       # Library root (module exports)
 │   ├── config.rs                    # Config parsing
 │   ├── protocol.rs                  # JSON message types
 │   ├── session.rs                   # Per-session state management
 │   ├── security.rs                  # Input scrubbing for external APIs
 │   ├── logging.rs                   # Interaction logger (append-only JSONL)
-│   ├── providers/
-│   │   ├── mod.rs                   # Provider trait definition
-│   │   ├── history.rs               # History-based suggestions
-│   │   ├── context.rs               # Project/environment context
-│   │   └── ai.rs                    # LLM-backed suggestions
-│   ├── ranking.rs                   # Score merging and ranking
-│   └── cache.rs                     # LRU caches for context and AI
+│   ├── ranking.rs                   # Score merging, dedup, and ranking
+│   ├── cache.rs                     # LRU caches for context and AI
+│   ├── spec.rs                      # Spec data model (CommandSpec, SubcommandSpec, etc.)
+│   ├── spec_store.rs                # Spec loading, caching, resolution, generators
+│   ├── spec_autogen.rs              # Auto-generate specs from project files
+│   └── providers/
+│       ├── mod.rs                   # SuggestionProvider trait (suggest + suggest_multi)
+│       ├── history.rs               # History-based suggestions
+│       ├── context.rs               # Project/environment context
+│       ├── ai.rs                    # LLM-backed suggestions
+│       └── spec.rs                  # Spec-based CLI completions
 ├── tests/
 │   ├── history_tests.rs
 │   ├── context_tests.rs
 │   ├── security_tests.rs
-│   └── integration_tests.rs
+│   ├── integration_tests.rs
+│   └── spec_tests.rs
+├── docs/
+│   └── design-doc.md
 ├── Cargo.toml
 ├── config.example.toml
-└── README.md
+└── CLAUDE.md
 ```
-
----
-
-## Development Phases
-
-### Phase 1: Foundation (Week 1–2)
-- Zsh widget with ghost text rendering and keybindings
-- Daemon skeleton with Unix socket server and multi-session support
-- PID file / lock file coordination for daemon startup
-- History provider with prefix matching
-- Basic request/response protocol with session IDs
-- Interaction logging infrastructure
-- `--verbose` flag and log-level support
-- **Milestone:** Working plugin that matches zsh-autosuggestions behavior
-
-### Phase 2: Context Awareness (Week 3–4)
-- Context provider: project file scanning and parsing
-- Event-driven cache invalidation via `kqueue`/`inotify` (using `notify` crate)
-- Git integration (branch names, recent refs)
-- Configurable scan depth with git-root auto-detection
-- Ranking/merge logic for multiple providers
-- **Milestone:** Suggests `npm run dev` when in a Node project, `make build` near a Makefile, etc.
-
-### Phase 3: AI Integration (Week 5–6)
-- AI provider with Ollama support
-- Debounce logic and async suggestion updates via `zle -F`
-- Prompt engineering and response parsing (single-line only)
-- API provider support (Anthropic, OpenAI)
-- Response caching keyed by `(buffer_prefix, cwd, project_type, git_branch)`
-- Rate limiting (configurable RPM and max concurrent)
-- Security scrubbing layer for external API calls
-- **Milestone:** AI suggestions appear after a brief pause, upgrading simpler suggestions
-
-### Phase 4: Polish (Week 7–8)
-- Fuzzy history matching (Levenshtein / Smith-Waterman)
-- Partial accept (word-by-word with Ctrl+Right)
-- Config file support and `synapse` CLI
-- Performance profiling and optimization
-- Installation scripts and documentation
-- **Milestone:** Ready for public beta
 
 ---
 
@@ -520,20 +611,21 @@ synapse/
 |---|---|
 | Time to first suggestion (history) | <5ms |
 | Time to first suggestion (context) | <20ms |
+| Time to first suggestion (spec) | <10ms |
 | AI suggestion latency (local LLM) | <500ms |
 | AI suggestion latency (API) | <1000ms |
+| Dropdown list generation | <30ms |
 | Daemon memory usage (idle) | <30MB |
 | Daemon memory usage (50k history) | <80MB |
 | Daemon startup time | <200ms |
 
 ---
 
-## Resolved Design Decisions
+## Design Decisions
 
-These were originally open questions, now settled:
-
-1. **Single ghost-text suggestion.** No dropdown or menu for v1. Ship the simplest UX and revisit if users request it.
-2. **Local interaction logging.** All suggestion interactions (accept/dismiss/ignore) are logged locally. Data never leaves the machine. Will be used to auto-tune ranking weights in a future iteration.
-3. **Single-line suggestions only.** Multi-line ghost text is unreliable across terminal emulators. If the AI returns multiple lines, only the first is used.
-4. **Security scrubbing is required.** Path redaction, env var filtering, and command blocklisting are applied before any data is sent to external APIs. See the Security section.
-5. **No plugin ecosystem for v1.** Context providers are hardcoded. The trait-based architecture makes this easy to add later without major refactoring.
+1. **Dual interaction modes.** Inline ghost text for the common case (fast, unobtrusive), with an on-demand dropdown for exploring multiple options. The dropdown uses `recursive-edit` with a custom keymap for modal navigation.
+2. **Spec-based completions.** Structured CLI specs (inspired by Fig autocomplete) provide accurate subcommand/option/argument completions without relying on AI. Built-in specs are embedded in the binary; project-specific specs are auto-generated from project files or user-defined in `.synapse/specs/`.
+3. **Local interaction logging.** All suggestion interactions (accept/dismiss/ignore) are logged locally. Data never leaves the machine. Will be used to auto-tune ranking weights in a future iteration.
+4. **Single-line suggestions only.** Multi-line ghost text is unreliable across terminal emulators. If the AI returns multiple lines, only the first is used.
+5. **Security scrubbing is required.** Path redaction, env var filtering, and command blocklisting are applied before any data is sent to external APIs. See the Security section.
+6. **Trait-based provider architecture.** All providers implement `SuggestionProvider` with `suggest()` (single best) and `suggest_multi()` (top N). This makes adding new providers straightforward.

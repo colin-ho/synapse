@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 
 use crate::cache::AiCacheKey;
 use crate::config::AiConfig;
-use crate::protocol::{SuggestRequest, SuggestionSource};
+use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
 use crate::providers::context::ContextProvider;
 use crate::providers::{ProviderSuggestion, SuggestionProvider};
 use crate::security::Scrubber;
@@ -285,6 +285,8 @@ impl SuggestionProvider for AiProvider {
                     text: cached,
                     source: SuggestionSource::Ai,
                     score: 0.8,
+                    description: None,
+                    kind: SuggestionKind::Command,
                 });
             }
         }
@@ -314,6 +316,8 @@ impl SuggestionProvider for AiProvider {
                     text,
                     source: SuggestionSource::Ai,
                     score: 0.85,
+                    description: None,
+                    kind: SuggestionKind::Command,
                 })
             }
             Some(text) => {
