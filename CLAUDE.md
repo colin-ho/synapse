@@ -21,28 +21,25 @@ cargo fmt                            # Format
 
 Run the daemon in foreground for development:
 ```bash
-cargo run -- daemon start --foreground -vv
+cargo run -- start --foreground -vv
 ```
 
 Dev workflow — build and activate in the current shell:
 ```bash
-cargo build && eval "$(./target/debug/synapse init)"
+cargo build && eval "$(./target/debug/synapse)"
 source dev/test.sh                   # Convenience: builds + activates
 source dev/test.sh --release         # Same with release build
 ```
 
-`synapse init` auto-detects dev mode (running from `target/`) and creates a unique per-workspace socket so multiple worktrees don't conflict.
+Running from `target/` auto-detects dev mode and creates a unique per-workspace socket so multiple worktrees don't conflict.
 
-### CLI Subcommands
+### CLI
 
 | Command | Description |
 |---|---|
-| `synapse init` | Output shell init code for `eval` (auto-detects dev mode) |
-| `synapse setup` | Append `eval "$(synapse init)"` to `~/.zshrc` (idempotent) |
-| `synapse setup --rc-file PATH` | Same, targeting a specific RC file |
-| `synapse daemon start` | Start the daemon |
-| `synapse daemon stop` | Stop the daemon |
-| `synapse daemon status` | Show daemon status |
+| `synapse` | If run in a terminal: install to `~/.zshrc`. If piped: output shell init code. |
+| `synapse stop` | Stop the daemon |
+| `synapse status` | Show daemon status |
 
 ## Setup
 

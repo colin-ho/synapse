@@ -20,7 +20,7 @@ fn test_cli_help() {
 fn test_daemon_status_no_daemon() {
     Command::cargo_bin("synapse")
         .unwrap()
-        .args(["daemon", "status"])
+        .args(["status"])
         .assert()
         .success(); // Should not crash even with no daemon
 }
@@ -214,7 +214,7 @@ fn test_socket_path_env_empty_ignored() {
 fn test_cli_socket_path_flag() {
     Command::cargo_bin("synapse")
         .unwrap()
-        .args(["daemon", "status", "--socket-path", "/tmp/nonexistent.sock"])
+        .args(["status", "--socket-path", "/tmp/nonexistent.sock"])
         .assert()
         .success();
 }

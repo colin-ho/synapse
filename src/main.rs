@@ -10,6 +10,7 @@ mod spec;
 mod spec_autogen;
 mod spec_store;
 
+use std::io::IsTerminal;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,32 +38,24 @@ use crate::spec_store::SpecStore;
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-
-    /// Print the path to the Zsh plugin for sourcing
-    #[arg(long)]
-    shell_init: bool,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Output shell initialization code (for eval)
-    Init,
-    /// Set up shell RC file for automatic initialization
-    Setup {
-        /// Path to the RC file to modify (default: ~/.zshrc)
-        #[arg(long, default_value = "~/.zshrc")]
-        rc_file: String,
+    /// Stop the daemon
+    Stop {
+        /// Override the socket path
+        #[arg(long)]
+        socket_path: Option<PathBuf>,
     },
-    /// Manage the synapse daemon
-    Daemon {
-        #[command(subcommand)]
-        action: DaemonAction,
+    /// Show daemon status
+    Status {
+        /// Override the socket path
+        #[arg(long)]
+        socket_path: Option<PathBuf>,
     },
-}
-
-#[derive(Subcommand)]
-enum DaemonAction {
-    /// Start the daemon
+    /// Start the daemon (used internally by the shell plugin)
+    #[command(hide = true)]
     Start {
         /// Increase log verbosity (-v info, -vv debug, -vvv trace)
         #[arg(short, long, action = clap::ArgAction::Count)]
@@ -80,58 +73,33 @@ enum DaemonAction {
         #[arg(long)]
         socket_path: Option<PathBuf>,
     },
-    /// Stop the daemon
-    Stop {
-        /// Override the socket path
-        #[arg(long)]
-        socket_path: Option<PathBuf>,
-    },
-    /// Show daemon status
-    Status {
-        /// Override the socket path
-        #[arg(long)]
-        socket_path: Option<PathBuf>,
-    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    if cli.shell_init {
-        eprintln!("Warning: --shell-init is deprecated. Use 'synapse init' instead.");
-        print_init_code();
-        return Ok(());
-    }
-
     match cli.command {
-        Some(Commands::Init) => {
-            print_init_code();
+        Some(Commands::Stop { socket_path }) => {
+            stop_daemon(socket_path)?;
         }
-        Some(Commands::Setup { rc_file }) => {
-            setup_shell_rc(&rc_file)?;
+        Some(Commands::Status { socket_path }) => {
+            show_status(socket_path)?;
         }
-        Some(Commands::Daemon { action }) => match action {
-            DaemonAction::Start {
-                verbose,
-                log_file,
-                foreground,
-                socket_path,
-            } => {
-                start_daemon(verbose, log_file, foreground, socket_path).await?;
-            }
-            DaemonAction::Stop { socket_path } => {
-                stop_daemon(socket_path)?;
-            }
-            DaemonAction::Status { socket_path } => {
-                show_status(socket_path)?;
-            }
-        },
+        Some(Commands::Start {
+            verbose,
+            log_file,
+            foreground,
+            socket_path,
+        }) => {
+            start_daemon(verbose, log_file, foreground, socket_path).await?;
+        }
         None => {
-            eprintln!("Usage: synapse init");
-            eprintln!("       synapse setup [--rc-file PATH]");
-            eprintln!("       synapse daemon start|stop|status");
-            std::process::exit(1);
+            if std::io::stdout().is_terminal() {
+                setup_shell_rc("~/.zshrc")?;
+            } else {
+                print_init_code();
+            }
         }
     }
 
@@ -242,7 +210,7 @@ if [[ -f "{pid}" ]] && kill -0 $(<"{pid}") 2>/dev/null; then
 fi
 command rm -f "{socket}" "{pid}"
 # Start daemon with dev logging
-"{exe}" daemon start --foreground --socket-path "{socket}" --log-file "{log}" -vv &>/dev/null &
+"{exe}" start --foreground --socket-path "{socket}" --log-file "{log}" -vv &>/dev/null &
 disown
 _synapse_i=0
 while [[ ! -S "{socket}" ]] && (( _synapse_i < 50 )); do command sleep 0.1; (( _synapse_i++ )); done
@@ -297,12 +265,12 @@ fn setup_shell_rc(rc_file: &str) -> anyhow::Result<()> {
     let path = rc_file.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
     let path = PathBuf::from(path);
 
-    let init_line = r#"eval "$(synapse init)""#;
+    let init_line = r#"eval "$(synapse)""#;
 
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
         if contents.contains(init_line) {
-            eprintln!("synapse init already present in {}", path.display());
+            eprintln!("synapse already present in {}", path.display());
             return Ok(());
         }
     }
@@ -315,7 +283,7 @@ fn setup_shell_rc(rc_file: &str) -> anyhow::Result<()> {
     writeln!(file, "# Synapse — intelligent command suggestions")?;
     writeln!(file, "{init_line}")?;
 
-    eprintln!("Added synapse init to {}", path.display());
+    eprintln!("Added synapse to {}", path.display());
     eprintln!("Restart your shell or run: {init_line}");
 
     Ok(())
