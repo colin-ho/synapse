@@ -34,6 +34,8 @@ typeset -ga _SYNAPSE_DROPDOWN_DESCS=()
 typeset -ga _SYNAPSE_DROPDOWN_KINDS=()
 typeset -gi _SYNAPSE_DROPDOWN_MAX_VISIBLE=8
 typeset -gi _SYNAPSE_DROPDOWN_SCROLL=0
+typeset -g _SYNAPSE_DROPDOWN_SELECTED=""
+typeset -g _SYNAPSE_DROPDOWN_INSERT_KEY=""
 
 # --- Modules ---
 zmodload zsh/net/socket 2>/dev/null || { return; }
@@ -429,6 +431,8 @@ _synapse_clear_dropdown() {
     _SYNAPSE_DROPDOWN_DESCS=()
     _SYNAPSE_DROPDOWN_KINDS=()
     _SYNAPSE_DROPDOWN_SCROLL=0
+    _SYNAPSE_DROPDOWN_SELECTED=""
+    _SYNAPSE_DROPDOWN_INSERT_KEY=""
     POSTDISPLAY=""
     region_highlight=()
 }
@@ -701,17 +705,20 @@ _synapse_dropdown_open() {
 
     # Enter modal navigation via recursive-edit with dropdown keymap
     zle recursive-edit -K synapse-dropdown
-    local ret=$?
 
-    # After recursive-edit exits, check what happened
-    if (( ret == 0 )); then
-        # User accepted — BUFFER was already set inside _synapse_dropdown_accept
+    # Apply results AFTER recursive-edit exits to avoid buffer restoration
+    if [[ -n "$_SYNAPSE_DROPDOWN_SELECTED" ]]; then
+        BUFFER="$_SYNAPSE_DROPDOWN_SELECTED"
+        CURSOR=${#BUFFER}
         _synapse_report_interaction "accept"
+    elif [[ -n "$_SYNAPSE_DROPDOWN_INSERT_KEY" ]]; then
+        LBUFFER+="$_SYNAPSE_DROPDOWN_INSERT_KEY"
     fi
-    # ret != 0 means dismissed (Escape) or typed-through
+    _SYNAPSE_DROPDOWN_SELECTED=""
+    _SYNAPSE_DROPDOWN_INSERT_KEY=""
 
     _synapse_clear_dropdown
-    zle -R
+    zle reset-prompt
 }
 
 _synapse_dropdown_down_impl() {
@@ -742,34 +749,26 @@ _synapse_dropdown_up() {
     zle -R
 }
 
-# Accept selected item: set buffer to selected text, then exit recursive-edit
+# Accept selected item: save selection and exit recursive-edit
 _synapse_dropdown_accept() {
-    # Set BUFFER to the selected item BEFORE exiting recursive-edit,
-    # because .accept-line would execute the current BUFFER contents.
-    local selected="${_SYNAPSE_DROPDOWN_ITEMS[$(( _SYNAPSE_DROPDOWN_INDEX + 1 ))]}"
-    if [[ -n "$selected" ]]; then
-        BUFFER="$selected"
-        CURSOR=${#BUFFER}
-    fi
-    # Use .accept-search to exit recursive-edit with ret=0 without executing
-    zle .accept-search 2>/dev/null || zle .send-break
-    return 0
+    # Save selection to flag variable — BUFFER is set by the caller AFTER
+    # recursive-edit exits to avoid send-break restoring the pre-edit buffer
+    _SYNAPSE_DROPDOWN_SELECTED="${_SYNAPSE_DROPDOWN_ITEMS[$(( _SYNAPSE_DROPDOWN_INDEX + 1 ))]}"
+    zle .send-break
 }
 
-# Dismiss dropdown: exit recursive-edit with failure
+# Dismiss dropdown: exit recursive-edit
 _synapse_dropdown_dismiss() {
-    # Set return value 1 (dismissed)
+    _SYNAPSE_DROPDOWN_SELECTED=""
     zle .send-break
-    return 1
 }
 
 # Close dropdown and pass the typed character through
 _synapse_dropdown_close_and_insert() {
-    # We need to exit recursive-edit, then the character will be processed
-    # by the main keymap
-    LBUFFER+="${KEYS}"
+    # Save the key to insert AFTER recursive-edit exits
+    _SYNAPSE_DROPDOWN_INSERT_KEY="${KEYS}"
+    _SYNAPSE_DROPDOWN_SELECTED=""
     zle .send-break
-    return 1
 }
 
 # --- Lifecycle Hooks ---
