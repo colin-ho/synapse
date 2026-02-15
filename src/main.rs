@@ -202,7 +202,6 @@ fn print_dev_init_code(exe: &std::path::Path, workspace_root: &std::path::Path) 
         r#"# synapse dev mode
 export SYNAPSE_BIN="{exe}"
 export SYNAPSE_SOCKET="{socket}"
-export _SYNAPSE_DEV_RELOAD=1
 # Stop existing dev daemon on this socket
 if [[ -f "{pid}" ]] && kill -0 $(<"{pid}") 2>/dev/null; then
     kill $(<"{pid}") 2>/dev/null
@@ -216,7 +215,6 @@ _synapse_i=0
 while [[ ! -S "{socket}" ]] && (( _synapse_i < 50 )); do command sleep 0.1; (( _synapse_i++ )); done
 unset _synapse_i
 source "{plugin}"
-unset _SYNAPSE_DEV_RELOAD
 if [[ -S "{socket}" ]]; then
     echo "synapse dev: ready" >&2
 else
