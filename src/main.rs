@@ -162,12 +162,14 @@ fn detect_dev_mode() -> Option<(PathBuf, PathBuf)> {
 }
 
 /// Produce an 8-char hex hash of a path for unique socket names.
+/// Uses FNV-1a for deterministic output across Rust versions.
 fn workspace_hash(path: &std::path::Path) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    path.to_string_lossy().as_ref().hash(&mut hasher);
-    format!("{:08x}", (hasher.finish() & 0xFFFF_FFFF) as u32)
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in path.to_string_lossy().as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:08x}", (hash & 0xFFFF_FFFF) as u32)
 }
 
 /// Find the plugin file. In dev mode, uses workspace root; otherwise searches relative to binary.
@@ -214,14 +216,44 @@ fn print_dev_init_code(exe: &std::path::Path, workspace_root: &std::path::Path) 
     let plugin_path = find_plugin_path(exe, Some(workspace_root));
     let hash = workspace_hash(workspace_root);
     let socket_path = format!("/tmp/synapse-dev-{hash}.sock");
+    let pid_path = format!("/tmp/synapse-dev-{hash}.pid");
+    let log_path = format!("/tmp/synapse-dev-{hash}.log");
+    let profile = exe
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    // Status on stderr (not captured by eval's $())
+    eprintln!("synapse dev ({profile})");
+    eprintln!("  workspace: {}", workspace_root.display());
+    eprintln!("  socket:    {socket_path}");
+    eprintln!("  logs:      tail -f {log_path}");
 
     print!(
         r#"# synapse dev mode
 export SYNAPSE_BIN="{exe}"
 export SYNAPSE_SOCKET="{socket}"
 export _SYNAPSE_DEV_RELOAD=1
+# Stop existing dev daemon on this socket
+if [[ -f "{pid}" ]] && kill -0 $(<"{pid}") 2>/dev/null; then
+    kill $(<"{pid}") 2>/dev/null
+    command sleep 0.1
+fi
+command rm -f "{socket}" "{pid}"
+# Start daemon with dev logging
+"{exe}" daemon start --foreground --socket-path "{socket}" --log-file "{log}" -vv &>/dev/null &
+disown
+_synapse_i=0
+while [[ ! -S "{socket}" ]] && (( _synapse_i < 50 )); do command sleep 0.1; (( _synapse_i++ )); done
+unset _synapse_i
 source "{plugin}"
 unset _SYNAPSE_DEV_RELOAD
+if [[ -S "{socket}" ]]; then
+    echo "synapse dev: ready" >&2
+else
+    echo "synapse dev: daemon failed to start. check: tail -f {log}" >&2
+fi
 _synapse_dev_cleanup() {{
     if [[ -n "$SYNAPSE_SOCKET" ]]; then
         local pid_file="${{SYNAPSE_SOCKET%.sock}}.pid"
@@ -241,6 +273,8 @@ fi
 "#,
         exe = exe.display(),
         socket = socket_path,
+        pid = pid_path,
+        log = log_path,
         plugin = plugin_path.display(),
     );
 }
