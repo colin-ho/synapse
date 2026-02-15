@@ -98,6 +98,7 @@ _synapse_daemon_running() {
 
 # Start daemon if needed (with lock to prevent races)
 _synapse_ensure_daemon() {
+    setopt local_options no_monitor
     _synapse_daemon_running && return 0
 
     local bin
