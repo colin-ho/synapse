@@ -24,6 +24,26 @@ Run the daemon in foreground for development:
 cargo run -- daemon start --foreground -vv
 ```
 
+Dev workflow — build and activate in the current shell:
+```bash
+cargo build && eval "$(./target/debug/synapse init)"
+source dev/test.sh                   # Convenience: builds + activates
+source dev/test.sh --release         # Same with release build
+```
+
+`synapse init` auto-detects dev mode (running from `target/`) and creates a unique per-workspace socket so multiple worktrees don't conflict.
+
+### CLI Subcommands
+
+| Command | Description |
+|---|---|
+| `synapse init` | Output shell init code for `eval` (auto-detects dev mode) |
+| `synapse setup` | Append `eval "$(synapse init)"` to `~/.zshrc` (idempotent) |
+| `synapse setup --rc-file PATH` | Same, targeting a specific RC file |
+| `synapse daemon start` | Start the daemon |
+| `synapse daemon stop` | Stop the daemon |
+| `synapse daemon status` | Show daemon status |
+
 ## Setup
 
 Install pre-commit hooks (runs `cargo fmt --check` and `cargo clippy` before each commit):
