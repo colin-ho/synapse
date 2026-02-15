@@ -30,4 +30,4 @@ if ! (cd "$workspace_root" && cargo build "${cargo_build_args[@]}"); then
     return 1
 fi
 
-eval "$("$workspace_root/target/$build_profile/synapse" init)"
+eval "$("$workspace_root/target/$build_profile/synapse")"

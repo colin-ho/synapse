@@ -108,7 +108,7 @@ To prevent race conditions when multiple shells start simultaneously:
 If the daemon crashes or is unreachable:
 - The widget silently stops showing suggestions — no error messages, no spam
 - A `precmd` hook periodically attempts to reconnect (every 5 seconds, max 3 attempts per minute)
-- If the user manually runs `synapse daemon start`, normal operation resumes immediately
+- If the user manually runs `synapse start`, normal operation resumes immediately
 
 ---
 
@@ -511,15 +511,15 @@ max_log_size_mb = 50                    # rotate after this size
 The daemon supports a `--verbose` flag (or `-v`, stackable: `-vv` for debug, `-vvv` for trace) that increases log output:
 
 ```bash
-synapse daemon start --verbose          # info level
-synapse daemon start -vv                # debug level — logs every suggestion cycle
-synapse daemon start -vvv               # trace level — logs socket I/O, cache hits, provider timings
+synapse start --verbose          # info level
+synapse start -vv                # debug level — logs every suggestion cycle
+synapse start -vvv               # trace level — logs socket I/O, cache hits, provider timings
 ```
 
 Logs are written to stderr by default, or to a file if configured:
 
 ```bash
-synapse daemon start --verbose --log-file ~/.local/share/synapse/daemon.log
+synapse start --verbose --log-file ~/.local/share/synapse/daemon.log
 ```
 
 The `log_level` config option sets the default level; the `--verbose` flag overrides it.
@@ -534,30 +534,27 @@ The `log_level` config option sets the default level; the `--verbose` flag overr
 # Install the daemon binary
 cargo install synapse
 
-# Permanent setup: appends init to ~/.zshrc (idempotent)
-synapse setup
-
-# Or add it manually to any RC file
-synapse setup --rc-file ~/.zshrc
+# Permanent setup: appends eval line to ~/.zshrc (idempotent)
+synapse
 ```
 
-This appends `eval "$(synapse init)"` to the RC file if not already present.
+Running `synapse` in a terminal detects that stdout is a TTY and appends `eval "$(synapse)"` to `~/.zshrc`. When piped (e.g. `eval "$(synapse)"`), it outputs shell init code instead.
 
 ### Instant activation (any terminal)
 
 ```bash
-eval "$(synapse init)"
+eval "$(synapse)"
 ```
 
-This exports `SYNAPSE_BIN`, sources the Zsh plugin, and auto-starts the daemon. When run from a `target/{debug,release}` build directory, `synapse init` automatically detects **dev mode** and sets up a unique per-workspace socket at `/tmp/synapse-dev-{hash}.sock` with reload support and cleanup traps, so multiple worktrees can run simultaneously without conflicts.
+This exports `SYNAPSE_BIN`, sources the Zsh plugin, and auto-starts the daemon. When run from a `target/{debug,release}` build directory, it automatically detects **dev mode** and sets up a unique per-workspace socket at `/tmp/synapse-dev-{hash}.sock` with reload support and cleanup traps, so multiple worktrees can run simultaneously without conflicts.
 
 ### Dev workflow
 
 ```bash
 # Build and activate from a worktree
-cargo build && eval "$(./target/debug/synapse init)"
+cargo build && eval "$(./target/debug/synapse)"
 
-# Or use the convenience script (builds, then delegates to synapse init)
+# Or use the convenience script (builds first)
 source dev/test.sh
 source dev/test.sh --release
 ```
@@ -576,9 +573,8 @@ Then add `synapse` to the `plugins` array in `.zshrc`.
 The Zsh plugin auto-starts the daemon on first prompt if not already running. The daemon can also be managed manually:
 
 ```bash
-synapse daemon start
-synapse daemon stop
-synapse daemon status
+synapse stop
+synapse status
 ```
 
 ---
@@ -588,7 +584,7 @@ synapse daemon status
 ```
 synapse/
 ├── dev/
-│   └── test.sh                      # Dev convenience script (build + synapse init)
+│   └── test.sh                      # Dev convenience script (build + eval "$(synapse)")
 ├── plugin/
 │   └── synapse.zsh                  # Zsh widget, keybindings, dropdown UI
 ├── specs/

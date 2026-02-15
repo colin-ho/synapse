@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # Synapse — Intelligent Zsh command suggestions via ghost text
-# Source this file in your .zshrc or use: source $(synapse --shell-init)
+# Source this file in your .zshrc via: eval "$(synapse)"
 
 # Guard against double-sourcing (dev reload bypasses this)
 if [[ -n "$_SYNAPSE_LOADED" ]]; then
@@ -118,7 +118,7 @@ _synapse_ensure_daemon() {
         return 0
     fi
 
-    "$bin" daemon start &>/dev/null &
+    "$bin" start &>/dev/null &
     disown
 
     # Wait briefly for daemon to start
