@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use async_trait::async_trait;
 
 use crate::config::HistoryConfig;
-use crate::protocol::{SuggestRequest, SuggestionSource};
+use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderSuggestion, SuggestionProvider};
 
 #[derive(Debug, Clone)]
@@ -153,6 +153,8 @@ impl HistoryProvider {
             text: entry.command.clone(),
             source: SuggestionSource::History,
             score,
+            description: None,
+            kind: SuggestionKind::History,
         })
     }
 
@@ -192,6 +194,8 @@ impl HistoryProvider {
             text: entry.command.clone(),
             source: SuggestionSource::History,
             score,
+            description: None,
+            kind: SuggestionKind::History,
         })
     }
 }
@@ -220,6 +224,52 @@ impl SuggestionProvider for HistoryProvider {
 
     fn is_available(&self) -> bool {
         true
+    }
+
+    async fn suggest_multi(
+        &self,
+        request: &SuggestRequest,
+        max: usize,
+    ) -> Vec<ProviderSuggestion> {
+        let buffer = request.buffer.as_str();
+        if buffer.is_empty() {
+            return Vec::new();
+        }
+
+        let entries = self.entries.read().await;
+        let max_epoch = *self.max_epoch.read().await;
+
+        // Prefix range query — collect all matches
+        let end = increment_last_char(buffer);
+        let range = match &end {
+            Some(e) => entries.range(buffer.to_string()..e.clone()),
+            None => entries.range(buffer.to_string()..),
+        };
+
+        let mut results: Vec<(f64, &HistoryEntry)> = Vec::new();
+
+        for (_key, entry) in range {
+            if !entry.command.starts_with(buffer) {
+                break;
+            }
+            let score = compute_score(entry, max_epoch);
+            results.push((score, entry));
+        }
+
+        // Sort by score descending
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(max);
+
+        results
+            .into_iter()
+            .map(|(score, entry)| ProviderSuggestion {
+                text: entry.command.clone(),
+                source: SuggestionSource::History,
+                score,
+                description: None,
+                kind: SuggestionKind::History,
+            })
+            .collect()
     }
 }
 

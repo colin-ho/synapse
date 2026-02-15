@@ -6,6 +6,9 @@ mod providers;
 mod ranking;
 mod security;
 mod session;
+mod spec;
+mod spec_autogen;
+mod spec_store;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,14 +20,16 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::logging::InteractionLogger;
-use crate::protocol::{Request, Response, SuggestionResponse};
+use crate::protocol::{Request, Response, SuggestionListResponse, SuggestionResponse};
 use crate::providers::ai::AiProvider;
 use crate::providers::context::ContextProvider;
 use crate::providers::history::HistoryProvider;
+use crate::providers::spec::SpecProvider;
 use crate::providers::SuggestionProvider;
 use crate::ranking::Ranker;
 use crate::security::Scrubber;
 use crate::session::SessionManager;
+use crate::spec_store::SpecStore;
 
 #[derive(Parser)]
 #[command(name = "synapse", about = "Intelligent Zsh command suggestions")]
@@ -276,6 +281,10 @@ async fn start_daemon(
     };
     let ai_provider = Arc::new(AiProvider::new(config.ai.clone(), scrubber));
 
+    // Init spec system
+    let spec_store = Arc::new(SpecStore::new(config.spec.clone()));
+    let spec_provider = Arc::new(SpecProvider::new(spec_store));
+
     let ranker = Arc::new(Ranker::new(config.weights.clone()));
 
     let session_manager = SessionManager::new();
@@ -292,6 +301,7 @@ async fn start_daemon(
         history_provider,
         context_provider,
         ai_provider,
+        spec_provider,
         ranker,
         session_manager,
         interaction_logger,
@@ -307,11 +317,13 @@ async fn start_daemon(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_server(
     listener: UnixListener,
     history_provider: Arc<HistoryProvider>,
     context_provider: Arc<ContextProvider>,
     ai_provider: Arc<AiProvider>,
+    spec_provider: Arc<SpecProvider>,
     ranker: Arc<Ranker>,
     session_manager: SessionManager,
     interaction_logger: Arc<InteractionLogger>,
@@ -325,12 +337,13 @@ async fn run_server(
                         let hp = history_provider.clone();
                         let cp = context_provider.clone();
                         let ap = ai_provider.clone();
+                        let sp = spec_provider.clone();
                         let rk = ranker.clone();
                         let sm = session_manager.clone();
                         let il = interaction_logger.clone();
                         let cfg = config.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, hp, cp, ap, rk, sm, il, cfg).await {
+                            if let Err(e) = handle_connection(stream, hp, cp, ap, sp, rk, sm, il, cfg).await {
                                 tracing::debug!("Connection error: {e}");
                             }
                         });
@@ -350,11 +363,13 @@ async fn run_server(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     history_provider: Arc<HistoryProvider>,
     context_provider: Arc<ContextProvider>,
     ai_provider: Arc<AiProvider>,
+    spec_provider: Arc<SpecProvider>,
     ranker: Arc<Ranker>,
     session_manager: SessionManager,
     interaction_logger: Arc<InteractionLogger>,
@@ -385,6 +400,7 @@ async fn handle_connection(
                 &history_provider,
                 &context_provider,
                 &ai_provider,
+                &spec_provider,
                 &ranker,
                 &session_manager,
                 &interaction_logger,
@@ -410,11 +426,13 @@ async fn handle_connection(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     request: Request,
     history_provider: &Arc<HistoryProvider>,
     context_provider: &Arc<ContextProvider>,
     ai_provider: &Arc<AiProvider>,
+    spec_provider: &Arc<SpecProvider>,
     ranker: &Arc<Ranker>,
     session_manager: &SessionManager,
     interaction_logger: &Arc<InteractionLogger>,
@@ -431,10 +449,11 @@ async fn handle_request(
 
             session_manager.update_from_request(&req).await;
 
-            // Phase 1: Immediate — query history + context concurrently
-            let (history_result, context_result) = tokio::join!(
+            // Phase 1: Immediate — query history + context + spec concurrently
+            let (history_result, context_result, spec_result) = tokio::join!(
                 history_provider.suggest(&req),
                 context_provider.suggest(&req),
+                spec_provider.suggest(&req),
             );
 
             let mut suggestions = Vec::new();
@@ -442,6 +461,9 @@ async fn handle_request(
                 suggestions.push(s);
             }
             if let Some(s) = context_result {
+                suggestions.push(s);
+            }
+            if let Some(s) = spec_result {
                 suggestions.push(s);
             }
 
@@ -529,6 +551,38 @@ async fn handle_request(
             response
         }
 
+        Request::ListSuggestions(req) => {
+            tracing::debug!(
+                session = %req.session_id,
+                buffer = %req.buffer,
+                max_results = req.max_results,
+                "ListSuggestions request"
+            );
+
+            let suggest_req = req.as_suggest_request();
+            let max = req.max_results.min(config.spec.max_list_results);
+
+            // Query all providers concurrently for multi-results
+            let (history_results, context_results, spec_results) = tokio::join!(
+                history_provider.suggest_multi(&suggest_req, max),
+                context_provider.suggest_multi(&suggest_req, max),
+                spec_provider.suggest_multi(&suggest_req, max),
+            );
+
+            let mut all_suggestions = Vec::new();
+            all_suggestions.extend(history_results);
+            all_suggestions.extend(context_results);
+            all_suggestions.extend(spec_results);
+
+            let ranked = ranker.rank_multi(all_suggestions, &req.recent_commands, max);
+
+            let items = ranked.iter().map(|r| r.to_suggestion_item()).collect();
+
+            Response::SuggestionList(SuggestionListResponse {
+                suggestions: items,
+            })
+        }
+
         Request::Interaction(report) => {
             tracing::debug!(
                 session = %report.session_id,
@@ -577,4 +631,3 @@ async fn handle_request(
         }
     }
 }
-

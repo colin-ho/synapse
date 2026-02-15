@@ -6,3 +6,6 @@ pub mod providers;
 pub mod ranking;
 pub mod security;
 pub mod session;
+pub mod spec;
+pub mod spec_autogen;
+pub mod spec_store;

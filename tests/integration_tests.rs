@@ -137,9 +137,10 @@ fn test_config_defaults() {
     assert!(config.history.enabled);
     assert_eq!(config.history.max_entries, 50000);
     assert!(config.context.enabled);
-    assert_eq!(config.weights.history, 0.35);
-    assert_eq!(config.weights.context, 0.2);
-    assert_eq!(config.weights.ai, 0.3);
+    assert_eq!(config.weights.history, 0.30);
+    assert_eq!(config.weights.context, 0.15);
+    assert_eq!(config.weights.ai, 0.25);
+    assert_eq!(config.weights.spec, 0.15);
     assert_eq!(config.weights.recency, 0.15);
 }
 
@@ -149,10 +150,11 @@ fn test_weights_normalization() {
         history: 1.0,
         context: 1.0,
         ai: 1.0,
+        spec: 1.0,
         recency: 1.0,
     };
     let normalized = weights.normalized();
-    let sum = normalized.history + normalized.context + normalized.ai + normalized.recency;
+    let sum = normalized.history + normalized.context + normalized.ai + normalized.spec + normalized.recency;
     assert!((sum - 1.0).abs() < 0.001);
-    assert!((normalized.history - 0.25).abs() < 0.001);
+    assert!((normalized.history - 0.2).abs() < 0.001);
 }
