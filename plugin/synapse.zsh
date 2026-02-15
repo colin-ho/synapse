@@ -261,13 +261,18 @@ _synapse_show_suggestion() {
         if [[ -n "$completion" ]]; then
             POSTDISPLAY="$completion"
             _SYNAPSE_CURRENT_SUGGESTION="$full_suggestion"
+            # Style ghost text dim (same as dropdown items)
+            local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+            region_highlight=("${base_offset} $(( base_offset + ${#completion} )) fg=240")
         else
             POSTDISPLAY=""
             _SYNAPSE_CURRENT_SUGGESTION=""
+            region_highlight=()
         fi
     else
         POSTDISPLAY=""
         _SYNAPSE_CURRENT_SUGGESTION=""
+        region_highlight=()
     fi
 }
 
@@ -275,6 +280,7 @@ _synapse_clear_suggestion() {
     POSTDISPLAY=""
     _SYNAPSE_CURRENT_SUGGESTION=""
     _SYNAPSE_CURRENT_SOURCE=""
+    region_highlight=()
 }
 
 # --- Dropdown Rendering ---
@@ -363,7 +369,7 @@ _synapse_render_dropdown() {
         local ghost="${selected_text#$BUFFER}"
         ghost_end=$(( base_offset + ${#ghost} ))
         # Ghost text dim
-        region_highlight+=("${base_offset} ${ghost_end} fg=8")
+        region_highlight+=("${base_offset} ${ghost_end} fg=240")
     fi
 
     # Highlight dropdown items
@@ -385,7 +391,7 @@ _synapse_render_dropdown() {
             region_highlight+=("${line_start} ${text_end} standout")
         else
             # Unselected: dim
-            region_highlight+=("${line_start} ${text_end} fg=8")
+            region_highlight+=("${line_start} ${text_end} fg=240")
         fi
 
         pos=$text_end
