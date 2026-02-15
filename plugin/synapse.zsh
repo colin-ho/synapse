@@ -2,13 +2,9 @@
 # Synapse — Intelligent Zsh command suggestions via ghost text
 # Source this file in your .zshrc via: eval "$(synapse)"
 
-# Guard against double-sourcing (dev reload bypasses this)
+# Clean up previous instance on re-source (e.g. `source ~/.zshrc`)
 if [[ -n "$_SYNAPSE_LOADED" ]]; then
-    if [[ -n "$_SYNAPSE_DEV_RELOAD" ]]; then
-        _synapse_cleanup 2>/dev/null
-    else
-        return
-    fi
+    _synapse_cleanup 2>/dev/null
 fi
 _SYNAPSE_LOADED=1
 
