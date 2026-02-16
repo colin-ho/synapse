@@ -123,3 +123,69 @@ async fn test_empty_buffer_returns_none() {
     let result = provider.suggest(&req, 1).await;
     assert!(result.is_empty());
 }
+
+#[tokio::test]
+async fn test_docker_compose_context() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("docker-compose.yml"),
+        "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n",
+    )
+    .unwrap();
+
+    let provider = ContextProvider::new(ContextConfig {
+        enabled: true,
+        scan_depth: 3,
+    });
+
+    let req = common::make_provider_request("docker compose u", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 5).await;
+    assert!(!result.is_empty());
+    let texts: Vec<&str> = result.iter().map(|s| s.text.as_str()).collect();
+    assert!(texts.contains(&"docker compose up"));
+    assert!(texts.contains(&"docker compose up -d"));
+    assert!(texts.contains(&"docker compose up web"));
+}
+
+#[tokio::test]
+async fn test_justfile_context() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("justfile"),
+        "build:\n  cargo build\n\ntest:\n  cargo test\n",
+    )
+    .unwrap();
+
+    let provider = ContextProvider::new(ContextConfig {
+        enabled: true,
+        scan_depth: 3,
+    });
+
+    let req = common::make_provider_request("just b", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "just build");
+}
+
+#[tokio::test]
+async fn test_multi_suggestions_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .unwrap();
+
+    let provider = ContextProvider::new(ContextConfig {
+        enabled: true,
+        scan_depth: 3,
+    });
+
+    let req = common::make_provider_request("cargo ", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 10).await;
+    assert!(result.len() > 1);
+    // Results should be sorted by score descending
+    for w in result.windows(2) {
+        assert!(w[0].score >= w[1].score);
+    }
+}
