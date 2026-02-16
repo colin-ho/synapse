@@ -23,7 +23,6 @@ impl PositionWeights {
             SuggestionSource::History => self.history,
             SuggestionSource::Environment => self.environment,
             SuggestionSource::Context => self.context,
-            SuggestionSource::Ai => self.spec,
         }
     }
 }
@@ -233,7 +232,6 @@ impl Ranker {
         match source {
             SuggestionSource::History => self.weights.history,
             SuggestionSource::Context => self.weights.context,
-            SuggestionSource::Ai => self.weights.ai,
             SuggestionSource::Spec => self.weights.spec,
             SuggestionSource::Filesystem => self.weights.spec,
             SuggestionSource::Environment => self.weights.spec,

@@ -1,4 +1,3 @@
-pub mod ai;
 pub mod context;
 pub mod environment;
 pub mod filesystem;
@@ -114,5 +113,4 @@ pub enum Provider {
     Spec(Arc<spec::SpecProvider>),
     Filesystem(Arc<filesystem::FilesystemProvider>),
     Environment(Arc<environment::EnvironmentProvider>),
-    Ai(Arc<ai::AiProvider>),
 }

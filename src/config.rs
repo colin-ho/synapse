@@ -7,7 +7,6 @@ pub struct Config {
     pub general: GeneralConfig,
     pub history: HistoryConfig,
     pub context: ContextConfig,
-    pub ai: AiConfig,
     pub spec: SpecConfig,
     pub weights: WeightsConfig,
     pub security: SecurityConfig,
@@ -20,7 +19,6 @@ pub struct Config {
 #[serde(default)]
 pub struct GeneralConfig {
     pub socket_path: Option<String>,
-    pub debounce_ms: u64,
     pub max_suggestion_length: usize,
     pub accept_key: String,
     pub log_level: String,
@@ -43,22 +41,6 @@ pub struct ContextConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct AiConfig {
-    pub enabled: bool,
-    pub provider: String,
-    pub model: String,
-    pub endpoint: String,
-    pub api_key_env: String,
-    pub max_tokens: u32,
-    pub temperature: f64,
-    pub timeout_ms: u64,
-    pub fallback_to_local: bool,
-    pub rate_limit_rpm: u32,
-    pub max_concurrent_requests: u32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
 pub struct SpecConfig {
     pub enabled: bool,
     pub auto_generate: bool,
@@ -75,7 +57,6 @@ pub struct SpecConfig {
 pub struct WeightsConfig {
     pub history: f64,
     pub context: f64,
-    pub ai: f64,
     pub spec: f64,
     pub recency: f64,
 }
@@ -101,7 +82,6 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             socket_path: None,
-            debounce_ms: 150,
             max_suggestion_length: 200,
             accept_key: "right-arrow".into(),
             log_level: "warn".into(),
@@ -128,24 +108,6 @@ impl Default for ContextConfig {
     }
 }
 
-impl Default for AiConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            provider: "ollama".into(),
-            model: "llama3".into(),
-            endpoint: "http://localhost:11434".into(),
-            api_key_env: "ANTHROPIC_API_KEY".into(),
-            max_tokens: 50,
-            temperature: 0.0,
-            timeout_ms: 2000,
-            fallback_to_local: true,
-            rate_limit_rpm: 30,
-            max_concurrent_requests: 2,
-        }
-    }
-}
-
 impl Default for SpecConfig {
     fn default() -> Self {
         Self {
@@ -163,9 +125,8 @@ impl Default for WeightsConfig {
         Self {
             history: 0.30,
             context: 0.15,
-            ai: 0.25,
-            spec: 0.15,
-            recency: 0.15,
+            spec: 0.35,
+            recency: 0.20,
         }
     }
 }
@@ -279,14 +240,13 @@ impl Config {
 
 impl WeightsConfig {
     pub fn normalized(&self) -> WeightsConfig {
-        let sum = self.history + self.context + self.ai + self.spec + self.recency;
+        let sum = self.history + self.context + self.spec + self.recency;
         if sum == 0.0 {
             return WeightsConfig::default();
         }
         WeightsConfig {
             history: self.history / sum,
             context: self.context / sum,
-            ai: self.ai / sum,
             spec: self.spec / sum,
             recency: self.recency / sum,
         }
@@ -304,16 +264,14 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let config = Config::default();
-        assert_eq!(config.general.debounce_ms, 150);
         assert_eq!(config.general.max_suggestion_length, 200);
         assert!(config.history.enabled);
         assert_eq!(config.history.max_entries, 50000);
         assert!(config.context.enabled);
         assert_eq!(config.weights.history, 0.30);
         assert_eq!(config.weights.context, 0.15);
-        assert_eq!(config.weights.ai, 0.25);
-        assert_eq!(config.weights.spec, 0.15);
-        assert_eq!(config.weights.recency, 0.15);
+        assert_eq!(config.weights.spec, 0.35);
+        assert_eq!(config.weights.recency, 0.20);
     }
 
     #[test]
@@ -321,18 +279,13 @@ mod tests {
         let weights = WeightsConfig {
             history: 1.0,
             context: 1.0,
-            ai: 1.0,
             spec: 1.0,
             recency: 1.0,
         };
         let normalized = weights.normalized();
-        let sum = normalized.history
-            + normalized.context
-            + normalized.ai
-            + normalized.spec
-            + normalized.recency;
+        let sum = normalized.history + normalized.context + normalized.spec + normalized.recency;
         assert!((sum - 1.0).abs() < 0.001);
-        assert!((normalized.history - 0.2).abs() < 0.001);
+        assert!((normalized.history - 0.25).abs() < 0.001);
     }
 
     #[test]

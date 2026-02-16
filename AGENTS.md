@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - Core Rust code lives in `src/`.
 - Entry points: `src/main.rs` (daemon binary) and `src/lib.rs` (library surface).
-- Provider pipeline modules are in `src/providers/` (`history`, `context`, `spec`, `ai`).
+- Provider pipeline modules are in `src/providers/` (`history`, `context`, `spec`, `filesystem`, `environment`).
 - Integration tests live in `tests/` (for example `tests/spec_tests.rs`, `tests/security_tests.rs`).
 - Built-in command specs are in `specs/builtin/*.toml`.
 - Shell integration is in `plugin/synapse.zsh`; architecture notes are in `docs/design-doc.md`.

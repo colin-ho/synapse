@@ -56,14 +56,15 @@ Install pre-commit hooks (runs `cargo fmt --check` and `cargo clippy` before eac
 
 2. **Rust Daemon** (`src/main.rs`) — Single long-running Tokio async process serving all terminal sessions concurrently over a Unix domain socket at `$XDG_RUNTIME_DIR/synapse.sock`.
 
-### Suggestion Pipeline (4-Layer Cascade)
+### Suggestion Pipeline (5-Layer Cascade)
 
 All providers implement the `SuggestionProvider` trait (`src/providers/mod.rs`) with `suggest()` (single best) and `suggest_multi()` (top N for dropdown):
 
 - **History** (`src/providers/history.rs`) — BTreeMap prefix search + Levenshtein fuzzy matching. Target: <5ms.
 - **Context** (`src/providers/context.rs`) — Scans project files (Makefile, package.json, Cargo.toml, docker-compose, Justfile) walking up from cwd. Detects package managers from lockfiles. Target: <20ms.
 - **Spec** (`src/providers/spec.rs`) — Structured CLI completions from TOML specs. Tokenizes buffer, walks spec tree, completes subcommands/options/arguments. Target: <10ms.
-- **AI** (`src/providers/ai.rs`) — LLM calls to Ollama (local), Anthropic, or OpenAI. Rate-limited with token bucket + semaphore. Target: <500ms local, <1s API.
+- **Filesystem** (`src/providers/filesystem.rs`) — File and directory completions with quoting/escaping support.
+- **Environment** (`src/providers/environment.rs`) — PATH and virtualenv executable suggestions.
 
 ### Spec System
 
@@ -73,18 +74,17 @@ All providers implement the `SuggestionProvider` trait (`src/providers/mod.rs`) 
 - **Built-in specs** (`specs/builtin/*.toml`) — git, cargo, npm, docker.
 - **User specs** — `.synapse/specs/*.toml` in project root (highest priority).
 
-### Two-Phase Response Flow
+### Response Flow
 
-Phase 1 (sync): History + Context + Spec run in parallel via `tokio::join!`, best result returned immediately.
-Phase 2 (async): AI provider spawned as a separate tokio task with debounce. If it produces a higher-scoring suggestion and the buffer hasn't changed, it pushes an `Update` message over the socket. Zsh receives it via `zle -F` callback.
+All providers run concurrently per request, are ranked, and the best suggestion is returned immediately.
 
 ### Key Subsystems
 
-- **Ranking** (`src/ranking.rs`) — Weighted score merging (history: 0.30, context: 0.15, ai: 0.25, spec: 0.15, recency: 0.15). `rank_multi()` for dropdown: scores, deduplicates by text, sorts, truncates.
-- **Security** (`src/security.rs`) — Scrubs paths, env vars, and sensitive commands before sending to external AI APIs. Skipped for local Ollama.
-- **Caching** (`src/cache.rs`) — `moka::future::Cache` LRU with TTL. Context cache keyed by cwd (5min TTL), AI cache keyed by (buffer_prefix, cwd, project_type, git_branch) (10min TTL).
+- **Ranking** (`src/ranking.rs`) — Weighted score merging (history: 0.30, context: 0.15, spec: 0.35, recency: 0.20). `rank_multi()` for dropdown: scores, deduplicates by text, sorts, truncates.
+- **Security** (`src/security.rs`) — Scrubs paths, env vars, and sensitive command-like inputs.
+- **Caching** — Providers and spec store use `moka::future::Cache` with TTL for hot paths.
 - **Sessions** (`src/session.rs`) — Per-session state (cwd, recent commands, last buffer) identified by 12-char hex IDs.
-- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON. Request types: Suggest, ListSuggestions, Interaction, Ping, Shutdown, ReloadConfig, ClearCache. Response types: Suggestion, Update, SuggestionList, Pong, Ack, Error. Suggestion sources: History, Context, AI, Spec. Suggestion kinds: Command, Subcommand, Option, Argument, File, History.
+- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON. Request types: Suggest, ListSuggestions, Interaction, Ping, Shutdown, ReloadConfig, ClearCache. Response types: Suggestion, SuggestionList, Pong, Ack, Error. Suggestion sources: History, Context, Spec, Filesystem, Environment. Suggestion kinds: Command, Subcommand, Option, Argument, File, History.
 - **Logging** (`src/logging.rs`) — Append-only JSONL interaction log at `~/.local/share/synapse/interactions.jsonl` with rotation at 50MB.
 
 ### Config

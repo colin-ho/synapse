@@ -1,4 +1,3 @@
-pub mod cache;
 pub mod completion_context;
 pub mod config;
 pub mod daemon;
