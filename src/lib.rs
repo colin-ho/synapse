@@ -1,6 +1,7 @@
 pub mod completion_context;
 pub mod config;
 pub mod daemon;
+pub mod help_parser;
 pub mod logging;
 pub mod project;
 pub mod protocol;
@@ -9,6 +10,7 @@ pub mod ranking;
 pub mod session;
 pub mod spec;
 pub mod spec_autogen;
+pub mod spec_cache;
 pub mod spec_store;
 pub mod workflow;
 

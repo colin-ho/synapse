@@ -176,6 +176,12 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
         }
     }
 
+    // Trigger spec discovery for the command name (first token)
+    let command_name = report.command.split_whitespace().next().unwrap_or("");
+    if !command_name.is_empty() {
+        state.spec_store.trigger_discovery(command_name).await;
+    }
+
     Response::Ack
 }
 

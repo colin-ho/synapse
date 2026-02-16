@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -23,7 +24,7 @@ impl SpecProvider {
         &self,
         buffer: &str,
         cwd: &Path,
-        store: &SpecStore,
+        store: &Arc<SpecStore>,
     ) -> Vec<ProviderSuggestion> {
         if buffer.is_empty() {
             return Vec::new();
@@ -45,6 +46,8 @@ impl SpecProvider {
                 if tokens.len() == 1 && !trailing_space {
                     return self.complete_command_name(command_name, cwd, store).await;
                 }
+                // Trigger background discovery for this unknown command
+                store.trigger_discovery(command_name).await;
                 return Vec::new();
             }
         };
@@ -346,9 +349,8 @@ impl SuggestionProvider for SpecProvider {
         max: NonZeroUsize,
     ) -> Vec<ProviderSuggestion> {
         let cwd = Path::new(&request.cwd);
-        let mut completions = self
-            .complete(&request.buffer, cwd, &request.spec_store)
-            .await;
+        let store = request.spec_store.clone();
+        let mut completions = self.complete(&request.buffer, cwd, &store).await;
 
         // Filter out empty text entries and entries matching the buffer exactly
         completions.retain(|s| !s.text.is_empty() && s.text != request.buffer);

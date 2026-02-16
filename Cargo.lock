@@ -1538,6 +1538,7 @@ dependencies = [
  "nix",
  "notify",
  "predicates",
+ "regex",
  "serde",
  "serde_json",
  "serde_yml",

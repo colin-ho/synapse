@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, OptionSpec, SubcommandSpec};
 
@@ -307,6 +308,51 @@ fn ruff_spec() -> CommandSpec {
         subcommands,
         ..Default::default()
     }
+}
+
+/// Discover specs for CLI tools built by the current project by running `--help`.
+/// Only runs if the binary has actually been built.
+pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<CommandSpec> {
+    let tools = crate::project::detect_project_cli_tools(root);
+    let mut specs = Vec::new();
+    let timeout = Duration::from_millis(timeout_ms);
+
+    for tool in tools {
+        let Some(binary_path) = tool.binary_path else {
+            tracing::debug!("Project CLI tool {} not built yet, skipping", tool.name);
+            continue;
+        };
+
+        let result = tokio::time::timeout(timeout, async {
+            tokio::process::Command::new(&binary_path)
+                .arg("--help")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .await
+        })
+        .await;
+
+        if let Ok(Ok(output)) = result {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let help_text = if stdout.trim().is_empty() {
+                String::from_utf8_lossy(&output.stderr).to_string()
+            } else {
+                stdout.to_string()
+            };
+
+            if !help_text.trim().is_empty() {
+                let spec = crate::help_parser::parse_help_output(&tool.name, &help_text);
+                if !spec.subcommands.is_empty() || !spec.options.is_empty() {
+                    tracing::info!("Generated spec for project CLI tool: {}", tool.name);
+                    specs.push(spec);
+                }
+            }
+        }
+    }
+
+    specs
 }
 
 fn pytest_spec() -> CommandSpec {
