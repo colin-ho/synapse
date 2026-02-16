@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -16,7 +16,7 @@ pub struct Config {
     cli_socket_override: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct GeneralConfig {
     pub socket_path: Option<String>,
@@ -88,7 +88,7 @@ pub struct SecurityConfig {
     pub command_blocklist: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct LoggingConfig {
     pub interaction_log: String,

@@ -54,8 +54,7 @@ async fn handle_suggest(
 
     state.session_manager.update_from_request(&req).await;
 
-    let provider_request =
-        ProviderRequest::from_suggest_request(&req, state.spec_store.as_ref()).await;
+    let provider_request = ProviderRequest::from_suggest_request(&req, &state.spec_store).await;
 
     // Phase 1: Immediate - query all providers concurrently.
     let suggestions =
@@ -165,8 +164,7 @@ async fn handle_list_suggestions(req: ListSuggestionsRequest, state: &RuntimeSta
     );
 
     let max = req.max_results.min(state.config.spec.max_list_results);
-    let provider_request =
-        ProviderRequest::from_list_request(&req, state.spec_store.as_ref()).await;
+    let provider_request = ProviderRequest::from_list_request(&req, &state.spec_store).await;
     let all_suggestions = collect_provider_suggestions(
         &state.providers,
         &provider_request,

@@ -180,25 +180,23 @@ pub(super) async fn start_daemon(
     let environment_provider = EnvironmentProvider::new();
     environment_provider.scan_path().await;
 
-    let providers = Arc::new(vec![
+    let providers = vec![
         Provider::History(Arc::new(history_provider)),
         Provider::Context(Arc::new(context_provider)),
         Provider::Spec(Arc::new(spec_provider)),
         Provider::Filesystem(Arc::new(filesystem_provider)),
         Provider::Environment(Arc::new(environment_provider)),
         Provider::Ai(Arc::new(ai_provider)),
-    ]);
+    ];
 
-    let ranker = Arc::new(Ranker::new(config.weights.clone()));
-    let workflow_predictor = Arc::new(WorkflowPredictor::new());
+    let ranker = Ranker::new(config.weights.clone());
+    let workflow_predictor = WorkflowPredictor::new();
 
     let session_manager = SessionManager::new();
-    let interaction_logger = Arc::new(InteractionLogger::new(
+    let interaction_logger = InteractionLogger::new(
         config.interaction_log_path(),
         config.logging.max_log_size_mb,
-    ));
-
-    let config = Arc::new(config);
+    );
 
     let state = Arc::new(RuntimeState::new(
         providers,

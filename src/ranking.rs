@@ -124,6 +124,7 @@ pub struct RankedSuggestion {
     pub kind: SuggestionKind,
 }
 
+#[derive(Clone)]
 pub struct Ranker {
     weights: WeightsConfig,
 }

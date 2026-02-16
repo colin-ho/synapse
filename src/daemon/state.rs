@@ -14,27 +14,26 @@ use crate::workflow::WorkflowPredictor;
 pub(super) type SharedWriter =
     Arc<tokio::sync::Mutex<SplitSink<Framed<tokio::net::UnixStream, LinesCodec>, String>>>;
 
-#[derive(Clone)]
 pub(super) struct RuntimeState {
-    pub(super) providers: Arc<Vec<Provider>>,
+    pub(super) providers: Vec<Provider>,
     pub(super) spec_store: Arc<SpecStore>,
-    pub(super) ranker: Arc<Ranker>,
-    pub(super) workflow_predictor: Arc<WorkflowPredictor>,
+    pub(super) ranker: Ranker,
+    pub(super) workflow_predictor: WorkflowPredictor,
     pub(super) session_manager: SessionManager,
-    pub(super) interaction_logger: Arc<InteractionLogger>,
-    pub(super) config: Arc<Config>,
+    pub(super) interaction_logger: InteractionLogger,
+    pub(super) config: Config,
 }
 
 impl RuntimeState {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
-        providers: Arc<Vec<Provider>>,
+        providers: Vec<Provider>,
         spec_store: Arc<SpecStore>,
-        ranker: Arc<Ranker>,
-        workflow_predictor: Arc<WorkflowPredictor>,
+        ranker: Ranker,
+        workflow_predictor: WorkflowPredictor,
         session_manager: SessionManager,
-        interaction_logger: Arc<InteractionLogger>,
-        config: Arc<Config>,
+        interaction_logger: InteractionLogger,
+        config: Config,
     ) -> Self {
         Self {
             providers,
