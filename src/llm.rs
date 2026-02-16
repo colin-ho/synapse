@@ -277,6 +277,17 @@ impl LlmClient {
         self.backoff_active.store(true, Ordering::Relaxed);
     }
 
+    async fn parse_api_response<T: serde::de::DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> Result<T, LlmError> {
+        let status = resp.status().as_u16();
+        if status != 200 {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
     async fn call_anthropic(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         let body = AnthropicRequest {
             model: self.model.clone(),
@@ -297,13 +308,7 @@ impl LlmClient {
             .send()
             .await?;
 
-        let status = resp.status().as_u16();
-        if status != 200 {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api { status, body });
-        }
-
-        let parsed: AnthropicResponse = resp.json().await?;
+        let parsed: AnthropicResponse = Self::parse_api_response(resp).await?;
         Ok(parsed
             .content
             .first()
@@ -330,13 +335,7 @@ impl LlmClient {
             .send()
             .await?;
 
-        let status = resp.status().as_u16();
-        if status != 200 {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api { status, body });
-        }
-
-        let parsed: OpenAIResponse = resp.json().await?;
+        let parsed: OpenAIResponse = Self::parse_api_response(resp).await?;
         Ok(parsed
             .choices
             .first()
@@ -536,23 +535,26 @@ Rules:
     )
 }
 
+/// Extract the content of a markdown fenced code block, skipping the language tag.
+fn extract_fenced_block(text: &str) -> Option<&str> {
+    let start = text.find("```")?;
+    let after_backticks = start + 3;
+    let content_start = if let Some(nl) = text[after_backticks..].find('\n') {
+        after_backticks + nl + 1
+    } else {
+        after_backticks
+    };
+    let end = text[content_start..].find("```")?;
+    Some(text[content_start..content_start + end].trim())
+}
+
 /// Extract the shell command from an LLM response.
 /// Handles markdown fences, leading/trailing whitespace, and commentary.
 fn extract_command(response: &str) -> String {
     let trimmed = response.trim();
 
-    if let Some(start) = trimmed.find("```") {
-        let content_start = start + 3;
-        let content_start = if let Some(nl) = trimmed[content_start..].find('\n') {
-            content_start + nl + 1
-        } else {
-            content_start
-        };
-        if let Some(end) = trimmed[content_start..].find("```") {
-            return trimmed[content_start..content_start + end]
-                .trim()
-                .to_string();
-        }
+    if let Some(block) = extract_fenced_block(trimmed) {
+        return block.to_string();
     }
 
     for line in trimmed.lines() {
@@ -592,26 +594,7 @@ fn detect_destructive_command(command: &str) -> Option<String> {
 
 /// Extract TOML from an LLM response that may contain markdown fences.
 pub(crate) fn extract_toml(response: &str) -> &str {
-    // Try ```toml ... ``` first
-    if let Some(start) = response.find("```toml") {
-        let content_start = start + "```toml".len();
-        if let Some(end) = response[content_start..].find("```") {
-            return response[content_start..content_start + end].trim();
-        }
-    }
-    // Try generic ``` ... ```
-    if let Some(start) = response.find("```") {
-        let content_start = start + "```".len();
-        let content_start = if let Some(nl) = response[content_start..].find('\n') {
-            content_start + nl + 1
-        } else {
-            content_start
-        };
-        if let Some(end) = response[content_start..].find("```") {
-            return response[content_start..content_start + end].trim();
-        }
-    }
-    response.trim()
+    extract_fenced_block(response).unwrap_or_else(|| response.trim())
 }
 
 pub(crate) fn scrub_home_paths(text: &str) -> String {

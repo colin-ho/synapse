@@ -6,153 +6,42 @@ use crate::config::WeightsConfig;
 use crate::protocol::{SuggestionItem, SuggestionKind, SuggestionSource};
 use crate::providers::ProviderSuggestion;
 
-/// Position-dependent weight configuration.
-struct PositionWeights {
-    spec: f64,
-    filesystem: f64,
-    history: f64,
-    environment: f64,
-    workflow: f64,
-    llm: f64,
-    recency: f64,
-}
+/// Position-dependent weights: [spec, filesystem, history, environment, workflow, llm, recency]
+type Weights = [f64; 7];
 
-impl PositionWeights {
-    fn weight_for(&self, source: SuggestionSource) -> f64 {
-        match source {
-            SuggestionSource::Spec => self.spec,
-            SuggestionSource::Filesystem => self.filesystem,
-            SuggestionSource::History => self.history,
-            SuggestionSource::Environment => self.environment,
-            SuggestionSource::Workflow => self.workflow,
-            SuggestionSource::Llm => self.llm,
-        }
+fn weight_for_source(w: &Weights, source: SuggestionSource) -> f64 {
+    match source {
+        SuggestionSource::Spec => w[0],
+        SuggestionSource::Filesystem => w[1],
+        SuggestionSource::History => w[2],
+        SuggestionSource::Environment => w[3],
+        SuggestionSource::Workflow => w[4],
+        SuggestionSource::Llm => w[5],
     }
 }
 
-fn weights_for_position(ctx: &CompletionContext) -> PositionWeights {
+fn weights_for_position(ctx: &CompletionContext) -> Weights {
+    //                                           spec   fs    hist   env   flow   llm  recency
     match &ctx.position {
-        Position::CommandName => PositionWeights {
-            spec: 0.25,
-            filesystem: 0.0,
-            history: 0.20,
-            environment: 0.05,
-            workflow: 0.30,
-            llm: 0.0,
-            recency: 0.20,
-        },
-        Position::Subcommand => PositionWeights {
-            spec: 0.55,
-            filesystem: 0.0,
-            history: 0.20,
-            environment: 0.0,
-            workflow: 0.0,
-            llm: 0.0,
-            recency: 0.25,
-        },
-        Position::OptionFlag => PositionWeights {
-            spec: 0.60,
-            filesystem: 0.0,
-            history: 0.10,
-            environment: 0.0,
-            workflow: 0.0,
-            llm: 0.0,
-            recency: 0.30,
-        },
+        Position::CommandName => [0.25, 0.00, 0.20, 0.05, 0.30, 0.00, 0.20],
+        Position::Subcommand => [0.55, 0.00, 0.20, 0.00, 0.00, 0.00, 0.25],
+        Position::OptionFlag => [0.60, 0.00, 0.10, 0.00, 0.00, 0.00, 0.30],
         Position::OptionValue { .. } => match &ctx.expected_type {
-            ExpectedType::Generator(_) => PositionWeights {
-                spec: 0.40,
-                filesystem: 0.20,
-                history: 0.20,
-                environment: 0.0,
-                workflow: 0.0,
-                llm: 0.10,
-                recency: 0.20,
-            },
-            ExpectedType::Any => PositionWeights {
-                spec: 0.40,
-                filesystem: 0.20,
-                history: 0.20,
-                environment: 0.0,
-                workflow: 0.0,
-                llm: 0.55,
-                recency: 0.20,
-            },
-            _ => PositionWeights {
-                spec: 0.40,
-                filesystem: 0.20,
-                history: 0.20,
-                environment: 0.0,
-                workflow: 0.0,
-                llm: 0.0,
-                recency: 0.20,
-            },
+            ExpectedType::Generator(_) => [0.40, 0.20, 0.20, 0.00, 0.00, 0.10, 0.20],
+            ExpectedType::Any => [0.40, 0.20, 0.20, 0.00, 0.00, 0.55, 0.20],
+            _ => [0.40, 0.20, 0.20, 0.00, 0.00, 0.00, 0.20],
         },
         Position::Argument { .. } => match &ctx.expected_type {
-            ExpectedType::FilePath | ExpectedType::Directory => PositionWeights {
-                spec: 0.10,
-                filesystem: 0.50,
-                history: 0.15,
-                environment: 0.0,
-                workflow: 0.0,
-                llm: 0.0,
-                recency: 0.25,
-            },
-            ExpectedType::Generator(_) => PositionWeights {
-                spec: 0.45,
-                filesystem: 0.0,
-                history: 0.25,
-                environment: 0.0,
-                workflow: 0.0,
-                llm: 0.15,
-                recency: 0.30,
-            },
-            ExpectedType::Any => PositionWeights {
-                spec: 0.35,
-                filesystem: 0.0,
-                history: 0.30,
-                environment: 0.0,
-                workflow: 0.0,
-                llm: 0.60,
-                recency: 0.35,
-            },
-            _ => PositionWeights {
-                spec: 0.35,
-                filesystem: 0.0,
-                history: 0.30,
-                environment: 0.0,
-                workflow: 0.0,
-                llm: 0.0,
-                recency: 0.35,
-            },
+            ExpectedType::FilePath | ExpectedType::Directory => {
+                [0.10, 0.50, 0.15, 0.00, 0.00, 0.00, 0.25]
+            }
+            ExpectedType::Generator(_) => [0.45, 0.00, 0.25, 0.00, 0.00, 0.15, 0.30],
+            ExpectedType::Any => [0.35, 0.00, 0.30, 0.00, 0.00, 0.60, 0.35],
+            _ => [0.35, 0.00, 0.30, 0.00, 0.00, 0.00, 0.35],
         },
-        Position::PipeTarget => PositionWeights {
-            spec: 0.0,
-            filesystem: 0.0,
-            history: 0.40,
-            environment: 0.25,
-            workflow: 0.0,
-            llm: 0.0,
-            recency: 0.35,
-        },
-        Position::Redirect => PositionWeights {
-            spec: 0.0,
-            filesystem: 0.60,
-            history: 0.10,
-            environment: 0.0,
-            workflow: 0.0,
-            llm: 0.0,
-            recency: 0.30,
-        },
-        Position::Unknown => PositionWeights {
-            spec: 0.25,
-            filesystem: 0.0,
-            history: 0.35,
-            environment: 0.0,
-            workflow: 0.0,
-            llm: 0.0,
-            recency: 0.40,
-        },
+        Position::PipeTarget => [0.00, 0.00, 0.40, 0.25, 0.00, 0.00, 0.35],
+        Position::Redirect => [0.00, 0.60, 0.10, 0.00, 0.00, 0.00, 0.30],
+        Position::Unknown => [0.25, 0.00, 0.35, 0.00, 0.00, 0.00, 0.40],
     }
 }
 
@@ -263,8 +152,8 @@ impl Ranker {
         ctx: Option<&CompletionContext>,
     ) -> (f64, f64) {
         if let Some(ctx) = ctx {
-            let pw = weights_for_position(ctx);
-            (pw.weight_for(source), pw.recency)
+            let w = weights_for_position(ctx);
+            (weight_for_source(&w, source), w[6])
         } else {
             (self.static_weight_for(source), self.weights.recency)
         }

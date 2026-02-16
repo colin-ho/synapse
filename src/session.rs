@@ -83,31 +83,33 @@ impl SessionManager {
         }
     }
 
+    async fn read_field<T>(
+        &self,
+        session_id: &str,
+        f: impl FnOnce(&SessionState) -> T,
+    ) -> Option<T> {
+        self.sessions.read().await.get(session_id).map(f)
+    }
+
     pub async fn get_cwd(&self, session_id: &str) -> Option<String> {
-        let sessions = self.sessions.read().await;
-        sessions
-            .get(session_id)
-            .map(|s| s.cwd.clone())
+        self.read_field(session_id, |s| s.cwd.clone())
+            .await
             .filter(|cwd| !cwd.is_empty())
     }
 
     pub async fn get_last_buffer(&self, session_id: &str) -> Option<String> {
-        let sessions = self.sessions.read().await;
-        sessions.get(session_id).map(|s| s.last_buffer.clone())
+        self.read_field(session_id, |s| s.last_buffer.clone()).await
     }
 
     pub async fn get_last_accepted(&self, session_id: &str) -> Option<String> {
-        let sessions = self.sessions.read().await;
-        sessions
-            .get(session_id)
-            .and_then(|s| s.last_accepted.clone())
+        self.read_field(session_id, |s| s.last_accepted.clone())
+            .await
+            .flatten()
     }
 
     pub async fn get_last_exit_code(&self, session_id: &str) -> i32 {
-        let sessions = self.sessions.read().await;
-        sessions
-            .get(session_id)
-            .map(|s| s.last_exit_code)
+        self.read_field(session_id, |s| s.last_exit_code)
+            .await
             .unwrap_or(0)
     }
 

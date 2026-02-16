@@ -6,30 +6,6 @@ use crate::spec_store::SpecStore;
 use super::tokenizer::{last_segment, tokenize, tokenize_with_operators, Token};
 use super::{CompletionContext, ExpectedType, Position};
 
-/// Hardcoded argument types for common commands without specs.
-fn command_arg_type(cmd: &str) -> Option<ExpectedType> {
-    match cmd {
-        "cd" | "mkdir" | "rmdir" | "pushd" => Some(ExpectedType::Directory),
-        "cat" | "less" | "head" | "tail" | "vim" | "nvim" | "code" | "nano" | "bat" | "wc"
-        | "sort" | "uniq" | "file" | "stat" | "touch" | "open" => Some(ExpectedType::FilePath),
-        "cp" | "mv" | "rm" | "chmod" | "chown" | "ln" => Some(ExpectedType::FilePath),
-        "python" | "python3" | "node" | "ruby" | "perl" | "bash" | "sh" | "zsh" => {
-            Some(ExpectedType::FilePath)
-        }
-        "ssh" | "scp" | "sftp" | "ping" => Some(ExpectedType::Hostname),
-        "export" | "unset" => Some(ExpectedType::EnvVar),
-        _ => None,
-    }
-}
-
-/// Commands that take another command as their first argument (recursive).
-fn is_recursive_command(cmd: &str) -> bool {
-    matches!(
-        cmd,
-        "sudo" | "env" | "nohup" | "time" | "watch" | "xargs" | "nice" | "ionice" | "strace"
-    )
-}
-
 impl CompletionContext {
     /// Build a CompletionContext from a buffer, cwd, and spec store.
     pub async fn build(buffer: &str, cwd: &Path, store: &SpecStore) -> Self {
@@ -139,75 +115,12 @@ impl CompletionContext {
 
         let command_name = &tokens[0];
 
-        // Handle recursive commands (sudo, env, etc.)
-        if is_recursive_command(command_name) {
-            let rest_tokens = &tokens[1..];
-            // Find the actual command (skip flags for env/sudo)
-            let mut cmd_start = 0;
-            for (i, tok) in rest_tokens.iter().enumerate() {
-                if !tok.starts_with('-') {
-                    cmd_start = i;
-                    break;
-                }
-                cmd_start = i + 1;
-            }
-
-            if cmd_start < rest_tokens.len() {
-                // Reconstruct buffer from the actual command onwards
-                let prefix_parts: Vec<&str> =
-                    tokens[..1 + cmd_start].iter().map(|s| s.as_str()).collect();
-                let prefix_str = format!("{} ", prefix_parts.join(" "));
-                let inner_tokens = &rest_tokens[cmd_start..];
-
-                if inner_tokens.len() == 1 && !trailing_space {
-                    // Still typing the inner command name
-                    return Self::from_fields(
-                        buffer,
-                        tokens.clone(),
-                        inner_tokens[0].clone(),
-                        prefix_str,
-                        Some(inner_tokens[0].clone()),
-                        Position::CommandName,
-                        ExpectedType::Command,
-                    );
-                }
-
-                // Recurse: build context for the inner command
-                let inner_ctx =
-                    Self::build_segment_words(inner_tokens, trailing_space, cwd, store).await;
-                // Adjust prefix to include the recursive command
-                return Self::rebase_inner(inner_ctx, buffer, tokens.clone(), &prefix_str);
-            } else {
-                // After recursive command + its flags, waiting for the inner command
-                return Self::from_fields(
-                    buffer,
-                    tokens.clone(),
-                    String::new(),
-                    format!("{} ", tokens.join(" ")),
-                    None,
-                    Position::CommandName,
-                    ExpectedType::Command,
-                );
-            }
-        }
-
-        // Try spec lookup
+        // Try spec lookup — handles recursive commands, arg types, and full specs
         if let Some(spec) = store.lookup(command_name, cwd).await {
+            if spec.recursive {
+                return Self::build_recursive(buffer, &tokens, trailing_space, cwd, store).await;
+            }
             return Self::build_from_spec(buffer, &tokens, trailing_space, &spec, store, cwd).await;
-        }
-
-        // No spec — check command argument table
-        if let Some(expected) = command_arg_type(command_name) {
-            let (partial, prefix) = Self::compute_partial_prefix(&tokens, trailing_space);
-            return Self::from_fields(
-                buffer,
-                tokens.clone(),
-                partial,
-                prefix,
-                Some(command_name.clone()),
-                Position::Argument { index: 0 },
-                expected,
-            );
         }
 
         // Fallback: unknown
@@ -416,6 +329,59 @@ impl CompletionContext {
             expected_type,
             subcommand_path: Vec::new(),
             present_options: Vec::new(),
+        }
+    }
+
+    /// Handle recursive commands (sudo, env, etc.) that take another command as an argument.
+    async fn build_recursive(
+        buffer: &str,
+        tokens: &[String],
+        trailing_space: bool,
+        cwd: &Path,
+        store: &SpecStore,
+    ) -> Self {
+        let rest_tokens = &tokens[1..];
+        // Find the actual command (skip flags for env/sudo)
+        let mut cmd_start = 0;
+        for (i, tok) in rest_tokens.iter().enumerate() {
+            if !tok.starts_with('-') {
+                cmd_start = i;
+                break;
+            }
+            cmd_start = i + 1;
+        }
+
+        if cmd_start < rest_tokens.len() {
+            let prefix_parts: Vec<&str> =
+                tokens[..1 + cmd_start].iter().map(|s| s.as_str()).collect();
+            let prefix_str = format!("{} ", prefix_parts.join(" "));
+            let inner_tokens = &rest_tokens[cmd_start..];
+
+            if inner_tokens.len() == 1 && !trailing_space {
+                return Self::from_fields(
+                    buffer,
+                    tokens.to_vec(),
+                    inner_tokens[0].clone(),
+                    prefix_str,
+                    Some(inner_tokens[0].clone()),
+                    Position::CommandName,
+                    ExpectedType::Command,
+                );
+            }
+
+            let inner_ctx =
+                Self::build_segment_words(inner_tokens, trailing_space, cwd, store).await;
+            Self::rebase_inner(inner_ctx, buffer, tokens.to_vec(), &prefix_str)
+        } else {
+            Self::from_fields(
+                buffer,
+                tokens.to_vec(),
+                String::new(),
+                format!("{} ", tokens.join(" ")),
+                None,
+                Position::CommandName,
+                ExpectedType::Command,
+            )
         }
     }
 

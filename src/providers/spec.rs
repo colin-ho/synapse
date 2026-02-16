@@ -143,14 +143,9 @@ impl SpecProvider {
         for sub in current_subcommands {
             if sub.name.starts_with(partial) {
                 let text = format!("{}{}", prefix, sub.name);
-                let similarity = if partial.is_empty() {
-                    0.7
-                } else {
-                    0.7 + 0.3 * (partial.len() as f64 / sub.name.len() as f64)
-                };
                 suggestions.push(spec_suggestion(
                     text,
-                    similarity,
+                    prefix_confidence(0.7, 0.3, partial, &sub.name),
                     sub.description.clone(),
                     SuggestionKind::Subcommand,
                 ));
@@ -175,14 +170,9 @@ impl SpecProvider {
                 if let Some(long) = &opt.long {
                     if long.starts_with(partial) {
                         let text = format!("{}{}", prefix, long);
-                        let similarity = if partial.is_empty() {
-                            0.5
-                        } else {
-                            0.5 + 0.3 * (partial.len() as f64 / long.len() as f64)
-                        };
                         suggestions.push(spec_suggestion(
                             text,
-                            similarity,
+                            prefix_confidence(0.5, 0.3, partial, long),
                             opt.description.clone(),
                             SuggestionKind::Option,
                         ));
@@ -210,14 +200,9 @@ impl SpecProvider {
                         let gen_results = store.run_generator(gen, cwd, spec.source).await;
                         for item in gen_results {
                             if item.starts_with(partial) {
-                                let similarity = if partial.is_empty() {
-                                    0.65
-                                } else {
-                                    0.65 + 0.25 * (partial.len() as f64 / item.len().max(1) as f64)
-                                };
                                 suggestions.push(spec_suggestion(
                                     format!("{}{}", prefix, item),
-                                    similarity,
+                                    prefix_confidence(0.65, 0.25, partial, &item),
                                     opt.description.clone(),
                                     SuggestionKind::Argument,
                                 ));
@@ -255,8 +240,8 @@ impl SpecProvider {
             .into_iter()
             .filter(|name| name.starts_with(partial) && name != partial)
             .map(|name| {
-                let similarity = partial.len() as f64 / name.len() as f64;
-                spec_suggestion(name, 0.6 + 0.3 * similarity, None, SuggestionKind::Command)
+                let score = prefix_confidence(0.6, 0.3, partial, &name);
+                spec_suggestion(name, score, None, SuggestionKind::Command)
             })
             .collect()
     }
@@ -288,14 +273,9 @@ impl SpecProvider {
             let gen_results = store.run_generator(generator, cwd, source).await;
             for item in gen_results {
                 if item.starts_with(partial) {
-                    let similarity = if partial.is_empty() {
-                        0.65
-                    } else {
-                        0.65 + 0.25 * (partial.len() as f64 / item.len().max(1) as f64)
-                    };
                     results.push(spec_suggestion(
-                        item,
-                        similarity,
+                        item.clone(),
+                        prefix_confidence(0.65, 0.25, partial, &item),
                         arg.description.clone(),
                         SuggestionKind::Argument,
                     ));
@@ -362,6 +342,14 @@ impl SuggestionProvider for SpecProvider {
 
     fn is_available(&self) -> bool {
         true
+    }
+}
+
+fn prefix_confidence(base: f64, bonus: f64, partial: &str, full: &str) -> f64 {
+    if partial.is_empty() {
+        base
+    } else {
+        base + bonus * (partial.len() as f64 / full.len().max(1) as f64)
     }
 }
 
