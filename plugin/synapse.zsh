@@ -14,6 +14,7 @@ typeset -g _SYNAPSE_SOCKET_FD=""
 typeset -g _SYNAPSE_CONNECTED=0
 typeset -g _SYNAPSE_CURRENT_SUGGESTION=""
 typeset -g _SYNAPSE_CURRENT_SOURCE=""
+typeset -g _SYNAPSE_PENDING_RESPONSE=""
 typeset -g _SYNAPSE_RECONNECT_ATTEMPTS=0
 typeset -g _SYNAPSE_MAX_RECONNECT=3
 typeset -g _SYNAPSE_LAST_RECONNECT_MINUTE=0
@@ -34,6 +35,10 @@ typeset -gi _SYNAPSE_DROPDOWN_SCROLL=0
 typeset -g _SYNAPSE_DROPDOWN_SELECTED=""
 typeset -g _SYNAPSE_DROPDOWN_INSERT_KEY=""
 typeset -gi _SYNAPSE_HISTORY_BROWSING=0
+
+# --- Natural Language State ---
+typeset -gi _SYNAPSE_NL_MODE=0
+typeset -g _SYNAPSE_NL_PREFIX="?"
 
 # --- Modules ---
 zmodload zsh/net/socket 2>/dev/null || { return; }
@@ -163,14 +168,80 @@ _synapse_disconnect() {
     _SYNAPSE_CONNECTED=0
     _SYNAPSE_CURRENT_SUGGESTION=""
     _SYNAPSE_CURRENT_SOURCE=""
+    _SYNAPSE_PENDING_RESPONSE=""
     POSTDISPLAY=""
 }
 
 # --- Protocol ---
 
+# Return 0 if BUFFER starts with "<nl_prefix> ".
+_synapse_buffer_has_nl_prefix() {
+    local prefix_len=${#_SYNAPSE_NL_PREFIX}
+    (( prefix_len > 0 )) || return 1
+    (( ${#BUFFER} >= prefix_len + 2 )) || return 1
+    [[ "${BUFFER[1,$prefix_len]}" == "$_SYNAPSE_NL_PREFIX" ]] || return 1
+    [[ "${BUFFER[$(( prefix_len + 1 ))]}" == " " ]]
+}
+
+# Extract NL query text from BUFFER (without "<nl_prefix> ").
+_synapse_nl_query_from_buffer() {
+    local prefix_len=${#_SYNAPSE_NL_PREFIX}
+    local start=$(( prefix_len + 2 ))
+    if (( start > ${#BUFFER} )); then
+        echo ""
+    else
+        echo "${BUFFER[$start,-1]}"
+    fi
+}
+
+# Render an NL-generated full command below the query.
+_synapse_show_nl_command() {
+    local text="$1"
+    if [[ -z "$text" ]]; then
+        _synapse_clear_suggestion
+        return
+    fi
+    _SYNAPSE_CURRENT_SUGGESTION="$text"
+    _SYNAPSE_CURRENT_SOURCE="llm"
+    POSTDISPLAY=$'\n'"  > ${text}"
+    local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=14")
+}
+
+# Handle a pushed update line. Returns 0 if consumed.
+_synapse_handle_push_line() {
+    local response="$1"
+    local -a _tsv_fields
+    IFS=$'\t' read -rA _tsv_fields <<< "$response"
+
+    local kind="${_tsv_fields[1]}"
+    if [[ "$kind" != "update" ]]; then
+        return 1
+    fi
+
+    # Skip async updates while dropdown is open.
+    if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]]; then
+        return 0
+    fi
+
+    local text="${_tsv_fields[2]}"
+    local source="${_tsv_fields[3]}"
+
+    if [[ "$source" == "llm" ]] && [[ $_SYNAPSE_NL_MODE -eq 1 ]] && _synapse_buffer_has_nl_prefix; then
+        _synapse_show_nl_command "$text"
+    else
+        _SYNAPSE_CURRENT_SOURCE="$source"
+        _synapse_show_suggestion "$text"
+    fi
+
+    zle -R
+    return 0
+}
+
 # Send a JSON request and read the response
 _synapse_request() {
     local json="$1"
+    local timeout="${2:-0.05}"
     [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return 1
     [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return 1
 
@@ -180,13 +251,29 @@ _synapse_request() {
         return 1
     }
 
-    # Read response with timeout (50ms)
+    # Read response with timeout.
+    # If we consume pushed update lines while waiting, handle them and continue.
     local response=""
-    if read -t 0.05 -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
-        _SYNAPSE_REQUEST_FAILURES=0
-        echo "$response"
-        return 0
-    fi
+    local reads=0
+    while (( reads < 20 )); do
+        if [[ -n "$_SYNAPSE_PENDING_RESPONSE" ]]; then
+            _SYNAPSE_REQUEST_FAILURES=0
+            response="$_SYNAPSE_PENDING_RESPONSE"
+            _SYNAPSE_PENDING_RESPONSE=""
+            echo "$response"
+            return 0
+        fi
+        if read -t "$timeout" -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
+            if _synapse_handle_push_line "$response"; then
+                (( reads++ ))
+                continue
+            fi
+            _SYNAPSE_REQUEST_FAILURES=0
+            echo "$response"
+            return 0
+        fi
+        break
+    done
 
     # Track consecutive failures to detect dead connections
     (( _SYNAPSE_REQUEST_FAILURES++ ))
@@ -265,6 +352,29 @@ _synapse_build_list_request() {
     env_hints_json="$(_synapse_build_env_hints_json)"
 
     echo "{\"type\":\"list_suggestions\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${escaped_cwd}\",\"max_results\":${max_results},\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
+}
+
+# Build a natural_language request JSON
+_synapse_build_nl_request() {
+    local query="$1" cwd="$2"
+
+    local escaped_query escaped_cwd recent_json env_hints_json
+    escaped_query="$(_synapse_json_escape "$query")"
+    escaped_cwd="$(_synapse_json_escape "$cwd")"
+    recent_json="$(_synapse_build_recent_commands_json)"
+    env_hints_json="$(_synapse_build_env_hints_json)"
+
+    echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${escaped_cwd}\",\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
+}
+
+# Build an explain request JSON
+_synapse_build_explain_request() {
+    local command="$1"
+
+    local escaped_command
+    escaped_command="$(_synapse_json_escape "$command")"
+
+    echo "{\"type\":\"explain\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"command\":\"${escaped_command}\"}"
 }
 
 # --- Ghost Text Rendering ---
@@ -522,18 +632,11 @@ _synapse_async_handler() {
 
     local response=""
     if read -u "$fd" response 2>/dev/null; then
-        # TSV: update\ttext\tsource
-        local -a _tsv_fields
-        IFS=$'\t' read -rA _tsv_fields <<< "$response"
-
-        if [[ "${_tsv_fields[1]}" == "update" ]]; then
-            # Skip async updates while dropdown is open
-            if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]]; then
-                return
+        if ! _synapse_handle_push_line "$response"; then
+            # Stash synchronous responses so request callers can consume them.
+            if [[ -z "$_SYNAPSE_PENDING_RESPONSE" ]]; then
+                _SYNAPSE_PENDING_RESPONSE="$response"
             fi
-            _SYNAPSE_CURRENT_SOURCE="${_tsv_fields[3]}"
-            _synapse_show_suggestion "${_tsv_fields[2]}"
-            zle -R  # Redraw
         fi
     else
         # EOF or read error — daemon connection lost
@@ -578,14 +681,59 @@ _synapse_self_insert() {
     fi
 
     zle .self-insert
-    _synapse_suggest
+
+    # Check for natural language mode: "? " prefix with enough characters
+    local query=""
+    if _synapse_buffer_has_nl_prefix; then
+        query="$(_synapse_nl_query_from_buffer)"
+    fi
+    if [[ -n "$query" ]]; then
+        _synapse_nl_suggest
+    else
+        if ! _synapse_buffer_has_nl_prefix; then
+            _SYNAPSE_NL_MODE=0
+        fi
+        _synapse_suggest
+    fi
+}
+
+# Send a natural language request (fire-and-forget, response comes via async handler)
+_synapse_nl_suggest() {
+    _SYNAPSE_NL_MODE=1
+
+    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return
+
+    local query
+    query="$(_synapse_nl_query_from_buffer)"
+    [[ -n "$query" ]] || return
+
+    local json
+    json="$(_synapse_build_nl_request "$query" "$PWD")"
+
+    # Fire and forget — the async handler will receive the Update response
+    print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || {
+        _synapse_disconnect
+        return
+    }
 }
 
 # Override backward-delete-char to re-suggest
 _synapse_backward_delete_char() {
     _SYNAPSE_HISTORY_BROWSING=0
     zle .backward-delete-char
-    _synapse_suggest
+
+    local query=""
+    if _synapse_buffer_has_nl_prefix; then
+        query="$(_synapse_nl_query_from_buffer)"
+    fi
+    if [[ -n "$query" ]]; then
+        _synapse_nl_suggest
+    else
+        if ! _synapse_buffer_has_nl_prefix; then
+            _SYNAPSE_NL_MODE=0
+        fi
+        _synapse_suggest
+    fi
 }
 
 # Accept the full suggestion
@@ -594,6 +742,7 @@ _synapse_accept() {
         _synapse_report_interaction "accept"
         BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
         CURSOR=${#BUFFER}
+        _SYNAPSE_NL_MODE=0
         _synapse_clear_suggestion
     else
         # Fall through to default behavior (move cursor right)
@@ -607,6 +756,7 @@ _synapse_tab_accept() {
         _synapse_report_interaction "accept"
         BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
         CURSOR=${#BUFFER}
+        _SYNAPSE_NL_MODE=0
         _synapse_clear_suggestion
     else
         zle expand-or-complete
@@ -637,6 +787,33 @@ _synapse_dismiss() {
         _synapse_clear_suggestion
     else
         zle .send-break
+    fi
+}
+
+# Explain the current NL-generated command (Ctrl+E)
+_synapse_explain() {
+    # Only works when viewing an LLM-generated command
+    if [[ -z "$_SYNAPSE_CURRENT_SUGGESTION" ]] || [[ "$_SYNAPSE_CURRENT_SOURCE" != "llm" ]] || [[ $_SYNAPSE_CONNECTED -ne 1 ]]; then
+        zle .end-of-line
+        return
+    fi
+
+    local command="$_SYNAPSE_CURRENT_SUGGESTION"
+    local json
+    json="$(_synapse_build_explain_request "$command")"
+
+    local response
+    response="$(_synapse_request "$json" 5.0)" || return
+
+    local -a _tsv_fields
+    IFS=$'\t' read -rA _tsv_fields <<< "$response"
+
+    if [[ "${_tsv_fields[1]}" == "suggest" ]] && [[ -n "${_tsv_fields[2]}" ]]; then
+        # Show command + explanation below the query
+        POSTDISPLAY=$'\n'"  > ${_SYNAPSE_CURRENT_SUGGESTION}"$'\n'"  ─────────────────────────────"$'\n'"  ${_tsv_fields[2]}"
+        local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+        region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=14")
+        zle -R
     fi
 }
 
@@ -799,8 +976,9 @@ _synapse_precmd() {
         fi
     fi
 
-    # Clear any leftover ghost text, dropdown, and history browsing state
+    # Clear any leftover ghost text, dropdown, history browsing, and NL state
     _SYNAPSE_HISTORY_BROWSING=0
+    _SYNAPSE_NL_MODE=0
     _synapse_clear_dropdown
     _synapse_clear_suggestion
 }
@@ -830,6 +1008,7 @@ _synapse_cleanup() {
     _synapse_disconnect
     _synapse_clear_dropdown
     _synapse_clear_suggestion
+    _SYNAPSE_NL_MODE=0
     add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
     bindkey -D synapse-dropdown &>/dev/null
@@ -856,6 +1035,7 @@ _synapse_init() {
     zle -N synapse-dropdown-dismiss _synapse_dropdown_dismiss
     zle -N synapse-dropdown-close-and-insert _synapse_dropdown_close_and_insert
     zle -N synapse-up-line-or-history _synapse_up_line_or_history
+    zle -N synapse-explain _synapse_explain
 
     # Create dropdown keymap (based on main, with overrides)
     # Delete and recreate to pick up any main keymap changes on reload
@@ -887,6 +1067,7 @@ _synapse_init() {
     bindkey '^[OA' synapse-up-line-or-history  # Up arrow (application) — history + flag
     bindkey '^[[B' synapse-dropdown-open  # Down arrow (normal) — opens dropdown
     bindkey '^[OB' synapse-dropdown-open  # Down arrow (application) — opens dropdown
+    bindkey '^E' synapse-explain          # Ctrl+E — explain NL-generated command (fallback: end-of-line)
 
     # Hooks
     autoload -Uz add-zsh-hook

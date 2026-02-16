@@ -18,6 +18,22 @@ pub enum LlmError {
     InvalidToml(#[from] toml::de::Error),
     #[error("LLM disabled due to recent API errors (backoff active)")]
     BackoffActive,
+    #[error("Empty response from LLM")]
+    EmptyResponse,
+}
+
+pub struct NlTranslationContext {
+    pub query: String,
+    pub cwd: String,
+    pub os: String,
+    pub project_type: Option<String>,
+    pub available_tools: Vec<String>,
+    pub recent_commands: Vec<String>,
+}
+
+pub struct NlTranslationResult {
+    pub command: String,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +133,73 @@ impl LlmClient {
             Err(e) => {
                 if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
                 {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Translate a natural language query into a shell command.
+    pub async fn translate_command(
+        &self,
+        ctx: &NlTranslationContext,
+    ) -> Result<NlTranslationResult, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let cwd = if self.scrub_paths {
+            scrub_home_paths(&ctx.cwd)
+        } else {
+            ctx.cwd.clone()
+        };
+        let prompt = build_nl_prompt(ctx, &cwd);
+
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(&prompt).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt).await,
+        };
+
+        match result {
+            Ok(response_text) => {
+                let command = extract_command(&response_text);
+                if command.is_empty() {
+                    return Err(LlmError::EmptyResponse);
+                }
+                let warning = detect_destructive_command(&command);
+                Ok(NlTranslationResult { command, warning })
+            }
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Ask the LLM to explain a command.
+    pub async fn explain_command(&self, command: &str) -> Result<String, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let prompt = build_explain_prompt(command);
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(&prompt).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt).await,
+        };
+
+        match result {
+            Ok(text) => {
+                let explanation = text.trim().to_string();
+                if explanation.is_empty() {
+                    return Err(LlmError::EmptyResponse);
+                }
+                Ok(explanation)
+            }
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500) {
                     self.activate_backoff().await;
                 }
                 Err(e)
@@ -356,6 +439,127 @@ fn scrub_home_paths(text: &str) -> String {
     }
 }
 
+fn build_nl_prompt(ctx: &NlTranslationContext, cwd: &str) -> String {
+    let tools_str = if ctx.available_tools.is_empty() {
+        "standard POSIX utilities".to_string()
+    } else {
+        ctx.available_tools.join(", ")
+    };
+
+    let recent_str = if ctx.recent_commands.is_empty() {
+        "(none)".to_string()
+    } else {
+        ctx.recent_commands
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let project_type = ctx.project_type.as_deref().unwrap_or("unknown");
+
+    format!(
+        r#"You are a shell command generator. Convert the user's natural language request into a single shell command.
+
+Environment:
+- Shell: zsh
+- OS: {os}
+- Working directory: {cwd}
+- Project type: {project_type}
+- Available tools: {tools}
+- Recent commands:
+{recent}
+
+User request: {query}
+
+Rules:
+- Return ONLY the shell command, nothing else
+- Use tools available on the system (prefer common POSIX utilities)
+- Use the working directory context (don't use absolute paths unless necessary)
+- If the request is ambiguous, prefer the most common interpretation
+- If the request requires multiple commands, chain them with && or |
+- Never generate destructive commands (rm -rf /, dd, mkfs) without explicit safeguards
+- For file operations, prefer relative paths from the working directory"#,
+        os = ctx.os,
+        cwd = cwd,
+        project_type = project_type,
+        tools = tools_str,
+        recent = recent_str,
+        query = ctx.query,
+    )
+}
+
+fn build_explain_prompt(command: &str) -> String {
+    format!(
+        r#"Explain this shell command in 1-2 short sentences. Be concise and specific.
+
+Command: {command}
+
+Rules:
+- Explain what it does, not how to use it
+- Mention any potentially dangerous effects
+- Keep it under 100 words"#,
+    )
+}
+
+/// Extract the shell command from an LLM response.
+/// Handles markdown fences, leading/trailing whitespace, and commentary.
+fn extract_command(response: &str) -> String {
+    let trimmed = response.trim();
+
+    // Try ```bash ... ``` or ```sh ... ``` or ``` ... ```
+    if let Some(start) = trimmed.find("```") {
+        let content_start = start + 3;
+        // Skip language identifier on same line
+        let content_start = if let Some(nl) = trimmed[content_start..].find('\n') {
+            content_start + nl + 1
+        } else {
+            content_start
+        };
+        if let Some(end) = trimmed[content_start..].find("```") {
+            return trimmed[content_start..content_start + end]
+                .trim()
+                .to_string();
+        }
+    }
+
+    // If multi-line, take only the first non-empty, non-comment line
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if !line.is_empty() && !line.starts_with('#') && !line.starts_with("//") {
+            return line.to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+/// Check if a command contains potentially destructive operations.
+/// Returns a warning description if so.
+fn detect_destructive_command(command: &str) -> Option<String> {
+    let patterns: &[(&str, &str)] = &[
+        ("rm ", "deletes files"),
+        ("rm\t", "deletes files"),
+        ("rmdir ", "removes directories"),
+        ("chmod 777", "makes files world-writable"),
+        ("chmod -R", "changes permissions recursively"),
+        ("dd ", "raw disk write"),
+        ("mkfs", "formats filesystem"),
+        ("> ", "overwrites file"),
+        ("truncate ", "truncates file"),
+        ("kill -9", "force-kills process"),
+        ("pkill ", "kills processes by name"),
+    ];
+
+    for (pattern, description) in patterns {
+        if command.contains(pattern) {
+            return Some(description.to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +618,101 @@ mod tests {
         let result = LlmClient::from_config(&config, false);
         unsafe { std::env::remove_var("SYNAPSE_TEST_KEY") };
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_command_plain() {
+        assert_eq!(
+            extract_command("find . -name '*.rs'"),
+            "find . -name '*.rs'"
+        );
+    }
+
+    #[test]
+    fn test_extract_command_with_markdown_fence() {
+        let response = "```bash\nfind . -name '*.rs'\n```";
+        assert_eq!(extract_command(response), "find . -name '*.rs'");
+    }
+
+    #[test]
+    fn test_extract_command_with_generic_fence() {
+        let response = "```\nfind . -name '*.rs'\n```";
+        assert_eq!(extract_command(response), "find . -name '*.rs'");
+    }
+
+    #[test]
+    fn test_extract_command_with_commentary() {
+        let response = "# This finds large files\nfind . -type f -size +100M";
+        assert_eq!(extract_command(response), "find . -type f -size +100M");
+    }
+
+    #[test]
+    fn test_detect_destructive_rm() {
+        assert_eq!(
+            detect_destructive_command("rm -rf /tmp/old"),
+            Some("deletes files".into())
+        );
+    }
+
+    #[test]
+    fn test_detect_destructive_safe_command() {
+        assert!(detect_destructive_command("find . -name '*.log'").is_none());
+    }
+
+    #[test]
+    fn test_detect_destructive_chmod_777() {
+        assert_eq!(
+            detect_destructive_command("chmod 777 file.sh"),
+            Some("makes files world-writable".into())
+        );
+    }
+
+    #[test]
+    fn test_detect_destructive_dd() {
+        assert_eq!(
+            detect_destructive_command("dd if=/dev/zero of=/dev/sda"),
+            Some("raw disk write".into())
+        );
+    }
+
+    #[test]
+    fn test_build_nl_prompt_contains_query() {
+        let ctx = NlTranslationContext {
+            query: "find large files".into(),
+            cwd: "/home/user/project".into(),
+            os: "macOS 14.5".into(),
+            project_type: Some("rust".into()),
+            available_tools: vec!["git".into(), "cargo".into()],
+            recent_commands: vec!["cargo build".into()],
+        };
+        let prompt = build_nl_prompt(&ctx, &ctx.cwd);
+        assert!(prompt.contains("find large files"));
+        assert!(prompt.contains("macOS 14.5"));
+        assert!(prompt.contains("rust"));
+        assert!(prompt.contains("git, cargo"));
+        assert!(prompt.contains("cargo build"));
+    }
+
+    #[test]
+    fn test_build_nl_prompt_empty_tools() {
+        let ctx = NlTranslationContext {
+            query: "list files".into(),
+            cwd: "/tmp".into(),
+            os: "Linux".into(),
+            project_type: None,
+            available_tools: vec![],
+            recent_commands: vec![],
+        };
+        let prompt = build_nl_prompt(&ctx, &ctx.cwd);
+        assert!(prompt.contains("standard POSIX utilities"));
+        assert!(prompt.contains("unknown"));
+    }
+
+    #[test]
+    fn test_build_explain_prompt() {
+        let prompt = build_explain_prompt("find . -type f -size +100M");
+        assert!(prompt.contains("find . -type f -size +100M"));
+        assert!(prompt.contains("Explain"));
     }
 
     #[test]

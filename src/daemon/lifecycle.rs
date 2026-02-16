@@ -170,8 +170,8 @@ pub(super) async fn start_daemon(
         tracing::warn!("LLM enabled in config but API key env var not set, falling back to regex");
     }
 
-    // Init spec system
-    let spec_store = Arc::new(SpecStore::new(config.spec.clone(), llm_client));
+    // Init spec system (pass clone to spec store, keep original for NL handler)
+    let spec_store = Arc::new(SpecStore::new(config.spec.clone(), llm_client.clone()));
     let spec_provider = SpecProvider::new();
 
     // Init filesystem and environment providers
@@ -195,6 +195,8 @@ pub(super) async fn start_daemon(
         config.logging.max_log_size_mb,
     );
 
+    let nl_cache = crate::nl_cache::NlCache::new();
+
     let state = Arc::new(RuntimeState::new(
         providers,
         spec_store,
@@ -203,6 +205,8 @@ pub(super) async fn start_daemon(
         session_manager,
         interaction_logger,
         config.clone(),
+        llm_client,
+        nl_cache,
     ));
 
     // Main loop

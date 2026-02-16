@@ -22,6 +22,7 @@ impl PositionWeights {
             SuggestionSource::Filesystem => self.filesystem,
             SuggestionSource::History => self.history,
             SuggestionSource::Environment => self.environment,
+            SuggestionSource::Llm => 0.0,
         }
     }
 }
@@ -223,6 +224,7 @@ impl Ranker {
             SuggestionSource::Spec => self.weights.spec,
             SuggestionSource::Filesystem => self.weights.spec,
             SuggestionSource::Environment => self.weights.spec,
+            SuggestionSource::Llm => 0.0,
         }
     }
 }

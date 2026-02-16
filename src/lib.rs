@@ -4,6 +4,7 @@ pub mod daemon;
 pub mod help_parser;
 pub mod llm;
 pub mod logging;
+pub mod nl_cache;
 pub mod project;
 pub mod protocol;
 pub mod providers;

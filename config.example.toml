@@ -50,6 +50,8 @@ api_key_env = "ANTHROPIC_API_KEY"      # env var name containing the API key
 model = "claude-haiku-4-5-20251001"    # model to use (fast + cheap for structured extraction)
 timeout_ms = 10000                     # per-request timeout
 max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
+natural_language = true                # enable ? prefix mode for NL → command translation
+nl_min_query_length = 5                # minimum characters after prefix before querying LLM
 
 [logging]
 interaction_log = "~/.local/share/synapse/interactions.jsonl"

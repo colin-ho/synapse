@@ -10,6 +10,8 @@ use std::num::NonZeroUsize;
 pub enum Request {
     Suggest(SuggestRequest),
     ListSuggestions(ListSuggestionsRequest),
+    NaturalLanguage(NaturalLanguageRequest),
+    Explain(ExplainRequest),
     Interaction(InteractionReport),
     CommandExecuted(CommandExecutedReport),
     Ping,
@@ -71,6 +73,23 @@ pub struct CommandExecutedReport {
     pub command: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct NaturalLanguageRequest {
+    pub session_id: String,
+    pub query: String,
+    pub cwd: String,
+    #[serde(default)]
+    pub recent_commands: Vec<String>,
+    #[serde(default)]
+    pub env_hints: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExplainRequest {
+    pub session_id: String,
+    pub command: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionAction {
@@ -86,6 +105,7 @@ pub enum SuggestionSource {
     Spec,
     Filesystem,
     Environment,
+    Llm,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +137,8 @@ pub struct SuggestionResponse {
     pub text: String,
     pub source: SuggestionSource,
     pub confidence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +163,7 @@ impl SuggestionSource {
             Self::Spec => "spec",
             Self::Filesystem => "filesystem",
             Self::Environment => "environment",
+            Self::Llm => "llm",
         }
     }
 }
@@ -179,10 +202,20 @@ impl Response {
     pub fn to_tsv(&self) -> String {
         match self {
             Response::Suggestion(s) => {
-                format!("suggest\t{}\t{}", sanitize_tsv(&s.text), s.source.as_str())
+                let mut line = format!("suggest\t{}\t{}", sanitize_tsv(&s.text), s.source.as_str());
+                if let Some(ref desc) = s.description {
+                    line.push('\t');
+                    line.push_str(&sanitize_tsv(desc));
+                }
+                line
             }
             Response::Update(s) => {
-                format!("update\t{}\t{}", sanitize_tsv(&s.text), s.source.as_str())
+                let mut line = format!("update\t{}\t{}", sanitize_tsv(&s.text), s.source.as_str());
+                if let Some(ref desc) = s.description {
+                    line.push('\t');
+                    line.push_str(&sanitize_tsv(desc));
+                }
+                line
             }
             Response::SuggestionList(list) => {
                 let mut out = format!("list\t{}", list.suggestions.len());
@@ -255,6 +288,7 @@ mod tests {
             text: "git status".into(),
             source: SuggestionSource::History,
             confidence: 0.92,
+            description: None,
         });
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("suggestion"));
@@ -372,6 +406,7 @@ mod tests {
             text: "git status".into(),
             source: SuggestionSource::History,
             confidence: 0.9,
+            description: None,
         });
         assert_eq!(resp.to_tsv(), "suggest\tgit status\thistory");
     }
@@ -382,6 +417,7 @@ mod tests {
             text: "git status --verbose".into(),
             source: SuggestionSource::Spec,
             confidence: 0.87,
+            description: None,
         });
         assert_eq!(resp.to_tsv(), "update\tgit status --verbose\tspec");
     }
@@ -418,6 +454,7 @@ mod tests {
             text: "echo\thello\nworld".into(),
             source: SuggestionSource::History,
             confidence: 0.5,
+            description: None,
         });
         assert_eq!(resp.to_tsv(), "suggest\techo    hello world\thistory");
     }
@@ -428,8 +465,51 @@ mod tests {
             text: String::new(),
             source: SuggestionSource::History,
             confidence: 0.0,
+            description: None,
         });
         assert_eq!(resp.to_tsv(), "suggest\t\thistory");
+    }
+
+    #[test]
+    fn test_natural_language_request_deserialization() {
+        let json = r#"{"type":"natural_language","session_id":"abc","query":"find large files","cwd":"/tmp"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::NaturalLanguage(nl) => {
+                assert_eq!(nl.query, "find large files");
+                assert_eq!(nl.cwd, "/tmp");
+                assert!(nl.recent_commands.is_empty());
+                assert!(nl.env_hints.is_empty());
+            }
+            _ => panic!("Expected NaturalLanguage request"),
+        }
+    }
+
+    #[test]
+    fn test_explain_request_deserialization() {
+        let json =
+            r#"{"type":"explain","session_id":"abc","command":"find . -type f -size +100M"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::Explain(ex) => {
+                assert_eq!(ex.command, "find . -type f -size +100M");
+            }
+            _ => panic!("Expected Explain request"),
+        }
+    }
+
+    #[test]
+    fn test_to_tsv_suggestion_with_description() {
+        let resp = Response::Suggestion(SuggestionResponse {
+            text: "rm -rf /tmp/old".into(),
+            source: SuggestionSource::Llm,
+            confidence: 0.95,
+            description: Some("deletes files".into()),
+        });
+        assert_eq!(
+            resp.to_tsv(),
+            "suggest\trm -rf /tmp/old\tllm\tdeletes files"
+        );
     }
 
     #[test]
@@ -439,6 +519,7 @@ mod tests {
             SuggestionSource::Spec,
             SuggestionSource::Filesystem,
             SuggestionSource::Environment,
+            SuggestionSource::Llm,
         ] {
             let serde_str = serde_json::to_string(&source).unwrap();
             assert_eq!(format!("\"{}\"", source.as_str()), serde_str);
