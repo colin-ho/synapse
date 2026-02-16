@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 
 mod handlers;
 mod lifecycle;
+mod probe;
 mod server;
 mod shell;
 mod state;
@@ -49,6 +50,28 @@ enum Commands {
         #[arg(long)]
         socket_path: Option<PathBuf>,
     },
+    /// Send protocol requests directly to a running daemon (for testing/debugging)
+    Probe {
+        /// Override the socket path
+        #[arg(long)]
+        socket_path: Option<PathBuf>,
+
+        /// Read newline-delimited JSON requests from stdin
+        #[arg(long, default_value_t = false)]
+        stdio: bool,
+
+        /// Send a single JSON request
+        #[arg(long)]
+        request: Option<String>,
+
+        /// Keep reading daemon output until idle for this many milliseconds
+        #[arg(long, default_value_t = 0)]
+        wait_ms: u64,
+
+        /// Timeout for the first daemon response in milliseconds
+        #[arg(long, default_value_t = 5000)]
+        first_response_timeout_ms: u64,
+    },
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -68,6 +91,22 @@ pub async fn run() -> anyhow::Result<()> {
             socket_path,
         }) => {
             lifecycle::start_daemon(verbose, log_file, foreground, socket_path).await?;
+        }
+        Some(Commands::Probe {
+            socket_path,
+            stdio,
+            request,
+            wait_ms,
+            first_response_timeout_ms,
+        }) => {
+            probe::run_probe(
+                socket_path,
+                stdio,
+                request,
+                wait_ms,
+                first_response_timeout_ms,
+            )
+            .await?;
         }
         None => {
             if std::io::stdout().is_terminal() {

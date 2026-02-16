@@ -144,12 +144,15 @@ New fields in `config.toml` under `[llm]`:
 enabled = false                    # master switch
 provider = "anthropic"             # "anthropic" or "openai"
 api_key_env = "ANTHROPIC_API_KEY"  # env var name containing the key
+base_url = ""                      # optional base URL (e.g. "http://127.0.0.1:1234" for LM Studio)
 model = "claude-haiku-4-5-20251001"  # fast + cheap for structured extraction
 timeout_ms = 10000                 # per-request timeout
 max_calls_per_discovery = 20       # cap LLM calls during recursive discovery
 ```
 
 The API key is read from an environment variable (never stored in the config file). If the env var is unset, LLM features are disabled silently.
+
+For local OpenAI-compatible endpoints (like LM Studio on `http://127.0.0.1:1234`), Synapse accepts missing keys and uses a placeholder bearer token.
 
 ### Cost Analysis
 

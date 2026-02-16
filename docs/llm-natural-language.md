@@ -207,6 +207,7 @@ Query normalization: lowercase, collapse whitespace, strip trailing punctuation.
 ```toml
 [llm]
 # ... (shared)
+base_url = ""                      # optional OpenAI-compatible base URL (LM Studio: "http://127.0.0.1:1234")
 natural_language = true            # enable ? prefix mode
 nl_prefix = "?"                    # trigger character
 nl_debounce_ms = 500               # debounce delay

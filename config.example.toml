@@ -47,6 +47,7 @@ command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 enabled = false                        # enable LLM-powered spec discovery
 provider = "anthropic"                 # "anthropic" or "openai"
 api_key_env = "ANTHROPIC_API_KEY"      # env var name containing the API key
+base_url = ""                          # optional API base URL override (e.g. "http://127.0.0.1:1234" for LM Studio)
 model = "claude-haiku-4-5-20251001"    # model to use (fast + cheap for structured extraction)
 timeout_ms = 10000                     # per-request timeout
 max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
@@ -57,6 +58,14 @@ workflow_max_diff_tokens = 2000        # max tokens of git diff for commit messa
 contextual_args = true                 # enable LLM contextual argument suggestions (phase 2)
 arg_context_timeout_ms = 2000          # timeout for context gathering commands (git/docker/etc.)
 arg_max_context_tokens = 3000          # max context budget sent to the LLM
+
+# LM Studio (OpenAI-compatible) example:
+# [llm]
+# enabled = true
+# provider = "openai"
+# base_url = "http://127.0.0.1:1234"
+# api_key_env = "LMSTUDIO_API_KEY"      # optional for local endpoint; placeholder key is used if unset
+# model = "your-local-model-id"
 
 [workflow]
 enabled = true                         # enable workflow prediction (bigram-based)
