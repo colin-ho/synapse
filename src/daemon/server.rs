@@ -74,7 +74,7 @@ async fn handle_connection(
                 phase2_plan = result.phase2_plan;
                 result.response
             }
-            Ok(request) => handle_request(request, &state).await,
+            Ok(request) => handle_request(request, &state, writer.clone()).await,
             Err(e) => {
                 tracing::warn!("Parse error: {e}");
                 Response::Error {

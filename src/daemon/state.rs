@@ -5,7 +5,9 @@ use futures_util::stream::SplitSink;
 use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::config::Config;
+use crate::llm::LlmClient;
 use crate::logging::InteractionLogger;
+use crate::nl_cache::NlCache;
 use crate::providers::Provider;
 use crate::ranking::Ranker;
 use crate::session::SessionManager;
@@ -25,6 +27,8 @@ pub(super) struct RuntimeState {
     pub(super) session_manager: SessionManager,
     pub(super) interaction_logger: InteractionLogger,
     pub(super) config: Config,
+    pub(super) llm_client: Option<Arc<LlmClient>>,
+    pub(super) nl_cache: NlCache,
 }
 
 impl RuntimeState {
@@ -38,6 +42,8 @@ impl RuntimeState {
         session_manager: SessionManager,
         interaction_logger: InteractionLogger,
         config: Config,
+        llm_client: Option<Arc<LlmClient>>,
+        nl_cache: NlCache,
     ) -> Self {
         Self {
             providers,
@@ -49,6 +55,8 @@ impl RuntimeState {
             session_manager,
             interaction_logger,
             config,
+            llm_client,
+            nl_cache,
         }
     }
 }

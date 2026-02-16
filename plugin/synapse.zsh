@@ -35,6 +35,10 @@ typeset -g _SYNAPSE_DROPDOWN_SELECTED=""
 typeset -g _SYNAPSE_DROPDOWN_INSERT_KEY=""
 typeset -gi _SYNAPSE_HISTORY_BROWSING=0
 
+# --- Natural Language State ---
+typeset -gi _SYNAPSE_NL_MODE=0
+typeset -g _SYNAPSE_NL_PREFIX="?"
+
 # --- Modules ---
 zmodload zsh/net/socket 2>/dev/null || { return; }
 zmodload zsh/zle 2>/dev/null || { return; }
@@ -168,10 +172,45 @@ _synapse_disconnect() {
 
 # --- Protocol ---
 
+# Return 0 if BUFFER starts with "<nl_prefix> ".
+_synapse_buffer_has_nl_prefix() {
+    local prefix_len=${#_SYNAPSE_NL_PREFIX}
+    (( prefix_len > 0 )) || return 1
+    (( ${#BUFFER} >= prefix_len + 2 )) || return 1
+    [[ "${BUFFER[1,$prefix_len]}" == "$_SYNAPSE_NL_PREFIX" ]] || return 1
+    [[ "${BUFFER[$(( prefix_len + 1 ))]}" == " " ]]
+}
+
+# Extract NL query text from BUFFER (without "<nl_prefix> ").
+_synapse_nl_query_from_buffer() {
+    local prefix_len=${#_SYNAPSE_NL_PREFIX}
+    local start=$(( prefix_len + 2 ))
+    if (( start > ${#BUFFER} )); then
+        echo ""
+    else
+        echo "${BUFFER[$start,-1]}"
+    fi
+}
+
+# Render an NL-generated full command below the query.
+_synapse_show_nl_command() {
+    local text="$1"
+    if [[ -z "$text" ]]; then
+        _synapse_clear_suggestion
+        return
+    fi
+    _SYNAPSE_CURRENT_SUGGESTION="$text"
+    _SYNAPSE_CURRENT_SOURCE="llm"
+    POSTDISPLAY=$'\n'"  > ${text}"
+    local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=14")
+}
+
 # Send a JSON request and read the response
 _synapse_request() {
     local json="$1"
     local expected_type="${2:-}"
+    local timeout="${3:-0.05}"
     [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return 1
     [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return 1
 
@@ -184,9 +223,14 @@ _synapse_request() {
         return 1
     }
 
-    # Read response with timeout (50ms total), skipping async update frames.
-    local response="" i
-    for i in 1 2 3 4 5; do
+    # Read response, skipping async update frames while waiting for the expected type.
+    local response=""
+    local reads=0
+    local max_reads=$(( timeout / 0.01 ))
+    max_reads="${max_reads%.*}"
+    [[ -n "$max_reads" ]] || max_reads=5
+    (( max_reads < 1 )) && max_reads=1
+    while (( reads < max_reads )); do
         if read -t 0.01 -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
             local -a _tsv_fields
             IFS=$'\t' read -rA _tsv_fields <<< "$response"
@@ -199,6 +243,7 @@ _synapse_request() {
 
             if [[ -n "$expected_type" ]] && [[ "$frame_type" != "$expected_type" ]]; then
                 # Ignore unrelated frames and continue waiting for the request response.
+                (( reads++ ))
                 continue
             fi
 
@@ -207,6 +252,7 @@ _synapse_request() {
             echo "$response"
             return 0
         fi
+        (( reads++ ))
     done
 
     # Track consecutive failures to detect dead connections
@@ -288,6 +334,29 @@ _synapse_build_list_request() {
     env_hints_json="$(_synapse_build_env_hints_json)"
 
     echo "{\"type\":\"list_suggestions\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${escaped_cwd}\",\"max_results\":${max_results},\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
+}
+
+# Build a natural_language request JSON
+_synapse_build_nl_request() {
+    local query="$1" cwd="$2"
+
+    local escaped_query escaped_cwd recent_json env_hints_json
+    escaped_query="$(_synapse_json_escape "$query")"
+    escaped_cwd="$(_synapse_json_escape "$cwd")"
+    recent_json="$(_synapse_build_recent_commands_json)"
+    env_hints_json="$(_synapse_build_env_hints_json)"
+
+    echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${escaped_cwd}\",\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
+}
+
+# Build an explain request JSON
+_synapse_build_explain_request() {
+    local command="$1"
+
+    local escaped_command
+    escaped_command="$(_synapse_json_escape "$command")"
+
+    echo "{\"type\":\"explain\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"command\":\"${escaped_command}\"}"
 }
 
 # --- Ghost Text Rendering ---
@@ -569,8 +638,15 @@ _synapse_handle_update() {
         return 0
     fi
 
-    _SYNAPSE_CURRENT_SOURCE="${_tsv_fields[3]}"
-    _synapse_show_suggestion "${_tsv_fields[2]}"
+    local text="${_tsv_fields[2]}"
+    local source="${_tsv_fields[3]}"
+
+    if [[ "$source" == "llm" ]] && [[ $_SYNAPSE_NL_MODE -eq 1 ]] && _synapse_buffer_has_nl_prefix; then
+        _synapse_show_nl_command "$text"
+    else
+        _SYNAPSE_CURRENT_SOURCE="$source"
+        _synapse_show_suggestion "$text"
+    fi
     zle -R 2>/dev/null  # Redraw when inside zle
     return 0
 }
@@ -612,14 +688,59 @@ _synapse_self_insert() {
     fi
 
     zle .self-insert
-    _synapse_suggest
+
+    # Check for natural language mode: "? " prefix with enough characters
+    local query=""
+    if _synapse_buffer_has_nl_prefix; then
+        query="$(_synapse_nl_query_from_buffer)"
+    fi
+    if [[ -n "$query" ]]; then
+        _synapse_nl_suggest
+    else
+        if ! _synapse_buffer_has_nl_prefix; then
+            _SYNAPSE_NL_MODE=0
+        fi
+        _synapse_suggest
+    fi
+}
+
+# Send a natural language request (fire-and-forget, response comes via async handler)
+_synapse_nl_suggest() {
+    _SYNAPSE_NL_MODE=1
+
+    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return
+
+    local query
+    query="$(_synapse_nl_query_from_buffer)"
+    [[ -n "$query" ]] || return
+
+    local json
+    json="$(_synapse_build_nl_request "$query" "$PWD")"
+
+    # Fire and forget — the async handler will receive the Update response
+    print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || {
+        _synapse_disconnect
+        return
+    }
 }
 
 # Override backward-delete-char to re-suggest
 _synapse_backward_delete_char() {
     _SYNAPSE_HISTORY_BROWSING=0
     zle .backward-delete-char
-    _synapse_suggest
+
+    local query=""
+    if _synapse_buffer_has_nl_prefix; then
+        query="$(_synapse_nl_query_from_buffer)"
+    fi
+    if [[ -n "$query" ]]; then
+        _synapse_nl_suggest
+    else
+        if ! _synapse_buffer_has_nl_prefix; then
+            _SYNAPSE_NL_MODE=0
+        fi
+        _synapse_suggest
+    fi
 }
 
 # Accept the full suggestion
@@ -628,6 +749,7 @@ _synapse_accept() {
         _synapse_report_interaction "accept"
         BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
         CURSOR=${#BUFFER}
+        _SYNAPSE_NL_MODE=0
         _synapse_clear_suggestion
     else
         # Fall through to default behavior (move cursor right)
@@ -641,6 +763,7 @@ _synapse_tab_accept() {
         _synapse_report_interaction "accept"
         BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
         CURSOR=${#BUFFER}
+        _SYNAPSE_NL_MODE=0
         _synapse_clear_suggestion
     else
         zle expand-or-complete
@@ -671,6 +794,33 @@ _synapse_dismiss() {
         _synapse_clear_suggestion
     else
         zle .send-break
+    fi
+}
+
+# Explain the current NL-generated command (Ctrl+E)
+_synapse_explain() {
+    # Only works when viewing an LLM-generated command
+    if [[ -z "$_SYNAPSE_CURRENT_SUGGESTION" ]] || [[ "$_SYNAPSE_CURRENT_SOURCE" != "llm" ]] || [[ $_SYNAPSE_CONNECTED -ne 1 ]]; then
+        zle .end-of-line
+        return
+    fi
+
+    local command="$_SYNAPSE_CURRENT_SUGGESTION"
+    local json
+    json="$(_synapse_build_explain_request "$command")"
+
+    local response
+    response="$(_synapse_request "$json" "suggest" 5.0)" || return
+
+    local -a _tsv_fields
+    IFS=$'\t' read -rA _tsv_fields <<< "$response"
+
+    if [[ "${_tsv_fields[1]}" == "suggest" ]] && [[ -n "${_tsv_fields[2]}" ]]; then
+        # Show command + explanation below the query
+        POSTDISPLAY=$'\n'"  > ${_SYNAPSE_CURRENT_SUGGESTION}"$'\n'"  ─────────────────────────────"$'\n'"  ${_tsv_fields[2]}"
+        local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+        region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=14")
+        zle -R
     fi
 }
 
@@ -833,8 +983,9 @@ _synapse_precmd() {
         fi
     fi
 
-    # Clear any leftover ghost text, dropdown, and history browsing state
+    # Clear any leftover ghost text, dropdown, history browsing, and NL state
     _SYNAPSE_HISTORY_BROWSING=0
+    _SYNAPSE_NL_MODE=0
     _synapse_clear_dropdown
     _synapse_clear_suggestion
 }
@@ -864,6 +1015,7 @@ _synapse_cleanup() {
     _synapse_disconnect
     _synapse_clear_dropdown
     _synapse_clear_suggestion
+    _SYNAPSE_NL_MODE=0
     add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
     bindkey -D synapse-dropdown &>/dev/null
@@ -890,6 +1042,7 @@ _synapse_init() {
     zle -N synapse-dropdown-dismiss _synapse_dropdown_dismiss
     zle -N synapse-dropdown-close-and-insert _synapse_dropdown_close_and_insert
     zle -N synapse-up-line-or-history _synapse_up_line_or_history
+    zle -N synapse-explain _synapse_explain
 
     # Create dropdown keymap (based on main, with overrides)
     # Delete and recreate to pick up any main keymap changes on reload
@@ -921,6 +1074,7 @@ _synapse_init() {
     bindkey '^[OA' synapse-up-line-or-history  # Up arrow (application) — history + flag
     bindkey '^[[B' synapse-dropdown-open  # Down arrow (normal) — opens dropdown
     bindkey '^[OB' synapse-dropdown-open  # Down arrow (application) — opens dropdown
+    bindkey '^E' synapse-explain          # Ctrl+E — explain NL-generated command (fallback: end-of-line)
 
     # Hooks
     autoload -Uz add-zsh-hook

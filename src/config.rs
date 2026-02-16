@@ -100,6 +100,8 @@ pub struct LlmConfig {
     pub model: String,
     pub timeout_ms: u64,
     pub max_calls_per_discovery: usize,
+    pub natural_language: bool,
+    pub nl_min_query_length: usize,
     pub workflow_prediction: bool,
     pub workflow_max_diff_tokens: usize,
     pub contextual_args: bool,
@@ -189,7 +191,7 @@ impl Default for SecurityConfig {
             command_blocklist: vec![
                 "export *=".into(),
                 "curl -u".into(),
-                r#"curl -H "Authorization""#.into(),
+                r#"curl -H "Authorization*"#.into(),
             ],
         }
     }
@@ -213,6 +215,8 @@ impl Default for LlmConfig {
             model: "claude-haiku-4-5-20251001".into(),
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
+            natural_language: true,
+            nl_min_query_length: 5,
             workflow_prediction: false,
             workflow_max_diff_tokens: 2000,
             contextual_args: true,

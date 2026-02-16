@@ -2,6 +2,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use assert_cmd::Command;
+use synapse::protocol::Request;
 
 #[test]
 fn test_cli_help() {
@@ -378,4 +379,46 @@ async fn test_concurrent_connections() {
     }
 
     daemon.abort();
+}
+
+#[test]
+fn test_natural_language_request_parsing() {
+    let json = r#"{
+        "type": "natural_language",
+        "session_id": "abc123",
+        "query": "find files bigger than 100mb",
+        "cwd": "/home/user",
+        "recent_commands": ["ls", "cd /tmp"],
+        "env_hints": {"PATH": "/usr/bin:/usr/local/bin"}
+    }"#;
+
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::NaturalLanguage(nl) => {
+            assert_eq!(nl.session_id, "abc123");
+            assert_eq!(nl.query, "find files bigger than 100mb");
+            assert_eq!(nl.cwd, "/home/user");
+            assert_eq!(nl.recent_commands, vec!["ls", "cd /tmp"]);
+            assert_eq!(nl.env_hints.get("PATH").unwrap(), "/usr/bin:/usr/local/bin");
+        }
+        other => panic!("Expected NaturalLanguage request, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_explain_request_parsing() {
+    let json = r#"{
+        "type": "explain",
+        "session_id": "abc123",
+        "command": "find . -name '*.rs' -exec grep -l 'TODO' {} +"
+    }"#;
+
+    let req: Request = serde_json::from_str(json).unwrap();
+    match req {
+        Request::Explain(ex) => {
+            assert_eq!(ex.session_id, "abc123");
+            assert_eq!(ex.command, "find . -name '*.rs' -exec grep -l 'TODO' {} +");
+        }
+        other => panic!("Expected Explain request, got: {other:?}"),
+    }
 }

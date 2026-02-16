@@ -15,8 +15,11 @@ pub struct InteractionLogEntry {
     pub source: SuggestionSource,
     pub confidence: f64,
     pub cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nl_query: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct InteractionLogger {
     tx: mpsc::UnboundedSender<InteractionLogEntry>,
 }
@@ -44,6 +47,7 @@ impl InteractionLogger {
         source: SuggestionSource,
         confidence: f64,
         cwd: &str,
+        nl_query: Option<&str>,
     ) {
         self.log(InteractionLogEntry {
             ts: Utc::now().to_rfc3339(),
@@ -54,6 +58,7 @@ impl InteractionLogger {
             source,
             confidence,
             cwd: cwd.to_string(),
+            nl_query: nl_query.map(String::from),
         });
     }
 
