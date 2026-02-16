@@ -11,6 +11,7 @@ pub enum Request {
     Suggest(SuggestRequest),
     ListSuggestions(ListSuggestionsRequest),
     Interaction(InteractionReport),
+    CommandExecuted(CommandExecutedReport),
     Ping,
     Shutdown,
     ReloadConfig,
@@ -62,6 +63,12 @@ pub struct InteractionReport {
     pub source: SuggestionSource,
     #[serde(default)]
     pub buffer_at_action: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommandExecutedReport {
+    pub session_id: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,6 +238,13 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(req, Request::Interaction(_)));
+
+        // Test command_executed report
+        let req: Request = serde_json::from_str(
+            r#"{"type":"command_executed","session_id":"abc","command":"git status"}"#,
+        )
+        .unwrap();
+        assert!(matches!(req, Request::CommandExecuted(_)));
     }
 
     #[test]

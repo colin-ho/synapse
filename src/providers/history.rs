@@ -40,6 +40,32 @@ impl HistoryProvider {
         }
     }
 
+    pub async fn record_command(&self, cmd: &str) {
+        let cmd = cmd.lines().next().unwrap_or(cmd).trim();
+        if cmd.is_empty() {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut data = self.data.write().await;
+        let entry = data.entries.entry(cmd.to_string()).or_insert(HistoryEntry {
+            frequency: 0,
+            last_used: 0,
+        });
+        entry.frequency += 1;
+        entry.last_used = now;
+        let freq = entry.frequency;
+        if now > data.max_epoch {
+            data.max_epoch = now;
+        }
+        if freq > data.max_freq {
+            data.max_freq = freq;
+        }
+    }
+
     pub async fn load_history(&self) {
         let histfile = std::env::var("HISTFILE")
             .map(PathBuf::from)
@@ -423,5 +449,82 @@ mod tests {
             last_used: 1000,
         };
         assert!(compute_score(&high, 1000, 50) > compute_score(&low, 1000, 50));
+    }
+
+    fn test_provider() -> HistoryProvider {
+        HistoryProvider::new(crate::config::HistoryConfig::default())
+    }
+
+    #[tokio::test]
+    async fn test_record_command_inserts_new_entry() {
+        let provider = test_provider();
+        provider.record_command("git status").await;
+
+        let data = provider.data.read().await;
+        let entry = data.entries.get("git status").unwrap();
+        assert_eq!(entry.frequency, 1);
+        assert!(entry.last_used > 0);
+        assert_eq!(data.max_freq, 1);
+        assert!(data.max_epoch > 0);
+    }
+
+    #[tokio::test]
+    async fn test_record_command_increments_frequency() {
+        let provider = test_provider();
+        provider.record_command("cargo build").await;
+        provider.record_command("cargo build").await;
+        provider.record_command("cargo build").await;
+
+        let data = provider.data.read().await;
+        let entry = data.entries.get("cargo build").unwrap();
+        assert_eq!(entry.frequency, 3);
+        assert_eq!(data.max_freq, 3);
+    }
+
+    #[tokio::test]
+    async fn test_record_command_ignores_empty() {
+        let provider = test_provider();
+        provider.record_command("").await;
+        provider.record_command("   ").await;
+
+        let data = provider.data.read().await;
+        assert!(data.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_record_command_takes_first_line() {
+        let provider = test_provider();
+        provider.record_command("echo hello\necho world").await;
+
+        let data = provider.data.read().await;
+        assert!(data.entries.contains_key("echo hello"));
+        assert!(!data.entries.contains_key("echo hello\necho world"));
+    }
+
+    #[tokio::test]
+    async fn test_record_command_updates_max_freq() {
+        let provider = test_provider();
+        provider.record_command("ls").await;
+        provider.record_command("pwd").await;
+        provider.record_command("ls").await;
+
+        let data = provider.data.read().await;
+        assert_eq!(data.entries.get("ls").unwrap().frequency, 2);
+        assert_eq!(data.entries.get("pwd").unwrap().frequency, 1);
+        assert_eq!(data.max_freq, 2);
+    }
+
+    #[tokio::test]
+    async fn test_record_command_visible_in_prefix_search() {
+        let provider = test_provider();
+        provider.record_command("git status").await;
+        provider.record_command("git commit -m 'test'").await;
+
+        let data = provider.data.read().await;
+        let results = collect_prefix_matches(&data, "git ", "");
+        assert_eq!(results.len(), 2);
+        let cmds: Vec<&str> = results.iter().map(|(_, cmd)| *cmd).collect();
+        assert!(cmds.contains(&"git status"));
+        assert!(cmds.contains(&"git commit -m 'test'"));
     }
 }
