@@ -292,3 +292,85 @@ impl WeightsConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::{Config, WeightsConfig};
+
+    static SOCKET_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn test_config_defaults() {
+        let config = Config::default();
+        assert_eq!(config.general.debounce_ms, 150);
+        assert_eq!(config.general.max_suggestion_length, 200);
+        assert!(config.history.enabled);
+        assert_eq!(config.history.max_entries, 50000);
+        assert!(config.context.enabled);
+        assert_eq!(config.weights.history, 0.30);
+        assert_eq!(config.weights.context, 0.15);
+        assert_eq!(config.weights.ai, 0.25);
+        assert_eq!(config.weights.spec, 0.15);
+        assert_eq!(config.weights.recency, 0.15);
+    }
+
+    #[test]
+    fn test_weights_normalization() {
+        let weights = WeightsConfig {
+            history: 1.0,
+            context: 1.0,
+            ai: 1.0,
+            spec: 1.0,
+            recency: 1.0,
+        };
+        let normalized = weights.normalized();
+        let sum = normalized.history
+            + normalized.context
+            + normalized.ai
+            + normalized.spec
+            + normalized.recency;
+        assert!((sum - 1.0).abs() < 0.001);
+        assert!((normalized.history - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_socket_path_env_override() {
+        let _guard = SOCKET_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SYNAPSE_SOCKET", "/tmp/test-override.sock") };
+        let config = Config::default();
+        assert_eq!(
+            config.socket_path(),
+            std::path::PathBuf::from("/tmp/test-override.sock")
+        );
+        assert_eq!(
+            config.pid_path(),
+            std::path::PathBuf::from("/tmp/test-override.pid")
+        );
+        unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
+    }
+
+    #[test]
+    fn test_socket_path_cli_override_beats_env() {
+        let _guard = SOCKET_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SYNAPSE_SOCKET", "/tmp/test-env.sock") };
+        let config = Config::default()
+            .with_socket_override(Some(std::path::PathBuf::from("/tmp/test-cli.sock")));
+        assert_eq!(
+            config.socket_path(),
+            std::path::PathBuf::from("/tmp/test-cli.sock")
+        );
+        unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
+    }
+
+    #[test]
+    fn test_socket_path_env_empty_ignored() {
+        let _guard = SOCKET_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SYNAPSE_SOCKET", "") };
+        let config = Config::default();
+        // Should fall through to default, not use empty string
+        assert_ne!(config.socket_path(), std::path::PathBuf::from(""));
+        unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
+    }
+}

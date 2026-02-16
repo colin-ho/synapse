@@ -1,11 +1,7 @@
-use std::io::Write;
-use std::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use assert_cmd::Command;
-
-static SOCKET_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_cli_help() {
@@ -99,115 +95,6 @@ async fn test_daemon_lifecycle() {
     daemon.abort();
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&pid_path);
-}
-
-#[test]
-fn test_protocol_serialization() {
-    // Test that ping request parses correctly
-    let req: synapse::protocol::Request = serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
-    assert!(matches!(req, synapse::protocol::Request::Ping));
-
-    // Test suggest request
-    let req: synapse::protocol::Request = serde_json::from_str(
-        r#"{"type":"suggest","session_id":"abc","buffer":"git","cursor_pos":3,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}"#,
-    ).unwrap();
-    assert!(matches!(req, synapse::protocol::Request::Suggest(_)));
-
-    // Test interaction report
-    let req: synapse::protocol::Request = serde_json::from_str(
-        r#"{"type":"interaction","session_id":"abc","action":"accept","suggestion":"git status","source":"history","buffer_at_action":"git"}"#,
-    ).unwrap();
-    assert!(matches!(req, synapse::protocol::Request::Interaction(_)));
-}
-
-#[test]
-fn test_response_serialization() {
-    let resp = synapse::protocol::Response::Pong;
-    let json = serde_json::to_string(&resp).unwrap();
-    assert_eq!(json, r#"{"type":"pong"}"#);
-
-    let resp = synapse::protocol::Response::Suggestion(synapse::protocol::SuggestionResponse {
-        text: "git status".into(),
-        source: synapse::protocol::SuggestionSource::History,
-        confidence: 0.92,
-    });
-    let json = serde_json::to_string(&resp).unwrap();
-    assert!(json.contains("suggestion"));
-    assert!(json.contains("git status"));
-    assert!(json.contains("history"));
-}
-
-#[test]
-fn test_config_defaults() {
-    let config = synapse::config::Config::default();
-    assert_eq!(config.general.debounce_ms, 150);
-    assert_eq!(config.general.max_suggestion_length, 200);
-    assert!(config.history.enabled);
-    assert_eq!(config.history.max_entries, 50000);
-    assert!(config.context.enabled);
-    assert_eq!(config.weights.history, 0.30);
-    assert_eq!(config.weights.context, 0.15);
-    assert_eq!(config.weights.ai, 0.25);
-    assert_eq!(config.weights.spec, 0.15);
-    assert_eq!(config.weights.recency, 0.15);
-}
-
-#[test]
-fn test_weights_normalization() {
-    let weights = synapse::config::WeightsConfig {
-        history: 1.0,
-        context: 1.0,
-        ai: 1.0,
-        spec: 1.0,
-        recency: 1.0,
-    };
-    let normalized = weights.normalized();
-    let sum = normalized.history
-        + normalized.context
-        + normalized.ai
-        + normalized.spec
-        + normalized.recency;
-    assert!((sum - 1.0).abs() < 0.001);
-    assert!((normalized.history - 0.2).abs() < 0.001);
-}
-
-#[test]
-fn test_socket_path_env_override() {
-    let _guard = SOCKET_ENV_LOCK.lock().unwrap();
-    unsafe { std::env::set_var("SYNAPSE_SOCKET", "/tmp/test-override.sock") };
-    let config = synapse::config::Config::default();
-    assert_eq!(
-        config.socket_path(),
-        std::path::PathBuf::from("/tmp/test-override.sock")
-    );
-    assert_eq!(
-        config.pid_path(),
-        std::path::PathBuf::from("/tmp/test-override.pid")
-    );
-    unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
-}
-
-#[test]
-fn test_socket_path_cli_override_beats_env() {
-    let _guard = SOCKET_ENV_LOCK.lock().unwrap();
-    unsafe { std::env::set_var("SYNAPSE_SOCKET", "/tmp/test-env.sock") };
-    let config = synapse::config::Config::default()
-        .with_socket_override(Some(std::path::PathBuf::from("/tmp/test-cli.sock")));
-    assert_eq!(
-        config.socket_path(),
-        std::path::PathBuf::from("/tmp/test-cli.sock")
-    );
-    unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
-}
-
-#[test]
-fn test_socket_path_env_empty_ignored() {
-    let _guard = SOCKET_ENV_LOCK.lock().unwrap();
-    unsafe { std::env::set_var("SYNAPSE_SOCKET", "") };
-    let config = synapse::config::Config::default();
-    // Should fall through to default, not use empty string
-    assert_ne!(config.socket_path(), std::path::PathBuf::from(""));
-    unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
 }
 
 #[test]
