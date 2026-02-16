@@ -75,7 +75,7 @@ mod tests {
     use crate::spec_store::SpecStore;
 
     fn make_store() -> Arc<SpecStore> {
-        Arc::new(SpecStore::new(SpecConfig::default()))
+        Arc::new(SpecStore::new(SpecConfig::default(), None))
     }
 
     #[tokio::test]

@@ -2,6 +2,7 @@ pub mod completion_context;
 pub mod config;
 pub mod daemon;
 pub mod help_parser;
+pub mod llm;
 pub mod logging;
 pub mod project;
 pub mod protocol;

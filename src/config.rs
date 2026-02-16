@@ -11,6 +11,7 @@ pub struct Config {
     pub weights: WeightsConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
+    pub llm: LlmConfig,
     #[serde(skip)]
     cli_socket_override: Option<String>,
 }
@@ -87,6 +88,17 @@ pub struct SecurityConfig {
 pub struct LoggingConfig {
     pub interaction_log: String,
     pub max_log_size_mb: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct LlmConfig {
+    pub enabled: bool,
+    pub provider: String,
+    pub api_key_env: String,
+    pub model: String,
+    pub timeout_ms: u64,
+    pub max_calls_per_discovery: usize,
 }
 
 // --- Defaults ---
@@ -175,6 +187,19 @@ impl Default for LoggingConfig {
         Self {
             interaction_log: "~/.local/share/synapse/interactions.jsonl".into(),
             max_log_size_mb: 50,
+        }
+    }
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: "anthropic".into(),
+            api_key_env: "ANTHROPIC_API_KEY".into(),
+            model: "claude-haiku-4-5-20251001".into(),
+            timeout_ms: 10_000,
+            max_calls_per_discovery: 20,
         }
     }
 }

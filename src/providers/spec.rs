@@ -406,7 +406,7 @@ mod tests {
     #[tokio::test]
     async fn test_builtin_specs_loaded() {
         let config = SpecConfig::default();
-        let store = SpecStore::new(config);
+        let store = SpecStore::new(config, None);
         let dir = tempfile::tempdir().unwrap();
         let names = store.all_command_names(dir.path()).await;
         assert!(names.contains(&"git".to_string()));
@@ -418,7 +418,7 @@ mod tests {
     #[tokio::test]
     async fn test_builtin_spec_lookup() {
         let config = SpecConfig::default();
-        let store = SpecStore::new(config);
+        let store = SpecStore::new(config, None);
         let dir = tempfile::tempdir().unwrap();
 
         let git = store.lookup("git", dir.path()).await;
@@ -552,7 +552,7 @@ command = "printf '%s\n' alpha beta"
             trust_project_generators: true,
             ..SpecConfig::default()
         };
-        let store = Arc::new(SpecStore::new(config));
+        let store = Arc::new(SpecStore::new(config, None));
         let provider = SpecProvider::new();
 
         let req = make_provider_request_with_store(
