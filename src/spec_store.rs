@@ -129,8 +129,12 @@ impl SpecStore {
 
         let mut specs = HashMap::new();
 
+        // Resolve project root so specs are found even when cwd is a subdirectory
+        let project_root = crate::project::find_project_root(cwd, 3);
+        let scan_root = project_root.as_deref().unwrap_or(cwd);
+
         // Load user-defined project specs from .synapse/specs/*.toml
-        let spec_dir = cwd.join(".synapse").join("specs");
+        let spec_dir = scan_root.join(".synapse").join("specs");
         if spec_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&spec_dir) {
                 for entry in entries.flatten() {
@@ -157,7 +161,7 @@ impl SpecStore {
 
         // Auto-generate specs from project files
         if self.config.auto_generate {
-            let auto_specs = spec_autogen::generate_specs(cwd);
+            let auto_specs = spec_autogen::generate_specs(scan_root);
             for mut spec in auto_specs {
                 // Don't override user-defined specs
                 if !specs.contains_key(&spec.name) {

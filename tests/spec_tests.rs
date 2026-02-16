@@ -242,6 +242,34 @@ async fn test_autogen_makefile_spec() {
     assert_eq!(result[0].text, "make deploy");
 }
 
+#[tokio::test]
+async fn test_autogen_spec_from_subdirectory() {
+    let dir = tempfile::tempdir().unwrap();
+    // Put Cargo.toml at the root and .git to mark project root
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .unwrap();
+
+    // cwd is a nested subdirectory
+    let nested = dir.path().join("src").join("providers");
+    std::fs::create_dir_all(&nested).unwrap();
+
+    let config = SpecConfig::default();
+    let store = Arc::new(SpecStore::new(config));
+    let provider = SpecProvider::new(store);
+
+    let req = common::make_provider_request("cargo b", nested.to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(
+        !result.is_empty(),
+        "Spec autogen should find Cargo.toml from subdirectory via project root walking"
+    );
+    assert_eq!(result[0].text, "cargo build");
+}
+
 // --- suggest max ---
 
 #[tokio::test]

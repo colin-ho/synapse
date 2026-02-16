@@ -2,6 +2,7 @@ pub mod cache;
 pub mod completion_context;
 pub mod config;
 pub mod logging;
+pub mod project;
 pub mod protocol;
 pub mod providers;
 pub mod ranking;
