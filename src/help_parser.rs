@@ -48,10 +48,7 @@ pub fn parse_help_output(command_name: &str, help_text: &str) -> CommandSpec {
     }
 
     // Filter out help/version options — they're noise for completions
-    options.retain(|o| {
-        !matches!(o.long.as_deref(), Some("--help" | "--version"))
-            && !matches!(o.short.as_deref(), Some("-h" | "-V"))
-    });
+    options.retain(|o| !matches!(o.long.as_deref(), Some("--help" | "--version")));
 
     CommandSpec {
         name: command_name.to_string(),
@@ -633,6 +630,23 @@ Commands:
         let spec = parse_help_output("test", help);
         assert_eq!(spec.options.len(), 1);
         assert_eq!(spec.options[0].long.as_deref(), Some("--verbose"));
+    }
+
+    #[test]
+    fn test_short_only_flags_are_not_filtered() {
+        let help = r#"Options:
+  -h      Hostname file
+  -V      Validate only
+"#;
+        let spec = parse_help_output("test", help);
+        assert!(spec
+            .options
+            .iter()
+            .any(|o| o.short.as_deref() == Some("-h")));
+        assert!(spec
+            .options
+            .iter()
+            .any(|o| o.short.as_deref() == Some("-V")));
     }
 
     #[test]

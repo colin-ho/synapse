@@ -47,10 +47,15 @@ impl SpecProvider {
                     return self.complete_command_name(command_name, cwd, store).await;
                 }
                 // Trigger background discovery for this unknown command
-                store.trigger_discovery(command_name).await;
+                store.trigger_discovery(command_name, Some(cwd)).await;
                 return Vec::new();
             }
         };
+
+        // Keep discovered specs fresh in the background when they become stale.
+        if spec.source == SpecSource::Discovered {
+            store.trigger_discovery(command_name, Some(cwd)).await;
+        }
 
         // If we only have the command name and no trailing space, the command is being typed
         if tokens.len() == 1 && !trailing_space {

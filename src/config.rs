@@ -59,7 +59,8 @@ pub struct SpecConfig {
     pub discover_timeout_ms: u64,
     /// Maximum age in seconds before re-discovering a command (default: 7 days)
     pub discover_max_age_secs: u64,
-    /// Auto-discover specs for CLI tools built by the current project
+    /// Auto-discover specs for CLI tools built by the current project.
+    /// This only runs when `trust_project_generators` is also enabled.
     pub discover_project_cli: bool,
     /// Commands to never run --help on
     pub discover_blocklist: Vec<String>,
@@ -133,7 +134,7 @@ impl Default for SpecConfig {
             discover_max_depth: 1,
             discover_timeout_ms: 2000,
             discover_max_age_secs: 604800,
-            discover_project_cli: true,
+            discover_project_cli: false,
             discover_blocklist: Vec::new(),
         }
     }

@@ -179,7 +179,11 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
     // Trigger spec discovery for the command name (first token)
     let command_name = report.command.split_whitespace().next().unwrap_or("");
     if !command_name.is_empty() {
-        state.spec_store.trigger_discovery(command_name).await;
+        let cwd = state.session_manager.get_cwd(&report.session_id).await;
+        state
+            .spec_store
+            .trigger_discovery(command_name, cwd.as_deref().map(std::path::Path::new))
+            .await;
     }
 
     Response::Ack

@@ -29,7 +29,7 @@ discover_from_help = true              # auto-discover specs by running --help o
 discover_max_depth = 1                 # recurse into subcommands (0 = top-level only)
 discover_timeout_ms = 2000             # timeout per --help invocation
 discover_max_age_secs = 604800         # re-discover after 7 days (604800 = 1 week)
-discover_project_cli = true            # discover specs for CLI tools built in current project
+discover_project_cli = false           # discover specs for project-built CLIs (requires trust_project_generators=true)
 discover_blocklist = []                # commands to never auto-discover
 
 [weights]
