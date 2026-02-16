@@ -101,8 +101,8 @@ impl LlmClient {
         let prompt = build_prompt(command_name, &help_text);
 
         let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt).await,
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 4096).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 4096).await,
         };
 
         match result {
@@ -114,6 +114,32 @@ impl LlmClient {
                 }
                 Ok(spec)
             }
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Ask the LLM for argument value suggestions and parse up to `max_values` lines.
+    pub async fn suggest_argument_values(
+        &self,
+        prompt: &str,
+        max_values: usize,
+    ) -> Result<Vec<String>, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(prompt, 256).await,
+            LlmProvider::OpenAI => self.call_openai(prompt, 256).await,
+        };
+
+        match result {
+            Ok(response_text) => Ok(parse_argument_values(&response_text, max_values)),
             Err(e) => {
                 if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
                 {
@@ -155,10 +181,10 @@ impl LlmClient {
         self.backoff_active.store(true, Ordering::Relaxed);
     }
 
-    async fn call_anthropic(&self, prompt: &str) -> Result<String, LlmError> {
+    async fn call_anthropic(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         let body = AnthropicRequest {
             model: self.model.clone(),
-            max_tokens: 4096,
+            max_tokens,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
                 content: prompt.to_string(),
@@ -189,14 +215,14 @@ impl LlmClient {
             .unwrap_or_default())
     }
 
-    async fn call_openai(&self, prompt: &str) -> Result<String, LlmError> {
+    async fn call_openai(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         let body = OpenAIRequest {
             model: self.model.clone(),
             messages: vec![OpenAIMessage {
                 role: "user".to_string(),
                 content: prompt.to_string(),
             }],
-            max_tokens: 4096,
+            max_tokens,
         };
 
         let resp = self
@@ -348,12 +374,65 @@ pub(crate) fn extract_toml(response: &str) -> &str {
     response.trim()
 }
 
-fn scrub_home_paths(text: &str) -> String {
+pub(crate) fn scrub_home_paths(text: &str) -> String {
     if let Some(home) = dirs::home_dir() {
         text.replace(&home.to_string_lossy().to_string(), "~")
     } else {
         text.to_string()
     }
+}
+
+fn parse_argument_values(response: &str, max_values: usize) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut in_fence = false;
+
+    for raw_line in response.lines() {
+        let mut line = raw_line.trim();
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || line.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("- ") {
+            line = rest.trim();
+        } else if let Some((num, rest)) = line.split_once(". ") {
+            if num.parse::<usize>().is_ok() {
+                line = rest.trim();
+            }
+        }
+
+        line = line.trim_matches('`').trim();
+        line = strip_wrapping_quotes(line);
+
+        if line.is_empty() {
+            continue;
+        }
+
+        let candidate = line.to_string();
+        if !values.contains(&candidate) {
+            values.push(candidate);
+            if values.len() >= max_values {
+                break;
+            }
+        }
+    }
+
+    values
+}
+
+fn strip_wrapping_quotes(value: &str) -> &str {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
 }
 
 #[cfg(test)]
@@ -399,6 +478,27 @@ mod tests {
     fn test_from_config_disabled() {
         let config = LlmConfig::default();
         assert!(LlmClient::from_config(&config, false).is_none());
+    }
+
+    #[test]
+    fn test_parse_argument_values_dedupes_and_strips_markers() {
+        let response = r#"
+1. "feat: add login endpoint"
+2. feat: add login endpoint
+- `fix: handle empty response`
+```toml
+ignored = true
+```
+"#;
+
+        let values = parse_argument_values(response, 5);
+        assert_eq!(
+            values,
+            vec![
+                "feat: add login endpoint".to_string(),
+                "fix: handle empty response".to_string()
+            ]
+        );
     }
 
     #[test]
