@@ -1,0 +1,70 @@
+name = "ssh"
+description = "OpenSSH remote login client"
+
+[[options]]
+short = "-p"
+takes_arg = true
+description = "Port to connect to"
+
+[[options]]
+short = "-i"
+takes_arg = true
+description = "Identity file (private key)"
+
+[[options]]
+short = "-l"
+takes_arg = true
+description = "Login name"
+
+[[options]]
+short = "-o"
+takes_arg = true
+description = "SSH option"
+
+[[options]]
+short = "-L"
+takes_arg = true
+description = "Local port forwarding"
+
+[[options]]
+short = "-R"
+takes_arg = true
+description = "Remote port forwarding"
+
+[[options]]
+short = "-D"
+takes_arg = true
+description = "Dynamic port forwarding (SOCKS proxy)"
+
+[[options]]
+short = "-N"
+description = "Do not execute a remote command"
+
+[[options]]
+short = "-f"
+description = "Go to background before command execution"
+
+[[options]]
+short = "-v"
+description = "Verbose mode"
+
+[[options]]
+short = "-q"
+description = "Quiet mode"
+
+[[options]]
+short = "-t"
+description = "Force pseudo-terminal allocation"
+
+[[options]]
+short = "-A"
+description = "Enable forwarding of the authentication agent"
+
+[[options]]
+short = "-J"
+takes_arg = true
+description = "Connect via jump host"
+
+[[args]]
+name = "destination"
+description = "user@hostname"

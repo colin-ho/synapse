@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::completion_context::{tokenize, CompletionContext};
 use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderSuggestion, SuggestionProvider};
 use crate::spec::{ArgSpec, ArgTemplate, OptionSpec, SpecSource};
@@ -15,6 +16,10 @@ pub struct SpecProvider {
 impl SpecProvider {
     pub fn new(store: Arc<SpecStore>) -> Self {
         Self { store }
+    }
+
+    pub fn store(&self) -> &Arc<SpecStore> {
+        &self.store
     }
 
     /// Generate completions based on spec tree-walk.
@@ -61,10 +66,17 @@ impl SpecProvider {
 
         let mut _consumed = 0;
         let mut skip_next = false;
+        let mut last_option_name: Option<String> = None;
 
         for (i, token) in remaining_tokens.iter().enumerate() {
             if skip_next {
+                let is_last_incomplete = i == remaining_tokens.len() - 1 && !trailing_space;
+                if is_last_incomplete {
+                    // Keep option-value mode while the current value token is incomplete.
+                    break;
+                }
                 skip_next = false;
+                last_option_name = None;
                 _consumed = i + 1;
                 continue;
             }
@@ -88,6 +100,7 @@ impl SpecProvider {
                 if let Some(opt) = find_option(current_options, token) {
                     if opt.takes_arg {
                         skip_next = true;
+                        last_option_name = Some(token.clone());
                     }
                 }
                 _consumed = i + 1;
@@ -185,8 +198,35 @@ impl SpecProvider {
             }
         }
 
+        // Complete option argument values (when we're awaiting a value for an option)
+        if skip_next {
+            if let Some(ref opt_name) = last_option_name {
+                if let Some(opt) = find_option(current_options, opt_name) {
+                    if let Some(ref gen) = opt.arg_generator {
+                        let gen_results = self.store.run_generator(gen, cwd, spec.source).await;
+                        for item in gen_results {
+                            if item.starts_with(partial) {
+                                let similarity = if partial.is_empty() {
+                                    0.65
+                                } else {
+                                    0.65 + 0.25 * (partial.len() as f64 / item.len().max(1) as f64)
+                                };
+                                suggestions.push(ProviderSuggestion {
+                                    text: format!("{}{}", prefix, item),
+                                    source: SuggestionSource::Spec,
+                                    score: similarity,
+                                    description: opt.description.clone(),
+                                    kind: SuggestionKind::Argument,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Complete arguments (generators, templates, static suggestions)
-        if !partial.starts_with('-') {
+        if !partial.starts_with('-') && !skip_next {
             for arg in current_args {
                 let mut arg_suggestions = self
                     .resolve_arg_completions(arg, partial, cwd, spec.source)
@@ -294,7 +334,11 @@ impl SpecProvider {
 
 #[async_trait]
 impl SuggestionProvider for SpecProvider {
-    async fn suggest(&self, request: &SuggestRequest) -> Option<ProviderSuggestion> {
+    async fn suggest(
+        &self,
+        request: &SuggestRequest,
+        _ctx: Option<&CompletionContext>,
+    ) -> Option<ProviderSuggestion> {
         let cwd = Path::new(&request.cwd);
         let mut completions = self.complete(&request.buffer, cwd).await;
 
@@ -318,7 +362,12 @@ impl SuggestionProvider for SpecProvider {
         true
     }
 
-    async fn suggest_multi(&self, request: &SuggestRequest, max: usize) -> Vec<ProviderSuggestion> {
+    async fn suggest_multi(
+        &self,
+        request: &SuggestRequest,
+        max: usize,
+        _ctx: Option<&CompletionContext>,
+    ) -> Vec<ProviderSuggestion> {
         let cwd = Path::new(&request.cwd);
         let mut completions = self.complete(&request.buffer, cwd).await;
 
@@ -333,49 +382,6 @@ impl SuggestionProvider for SpecProvider {
         completions.truncate(max);
         completions
     }
-}
-
-/// Tokenize a command buffer, respecting quotes.
-fn tokenize(input: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut escaped = false;
-
-    for ch in input.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-            continue;
-        }
-
-        match ch {
-            '\\' if !in_single_quote => {
-                escaped = true;
-            }
-            '\'' if !in_double_quote => {
-                in_single_quote = !in_single_quote;
-            }
-            '"' if !in_single_quote => {
-                in_double_quote = !in_double_quote;
-            }
-            ' ' | '\t' if !in_single_quote && !in_double_quote => {
-                if !current.is_empty() {
-                    tokens.push(std::mem::take(&mut current));
-                }
-            }
-            _ => {
-                current.push(ch);
-            }
-        }
-    }
-
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-
-    tokens
 }
 
 fn find_option<'a>(options: &'a [OptionSpec], token: &str) -> Option<&'a OptionSpec> {

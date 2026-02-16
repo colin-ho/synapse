@@ -1,0 +1,38 @@
+name = "python"
+aliases = ["python3"]
+description = "Python interpreter"
+
+[[options]]
+short = "-m"
+takes_arg = true
+description = "Run library module as a script"
+
+[[options]]
+short = "-c"
+takes_arg = true
+description = "Execute string as program"
+
+[[options]]
+short = "-i"
+description = "Inspect interactively after running script"
+
+[[options]]
+short = "-u"
+description = "Unbuffered binary stdout and stderr"
+
+[[options]]
+short = "-v"
+description = "Verbose mode"
+
+[[options]]
+short = "-V"
+long = "--version"
+description = "Print version"
+
+[[options]]
+long = "--help"
+description = "Print help"
+
+[[args]]
+name = "script"
+template = "file_paths"

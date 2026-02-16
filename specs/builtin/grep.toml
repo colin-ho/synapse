@@ -1,0 +1,84 @@
+name = "grep"
+description = "Print lines matching a pattern"
+
+[[options]]
+short = "-i"
+long = "--ignore-case"
+description = "Ignore case distinctions"
+
+[[options]]
+short = "-r"
+long = "--recursive"
+description = "Search directories recursively"
+
+[[options]]
+short = "-n"
+long = "--line-number"
+description = "Prefix each line of output with line number"
+
+[[options]]
+short = "-l"
+long = "--files-with-matches"
+description = "Print only names of files with matches"
+
+[[options]]
+short = "-v"
+long = "--invert-match"
+description = "Invert the sense of matching"
+
+[[options]]
+short = "-c"
+long = "--count"
+description = "Print only a count of matching lines per file"
+
+[[options]]
+short = "-w"
+long = "--word-regexp"
+description = "Match only whole words"
+
+[[options]]
+short = "-e"
+long = "--regexp"
+takes_arg = true
+description = "Use pattern for matching"
+
+[[options]]
+short = "-E"
+long = "--extended-regexp"
+description = "Use extended regular expressions"
+
+[[options]]
+short = "-A"
+long = "--after-context"
+takes_arg = true
+description = "Print NUM lines of trailing context"
+
+[[options]]
+short = "-B"
+long = "--before-context"
+takes_arg = true
+description = "Print NUM lines of leading context"
+
+[[options]]
+short = "-C"
+long = "--context"
+takes_arg = true
+description = "Print NUM lines of output context"
+
+[[options]]
+long = "--include"
+takes_arg = true
+description = "Search only files matching glob pattern"
+
+[[options]]
+long = "--exclude"
+takes_arg = true
+description = "Skip files matching glob pattern"
+
+[[args]]
+name = "pattern"
+
+[[args]]
+name = "file"
+template = "file_paths"
+variadic = true

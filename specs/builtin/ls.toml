@@ -1,0 +1,53 @@
+name = "ls"
+description = "List directory contents"
+
+[[options]]
+short = "-l"
+description = "Use a long listing format"
+
+[[options]]
+short = "-a"
+long = "--all"
+description = "Do not ignore entries starting with ."
+
+[[options]]
+short = "-h"
+long = "--human-readable"
+description = "Print sizes in human readable format"
+
+[[options]]
+short = "-R"
+long = "--recursive"
+description = "List subdirectories recursively"
+
+[[options]]
+short = "-t"
+description = "Sort by modification time"
+
+[[options]]
+short = "-S"
+description = "Sort by file size"
+
+[[options]]
+short = "-r"
+long = "--reverse"
+description = "Reverse order while sorting"
+
+[[options]]
+short = "-1"
+description = "List one file per line"
+
+[[options]]
+long = "--color"
+takes_arg = true
+description = "Control colorized output"
+
+[[options]]
+long = "--sort"
+takes_arg = true
+description = "Sort by given key"
+
+[[args]]
+name = "path"
+template = "file_paths"
+variadic = true
