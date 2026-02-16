@@ -6,7 +6,6 @@ pub mod project;
 pub mod protocol;
 pub mod providers;
 pub mod ranking;
-pub mod security;
 pub mod session;
 pub mod spec;
 pub mod spec_autogen;
