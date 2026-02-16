@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
+    echo "cargo-llvm-cov is not installed."
+    echo "Install with: cargo install cargo-llvm-cov --locked"
+    exit 1
+fi
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+mkdir -p coverage
+
+echo "==> Generating coverage reports"
+cargo llvm-cov \
+    --workspace \
+    --all-features \
+    --lcov \
+    --output-path coverage/lcov.info
+
+cargo llvm-cov report \
+    --html \
+    --output-dir coverage/html
+
+echo "Coverage reports generated:"
+echo "  LCOV: coverage/lcov.info"
+echo "  HTML: coverage/html/index.html"

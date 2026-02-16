@@ -1,4 +1,3 @@
-use std::num::NonZeroUsize;
 mod common;
 
 use synapse::config::ContextConfig;
@@ -20,7 +19,7 @@ async fn test_cargo_context() {
     });
 
     let req = common::make_provider_request("cargo b", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "cargo build");
 }
@@ -40,7 +39,7 @@ async fn test_package_json_scripts() {
     });
 
     let req = common::make_provider_request("npm run d", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "npm run dev");
 }
@@ -60,7 +59,7 @@ async fn test_package_json_scripts_with_completion_context() {
     });
 
     let req = common::make_provider_request("npm run d", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "npm run dev");
 }
@@ -80,7 +79,7 @@ async fn test_makefile_targets() {
     });
 
     let req = common::make_provider_request("make b", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "make build");
 }
@@ -101,7 +100,7 @@ async fn test_yarn_detection() {
     });
 
     let req = common::make_provider_request("yarn s", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "yarn start");
 }
@@ -121,7 +120,7 @@ async fn test_empty_buffer_returns_none() {
     });
 
     let req = common::make_provider_request("", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(result.is_empty());
 }
 
@@ -140,7 +139,7 @@ async fn test_docker_compose_context() {
     });
 
     let req = common::make_provider_request("docker compose u", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(5).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(5)).await;
     assert!(!result.is_empty());
     let texts: Vec<&str> = result.iter().map(|s| s.text.as_str()).collect();
     assert!(texts.contains(&"docker compose up"));
@@ -163,7 +162,7 @@ async fn test_justfile_context() {
     });
 
     let req = common::make_provider_request("just b", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "just build");
 }
@@ -183,7 +182,7 @@ async fn test_multi_suggestions_sorted() {
     });
 
     let req = common::make_provider_request("cargo ", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
+    let result = provider.suggest(&req, common::limit(10)).await;
     assert!(result.len() > 1);
     // Results should be sorted by score descending
     for w in result.windows(2) {
