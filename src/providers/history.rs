@@ -567,7 +567,7 @@ fn increment_last_char(s: &str) -> Option<String> {
 
 /// Simple Levenshtein distance
 #[allow(clippy::needless_range_loop)]
-pub fn levenshtein(a: &str, b: &str) -> usize {
+fn levenshtein(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
     let m = a_chars.len();
@@ -596,4 +596,31 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     }
 
     dp[m][n]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_levenshtein_distance() {
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("abc", "abc"), 0);
+        assert_eq!(levenshtein("abc", "abd"), 1);
+    }
+
+    #[test]
+    fn test_parse_history_line_extended_format() {
+        let (command, timestamp) = parse_history_line(": 1700000000:0;git status");
+        assert_eq!(command, "git status");
+        assert_eq!(timestamp, Some(1_700_000_000));
+    }
+
+    #[test]
+    fn test_parse_history_line_simple_format() {
+        let (command, timestamp) = parse_history_line("cargo test");
+        assert_eq!(command, "cargo test");
+        assert_eq!(timestamp, None);
+    }
 }

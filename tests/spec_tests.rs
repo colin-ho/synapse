@@ -1,24 +1,13 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
+mod common;
+
 use synapse::config::SpecConfig;
-use synapse::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
+use synapse::protocol::{SuggestionKind, SuggestionSource};
 use synapse::providers::spec::SpecProvider;
 use synapse::providers::SuggestionProvider;
 use synapse::spec::{ArgTemplate, CommandSpec, SubcommandSpec};
 use synapse::spec_store::SpecStore;
-
-fn make_request(buffer: &str, cwd: &str) -> SuggestRequest {
-    SuggestRequest {
-        session_id: "test".into(),
-        buffer: buffer.into(),
-        cursor_pos: buffer.len(),
-        cwd: cwd.into(),
-        last_exit_code: 0,
-        recent_commands: vec![],
-        env_hints: HashMap::new(),
-    }
-}
 
 fn make_spec_provider() -> SpecProvider {
     let config = SpecConfig::default();
@@ -60,7 +49,7 @@ async fn test_git_subcommand_completion() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = make_request("git co", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("git co", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     let suggestion = result.unwrap();
@@ -79,7 +68,7 @@ async fn test_git_multi_suggestions() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = make_request("git ", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("git ", dir.path().to_str().unwrap());
     let results = provider.suggest_multi(&req, 10, None).await;
     assert!(
         results.len() > 1,
@@ -98,7 +87,7 @@ async fn test_git_checkout_alias() {
     let dir = tempfile::tempdir().unwrap();
 
     // "git ch" should match both "checkout" and "cherry-pick" etc.
-    let req = make_request("git ch", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("git ch", dir.path().to_str().unwrap());
     let results = provider.suggest_multi(&req, 10, None).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
@@ -117,7 +106,7 @@ async fn test_cargo_subcommand_completion() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = make_request("cargo b", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("cargo b", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "cargo build");
@@ -128,7 +117,7 @@ async fn test_cargo_test_completion() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = make_request("cargo t", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("cargo t", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "cargo test");
@@ -141,7 +130,7 @@ async fn test_git_commit_option_completion() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = make_request("git commit --m", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("git commit --m", dir.path().to_str().unwrap());
     let results = provider.suggest_multi(&req, 10, None).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
@@ -180,7 +169,7 @@ command = "printf '%s\n' alpha beta"
     let store = Arc::new(SpecStore::new(config));
     let provider = SpecProvider::new(store);
 
-    let req = make_request("tool --profile a", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("tool --profile a", dir.path().to_str().unwrap());
     let results = provider.suggest_multi(&req, 10, None).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
@@ -197,7 +186,7 @@ async fn test_empty_buffer_returns_none() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = make_request("", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_none());
 }
@@ -209,7 +198,7 @@ async fn test_unknown_command_returns_empty() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = make_request("nonexistent_cmd ", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("nonexistent_cmd ", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_none());
 }
@@ -320,7 +309,7 @@ async fn test_autogen_cargo_spec() {
     let store = Arc::new(SpecStore::new(config));
     let provider = SpecProvider::new(store);
 
-    let req = make_request("cargo b", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("cargo b", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "cargo build");
@@ -339,7 +328,7 @@ async fn test_autogen_makefile_spec() {
     let store = Arc::new(SpecStore::new(config));
     let provider = SpecProvider::new(store);
 
-    let req = make_request("make d", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("make d", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "make deploy");
@@ -352,7 +341,7 @@ async fn test_suggest_multi_truncates() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = make_request("git ", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("git ", dir.path().to_str().unwrap());
     let results = provider.suggest_multi(&req, 3, None).await;
     assert!(
         results.len() <= 3,
@@ -396,7 +385,7 @@ fn test_list_suggestions_response_serialization() {
 
 #[test]
 fn test_list_suggestions_request_deserialization() {
-    use synapse::protocol::{ListSuggestionsRequest, Request};
+    use synapse::protocol::Request;
 
     let json = r#"{"type":"list_suggestions","session_id":"abc123","buffer":"git co","cursor_pos":6,"cwd":"/tmp","max_results":5}"#;
     let req: Request = serde_json::from_str(json).unwrap();
@@ -414,7 +403,7 @@ fn test_list_suggestions_request_deserialization() {
 
 #[test]
 fn test_list_suggestions_default_max_results() {
-    use synapse::protocol::{ListSuggestionsRequest, Request};
+    use synapse::protocol::Request;
 
     let json = r#"{"type":"list_suggestions","session_id":"abc","buffer":"git ","cursor_pos":4,"cwd":"/tmp"}"#;
     let req: Request = serde_json::from_str(json).unwrap();

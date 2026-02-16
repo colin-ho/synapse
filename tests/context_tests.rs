@@ -1,25 +1,13 @@
-use std::collections::HashMap;
 use std::sync::Arc;
+
+mod common;
 
 use synapse::completion_context::CompletionContext;
 use synapse::config::ContextConfig;
 use synapse::config::SpecConfig;
-use synapse::protocol::SuggestRequest;
 use synapse::providers::context::ContextProvider;
 use synapse::providers::SuggestionProvider;
 use synapse::spec_store::SpecStore;
-
-fn make_request(buffer: &str, cwd: &str) -> SuggestRequest {
-    SuggestRequest {
-        session_id: "test".into(),
-        buffer: buffer.into(),
-        cursor_pos: buffer.len(),
-        cwd: cwd.into(),
-        last_exit_code: 0,
-        recent_commands: vec![],
-        env_hints: HashMap::new(),
-    }
-}
 
 #[tokio::test]
 async fn test_cargo_context() {
@@ -35,7 +23,7 @@ async fn test_cargo_context() {
         scan_depth: 3,
     });
 
-    let req = make_request("cargo b", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("cargo b", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "cargo build");
@@ -55,7 +43,7 @@ async fn test_package_json_scripts() {
         scan_depth: 3,
     });
 
-    let req = make_request("npm run d", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("npm run d", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "npm run dev");
@@ -76,7 +64,7 @@ async fn test_package_json_scripts_with_completion_context() {
     });
     let store = Arc::new(SpecStore::new(SpecConfig::default()));
 
-    let req = make_request("npm run d", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("npm run d", dir.path().to_str().unwrap());
     let ctx = CompletionContext::build(&req.buffer, dir.path(), &store).await;
     let result = provider.suggest(&req, Some(&ctx)).await;
     assert!(result.is_some());
@@ -97,21 +85,10 @@ async fn test_makefile_targets() {
         scan_depth: 3,
     });
 
-    let req = make_request("make b", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("make b", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "make build");
-}
-
-#[tokio::test]
-async fn test_git_branch_detection() {
-    let dir = tempfile::tempdir().unwrap();
-    let git_dir = dir.path().join(".git");
-    std::fs::create_dir(&git_dir).unwrap();
-    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature/auth\n").unwrap();
-
-    let branch = synapse::providers::context::read_git_branch_pub(dir.path());
-    assert_eq!(branch.as_deref(), Some("feature/auth"));
 }
 
 #[tokio::test]
@@ -129,7 +106,7 @@ async fn test_yarn_detection() {
         scan_depth: 3,
     });
 
-    let req = make_request("yarn s", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("yarn s", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "yarn start");
@@ -149,7 +126,7 @@ async fn test_empty_buffer_returns_none() {
         scan_depth: 3,
     });
 
-    let req = make_request("", dir.path().to_str().unwrap());
+    let req = common::make_suggest_request("", dir.path().to_str().unwrap());
     let result = provider.suggest(&req, None).await;
     assert!(result.is_none());
 }

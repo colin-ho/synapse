@@ -371,7 +371,7 @@ fn find_project_root(cwd: &Path, max_depth: usize) -> Option<PathBuf> {
     None
 }
 
-pub fn read_git_branch_pub(root: &Path) -> Option<String> {
+pub(crate) fn read_git_branch_for_path(root: &Path) -> Option<String> {
     // Walk up to find git root first
     let mut current = root.to_path_buf();
     loop {
@@ -393,6 +393,51 @@ fn read_git_branch(root: &Path) -> Option<String> {
     } else {
         // Detached HEAD — return short hash
         Some(trimmed[..8.min(trimmed.len())].to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_git_branch_from_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature/auth\n").unwrap();
+
+        let branch = read_git_branch_for_path(dir.path());
+        assert_eq!(branch.as_deref(), Some("feature/auth"));
+    }
+
+    #[test]
+    fn test_read_git_branch_detached_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("HEAD"),
+            "d34db33fd34db33fd34db33fd34db33fd34db33f\n",
+        )
+        .unwrap();
+
+        let branch = read_git_branch_for_path(dir.path());
+        assert_eq!(branch.as_deref(), Some("d34db33f"));
+    }
+
+    #[test]
+    fn test_read_git_branch_walks_up_to_repo_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("src").join("providers");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        let branch = read_git_branch_for_path(&nested);
+        assert_eq!(branch.as_deref(), Some("main"));
     }
 }
 
