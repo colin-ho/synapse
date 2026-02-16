@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
 use synapse::config::SpecConfig;
 use synapse::protocol::SuggestRequest;
@@ -35,4 +36,8 @@ pub async fn make_provider_request_with_env(
     };
     let store = SpecStore::new(SpecConfig::default());
     ProviderRequest::from_suggest_request(&request, &store).await
+}
+
+pub fn limit(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).unwrap()
 }

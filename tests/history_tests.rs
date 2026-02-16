@@ -41,7 +41,7 @@ async fn test_simple_prefix_match() {
     provider.load_history().await;
 
     let req = common::make_provider_request("git s", "/tmp").await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "git status");
 }
@@ -64,7 +64,7 @@ async fn test_extended_history_format() {
     provider.load_history().await;
 
     let req = common::make_provider_request("docker c", "/tmp").await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     let text = result[0].text.clone();
     assert!(text.starts_with("docker compose"));
@@ -84,7 +84,7 @@ async fn test_frequency_ranking() {
     provider.load_history().await;
 
     let req = common::make_provider_request("git st", "/tmp").await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     // "git status" has frequency 3 vs "git stash" with 1
     assert_eq!(result[0].text, "git status");
@@ -105,7 +105,7 @@ async fn test_fuzzy_match() {
 
     // "git chekout" is misspelled — fuzzy should match "git checkout main"
     let req = common::make_provider_request("git chekout", "/tmp").await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(!result.is_empty());
     assert!(result[0].text.starts_with("git checkout"));
 }
@@ -124,7 +124,7 @@ async fn test_empty_buffer_returns_none() {
     provider.load_history().await;
 
     let req = common::make_provider_request("", "/tmp").await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(result.is_empty());
 }
 
@@ -142,7 +142,7 @@ async fn test_no_match_returns_none() {
     provider.load_history().await;
 
     let req = common::make_provider_request("zzz_no_match", "/tmp").await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, common::limit(1)).await;
     assert!(result.is_empty());
 }
 
@@ -162,7 +162,7 @@ async fn test_suggest_pipe_target_uses_context() {
     let req = common::make_provider_request("echo hi | gi", "/tmp").await;
     assert_eq!(req.position, Position::PipeTarget);
 
-    let results = provider.suggest(&req, 5).await;
+    let results = provider.suggest(&req, common::limit(5)).await;
     assert!(
         results.iter().any(|r| r.text.starts_with("git ")),
         "expected git command suggestion for pipe target, got: {:?}",
@@ -191,7 +191,7 @@ async fn test_max_entries_enforcement() {
 
     // Should only keep the 5 most recent entries (timestamps 1015-1019)
     let req = common::make_provider_request("command_", "/tmp").await;
-    let results = provider.suggest(&req, 20).await;
+    let results = provider.suggest(&req, common::limit(20)).await;
     assert!(
         results.len() <= 5,
         "expected at most 5 results, got {}",
@@ -218,7 +218,7 @@ async fn test_multiline_command_handling() {
     provider.load_history().await;
 
     let req = common::make_provider_request("echo", "/tmp").await;
-    let results = provider.suggest(&req, 5).await;
+    let results = provider.suggest(&req, common::limit(5)).await;
     assert!(
         results.iter().any(|r| r.text.starts_with("echo hello")),
         "expected multi-line command stored as first line, got: {:?}",
@@ -246,7 +246,7 @@ async fn test_multi_results_ordering() {
     provider.load_history().await;
 
     let req = common::make_provider_request("git s", "/tmp").await;
-    let results = provider.suggest(&req, 3).await;
+    let results = provider.suggest(&req, common::limit(3)).await;
     assert_eq!(results.len(), 3);
     // "git status" should rank highest (frequency 3)
     assert_eq!(results[0].text, "git status");
