@@ -197,19 +197,6 @@ _synapse_request() {
     return 1
 }
 
-# Minimal JSON value extraction (no jq dependency)
-# Usage: _synapse_json_get '{"key":"value"}' key
-_synapse_json_get() {
-    local json="$1" key="$2"
-    # Match "key":"value" or "key":number or "key":0.number
-    local pattern="\"${key}\"[[:space:]]*:[[:space:]]*"
-    if [[ "$json" =~ ${pattern}\"([^\"]*)\" ]]; then
-        echo "${match[1]}"
-    elif [[ "$json" =~ ${pattern}([0-9.]+) ]]; then
-        echo "${match[1]}"
-    fi
-}
-
 # Escape a string for safe JSON inclusion.
 _synapse_json_escape() {
     local value="$1"
@@ -462,59 +449,28 @@ _synapse_clear_dropdown() {
 
 # --- Dropdown Protocol ---
 
-# Parse the suggestion_list response and populate dropdown state
+# Parse the suggestion_list response and populate dropdown state.
+# TSV format: list\t<count>\t<text>\t<source>\t<desc>\t<kind>\t...
 _synapse_parse_suggestion_list() {
     local response="$1"
 
-    # Extract the suggestions array using a simple approach:
-    # Each item has "text", "source", "description", "kind" fields
-    # We parse by finding each {"text":" pattern and extracting fields
     _SYNAPSE_DROPDOWN_ITEMS=()
     _SYNAPSE_DROPDOWN_SOURCES=()
     _SYNAPSE_DROPDOWN_DESCS=()
     _SYNAPSE_DROPDOWN_KINDS=()
 
-    local rest="$response"
-    local count=0
+    local -a _tsv_fields
+    IFS=$'\t' read -rA _tsv_fields <<< "$response"
 
-    # Find items by looking for "text":" patterns within the suggestions array.
-    # For each item, extract the current JSON object (up to next '}') first,
-    # then run field regexes within that scoped string to avoid matching
-    # fields from subsequent items.
-    while [[ "$rest" =~ '"text"[[:space:]]*:[[:space:]]*"([^"]*)"' ]]; do
-        local text="${match[1]}"
-        # Advance past the "text" field match
-        rest="${rest#*\"text\"*\"${text}\"}"
-
-        # Scope field extraction to the current JSON object (up to next '}')
-        local item_rest="${rest%%\}*}"
-
-        # Extract source from scoped context
-        local source=""
-        if [[ "$item_rest" =~ '"source"[[:space:]]*:[[:space:]]*"([^"]*)"' ]]; then
-            source="${match[1]}"
-        fi
-
-        # Extract description from scoped context (may not exist or may be null)
-        local desc=""
-        if [[ "$item_rest" =~ '"description"[[:space:]]*:[[:space:]]*"([^"]*)"' ]]; then
-            desc="${match[1]}"
-        fi
-
-        # Extract kind from scoped context
-        local kind=""
-        if [[ "$item_rest" =~ '"kind"[[:space:]]*:[[:space:]]*"([^"]*)"' ]]; then
-            kind="${match[1]}"
-        fi
-
-        (( count++ ))
-        _SYNAPSE_DROPDOWN_ITEMS+=("$text")
-        _SYNAPSE_DROPDOWN_SOURCES+=("$source")
-        _SYNAPSE_DROPDOWN_DESCS+=("$desc")
-        _SYNAPSE_DROPDOWN_KINDS+=("$kind")
-
-        # Move past the current item's closing brace
-        rest="${rest#*\}}"
+    # _tsv_fields[1]=list, _tsv_fields[2]=count, then 4 fields per item
+    local count="${_tsv_fields[2]}"
+    local i
+    for (( i=0; i<count; i++ )); do
+        local base=$(( 3 + i * 4 ))
+        _SYNAPSE_DROPDOWN_ITEMS+=("${_tsv_fields[$base]}")
+        _SYNAPSE_DROPDOWN_SOURCES+=("${_tsv_fields[$(( base + 1 ))]}")
+        _SYNAPSE_DROPDOWN_DESCS+=("${_tsv_fields[$(( base + 2 ))]}")
+        _SYNAPSE_DROPDOWN_KINDS+=("${_tsv_fields[$(( base + 3 ))]}")
     done
 
     _SYNAPSE_DROPDOWN_COUNT=$count
@@ -544,11 +500,12 @@ _synapse_suggest() {
     local response
     response="$(_synapse_request "$json")" || return
 
-    local text
-    text="$(_synapse_json_get "$response" "text")"
-    _SYNAPSE_CURRENT_SOURCE="$(_synapse_json_get "$response" "source")"
+    # TSV: suggest\ttext\tsource
+    local -a _tsv_fields
+    IFS=$'\t' read -rA _tsv_fields <<< "$response"
+    _SYNAPSE_CURRENT_SOURCE="${_tsv_fields[3]}"
 
-    _synapse_show_suggestion "$text"
+    _synapse_show_suggestion "${_tsv_fields[2]}"
 }
 
 # --- Async Handler ---
@@ -565,18 +522,17 @@ _synapse_async_handler() {
 
     local response=""
     if read -u "$fd" response 2>/dev/null; then
-        local msg_type
-        msg_type="$(_synapse_json_get "$response" "type")"
+        # TSV: update\ttext\tsource
+        local -a _tsv_fields
+        IFS=$'\t' read -rA _tsv_fields <<< "$response"
 
-        if [[ "$msg_type" == "update" ]]; then
+        if [[ "${_tsv_fields[1]}" == "update" ]]; then
             # Skip async updates while dropdown is open
             if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]]; then
                 return
             fi
-            local text
-            text="$(_synapse_json_get "$response" "text")"
-            _SYNAPSE_CURRENT_SOURCE="$(_synapse_json_get "$response" "source")"
-            _synapse_show_suggestion "$text"
+            _SYNAPSE_CURRENT_SOURCE="${_tsv_fields[3]}"
+            _synapse_show_suggestion "${_tsv_fields[2]}"
             zle -R  # Redraw
         fi
     else

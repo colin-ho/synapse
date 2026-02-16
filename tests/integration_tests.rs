@@ -44,9 +44,9 @@ async fn test_daemon_lifecycle() {
             while reader.read_line(&mut line).await.unwrap() > 0 {
                 let trimmed = line.trim();
                 let response = if trimmed.contains("\"type\":\"ping\"") {
-                    r#"{"type":"pong"}"#
+                    "pong"
                 } else {
-                    r#"{"type":"ack"}"#
+                    "ack"
                 };
                 writer
                     .write_all(format!("{response}\n").as_bytes())
@@ -129,11 +129,11 @@ fn spawn_mock_daemon(
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
                     let trimmed = line.trim();
                     let response = if trimmed.contains("\"type\":\"ping\"") {
-                        r#"{"type":"pong"}"#.to_string()
+                        "pong".to_string()
                     } else if trimmed.contains("\"type\":\"suggest\"") {
-                        r#"{"type":"suggestion","text":"git status","source":"history","confidence":0.9}"#.to_string()
+                        "suggest\tgit status\thistory".to_string()
                     } else {
-                        r#"{"type":"ack"}"#.to_string()
+                        "ack".to_string()
                     };
                     let _ = writer.write_all(format!("{response}\n").as_bytes()).await;
                     let _ = writer.flush().await;
@@ -314,10 +314,7 @@ async fn test_read_detects_server_close() {
     // Server reads and responds
     let req = server_lines.next_line().await.unwrap().unwrap();
     assert!(req.contains("ping"));
-    server_writer
-        .write_all(b"{\"type\":\"pong\"}\n")
-        .await
-        .unwrap();
+    server_writer.write_all(b"pong\n").await.unwrap();
     server_writer.flush().await.unwrap();
 
     // Client reads the response
