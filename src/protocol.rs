@@ -26,7 +26,6 @@ pub struct SuggestRequest {
     pub cursor_pos: usize,
     pub cwd: String,
     #[serde(default)]
-    #[allow(dead_code)]
     pub last_exit_code: i32,
     #[serde(default)]
     pub recent_commands: Vec<String>,
@@ -86,6 +85,7 @@ pub enum SuggestionSource {
     Spec,
     Filesystem,
     Environment,
+    Workflow,
     Llm,
 }
 
@@ -142,6 +142,7 @@ impl SuggestionSource {
             Self::Spec => "spec",
             Self::Filesystem => "filesystem",
             Self::Environment => "environment",
+            Self::Workflow => "workflow",
             Self::Llm => "llm",
         }
     }
@@ -441,6 +442,7 @@ mod tests {
             SuggestionSource::Spec,
             SuggestionSource::Filesystem,
             SuggestionSource::Environment,
+            SuggestionSource::Workflow,
             SuggestionSource::Llm,
         ] {
             let serde_str = serde_json::to_string(&source).unwrap();

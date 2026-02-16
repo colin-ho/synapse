@@ -11,6 +11,7 @@ use crate::providers::filesystem::FilesystemProvider;
 use crate::providers::history::HistoryProvider;
 use crate::providers::llm_argument::LlmArgumentProvider;
 use crate::providers::spec::SpecProvider;
+use crate::providers::workflow::WorkflowProvider;
 use crate::providers::Provider;
 use crate::ranking::Ranker;
 use crate::session::SessionManager;
@@ -168,7 +169,7 @@ pub(super) async fn start_daemon(
         tracing::warn!("LLM enabled in config but API key env var not set, falling back to regex");
     }
 
-    // Init spec system
+    // Init spec system (share LLM client between spec store and workflow provider)
     let spec_store = Arc::new(SpecStore::new(config.spec.clone(), llm_client.clone()));
     let spec_provider = SpecProvider::new();
 
@@ -177,11 +178,24 @@ pub(super) async fn start_daemon(
     let environment_provider = EnvironmentProvider::new();
     environment_provider.scan_path().await;
 
+    // Init workflow prediction
+    let workflow_predictor = Arc::new(WorkflowPredictor::new());
+    let workflow_provider = WorkflowProvider::new(
+        workflow_predictor.clone(),
+        config.workflow.clone(),
+        llm_client.clone(),
+        config.llm.clone(),
+    );
+    if config.workflow.enabled {
+        tracing::info!("Workflow prediction enabled");
+    }
+
     let providers = vec![
         Provider::History(Arc::new(history_provider)),
         Provider::Spec(Arc::new(spec_provider)),
         Provider::Filesystem(Arc::new(filesystem_provider)),
         Provider::Environment(Arc::new(environment_provider)),
+        Provider::Workflow(Arc::new(workflow_provider)),
     ];
     let mut phase2_providers = Vec::new();
     if config.llm.contextual_args {
@@ -200,7 +214,6 @@ pub(super) async fn start_daemon(
     }
 
     let ranker = Ranker::new(config.weights.clone());
-    let workflow_predictor = WorkflowPredictor::new();
 
     let session_manager = SessionManager::new();
     let interaction_logger = InteractionLogger::new(

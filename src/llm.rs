@@ -124,6 +124,140 @@ impl LlmClient {
         }
     }
 
+    /// Predict the next command based on recent command history and context.
+    pub async fn predict_workflow(
+        &self,
+        cwd: &str,
+        project_type: Option<&str>,
+        recent_commands: &[String],
+        last_exit_code: i32,
+    ) -> Result<String, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let cwd_display = if self.scrub_paths {
+            scrub_home_paths(cwd)
+        } else {
+            cwd.to_string()
+        };
+
+        let prompt =
+            build_workflow_prompt(&cwd_display, project_type, recent_commands, last_exit_code);
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 256).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 256).await,
+        };
+
+        match result {
+            Ok(text) => {
+                let text = text.trim();
+                let text = if text.starts_with('`') && text.ends_with('`') {
+                    text.trim_matches('`').trim()
+                } else {
+                    text
+                };
+                Ok(text.lines().next().unwrap_or("").to_string())
+            }
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Generate a commit message from staged diff content.
+    pub async fn generate_commit_message(&self, staged_diff: &str) -> Result<String, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let diff = if self.scrub_paths {
+            scrub_home_paths(staged_diff)
+        } else {
+            staged_diff.to_string()
+        };
+
+        let prompt = format!(
+            "Generate a concise git commit message (one line, max 72 chars) for this diff. \
+             Respond with ONLY the commit message, no quotes or explanation.\n\n{diff}"
+        );
+
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 512).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 512).await,
+        };
+
+        match result {
+            Ok(text) => Ok(text.trim().lines().next().unwrap_or("").to_string()),
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Enrich a predicted command with contextual arguments.
+    pub async fn enrich_command_args(
+        &self,
+        command: &str,
+        recent_commands: &[String],
+        cwd: &str,
+    ) -> Result<String, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let cwd_display = if self.scrub_paths {
+            scrub_home_paths(cwd)
+        } else {
+            cwd.to_string()
+        };
+
+        let recent = recent_commands
+            .iter()
+            .take(3)
+            .enumerate()
+            .map(|(i, cmd)| format!("{}. {}", i + 1, cmd))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!(
+            "Complete this command with contextually appropriate arguments based on the recent commands.\n\n\
+             Working directory: {cwd_display}\n\
+             Recent commands:\n{recent}\n\n\
+             Command to complete: {command}\n\n\
+             Respond with ONLY the complete command (no explanation)."
+        );
+
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 256).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 256).await,
+        };
+
+        match result {
+            Ok(text) => {
+                let text = text.trim();
+                let text = if text.starts_with('`') && text.ends_with('`') {
+                    text.trim_matches('`').trim()
+                } else {
+                    text
+                };
+                Ok(text.lines().next().unwrap_or("").to_string())
+            }
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// Ask the LLM for argument value suggestions and parse up to `max_values` lines.
     pub async fn suggest_argument_values(
         &self,
@@ -347,6 +481,32 @@ Rules:
 - Omit --help and --version options
 - For subcommand aliases (e.g., "checkout, co"), use: aliases = ["co"]
 - Include arg_generator only when you can infer a reliable shell command for dynamic values"#
+    )
+}
+
+fn build_workflow_prompt(
+    cwd: &str,
+    project_type: Option<&str>,
+    recent_commands: &[String],
+    last_exit_code: i32,
+) -> String {
+    let pt = project_type.unwrap_or("unknown");
+    let recent = recent_commands
+        .iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, cmd)| format!("{}. {}", i + 1, cmd))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "You are a terminal workflow predictor. Given the user's recent commands and context, \
+         predict the single most likely next command they will type.\n\n\
+         Working directory: {cwd}\n\
+         Project type: {pt}\n\
+         Recent commands (most recent first):\n{recent}\n\
+         Last exit code: {last_exit_code}\n\n\
+         Respond with ONLY the complete command (no explanation)."
     )
 }
 

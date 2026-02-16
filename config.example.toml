@@ -50,9 +50,15 @@ api_key_env = "ANTHROPIC_API_KEY"      # env var name containing the API key
 model = "claude-haiku-4-5-20251001"    # model to use (fast + cheap for structured extraction)
 timeout_ms = 10000                     # per-request timeout
 max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
+workflow_prediction = false            # enable LLM workflow predictions (predict next command)
+workflow_max_diff_tokens = 2000        # max tokens of git diff for commit message generation
 contextual_args = true                 # enable LLM contextual argument suggestions (phase 2)
 arg_context_timeout_ms = 2000          # timeout for context gathering commands (git/docker/etc.)
 arg_max_context_tokens = 3000          # max context budget sent to the LLM
+
+[workflow]
+enabled = true                         # enable workflow prediction (bigram-based)
+min_probability = 0.15                 # minimum bigram probability to suggest
 
 [logging]
 interaction_log = "~/.local/share/synapse/interactions.jsonl"

@@ -12,6 +12,7 @@ pub struct Config {
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
     pub llm: LlmConfig,
+    pub workflow: WorkflowConfig,
     #[serde(skip)]
     cli_socket_override: Option<String>,
 }
@@ -99,9 +100,18 @@ pub struct LlmConfig {
     pub model: String,
     pub timeout_ms: u64,
     pub max_calls_per_discovery: usize,
+    pub workflow_prediction: bool,
+    pub workflow_max_diff_tokens: usize,
     pub contextual_args: bool,
     pub arg_context_timeout_ms: u64,
     pub arg_max_context_tokens: usize,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct WorkflowConfig {
+    pub enabled: bool,
+    pub min_probability: f64,
 }
 
 // --- Defaults ---
@@ -203,9 +213,20 @@ impl Default for LlmConfig {
             model: "claude-haiku-4-5-20251001".into(),
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
+            workflow_prediction: false,
+            workflow_max_diff_tokens: 2000,
             contextual_args: true,
             arg_context_timeout_ms: 2_000,
             arg_max_context_tokens: 3_000,
+        }
+    }
+}
+
+impl Default for WorkflowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_probability: 0.15,
         }
     }
 }

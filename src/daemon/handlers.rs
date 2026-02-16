@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use futures_util::SinkExt;
 
@@ -121,7 +122,10 @@ pub(super) async fn handle_suggest(req: SuggestRequest, state: &RuntimeState) ->
         ),
     };
 
-    let phase2_plan = if state.phase2_providers.is_empty() {
+    let has_workflow_phase2 =
+        state.config.llm.workflow_prediction && find_workflow_provider(&state.providers).is_some();
+
+    let phase2_plan = if state.phase2_providers.is_empty() && !has_workflow_phase2 {
         None
     } else {
         Some(Phase2UpdatePlan {
@@ -172,12 +176,21 @@ pub(super) fn spawn_phase2_update(
     writer: SharedWriter,
 ) {
     let phase2_providers = state.phase2_providers.clone();
-    if phase2_providers.is_empty() {
+    let workflow_provider = if state.config.llm.workflow_prediction {
+        find_workflow_provider(&state.providers).cloned()
+    } else {
+        None
+    };
+
+    if phase2_providers.is_empty() && workflow_provider.is_none() {
         return;
     }
+
     let ranker = state.ranker.clone();
     let session_manager = state.session_manager.clone();
     let max_suggestion_length = state.config.general.max_suggestion_length;
+    let workflow_llm_inflight = state.workflow_llm_inflight.clone();
+
     let Phase2UpdatePlan {
         provider_request,
         mut phase1_suggestions,
@@ -189,12 +202,32 @@ pub(super) fn spawn_phase2_update(
     } = plan;
 
     tokio::spawn(async move {
-        let phase2_suggestions = collect_provider_suggestions(
+        let mut phase2_suggestions = collect_provider_suggestions(
             &phase2_providers,
             &provider_request,
             NonZeroUsize::new(1).unwrap(),
         )
         .await;
+
+        if let Some(wp) = workflow_provider {
+            let should_predict = !provider_request.recent_commands.is_empty();
+            if should_predict {
+                let should_run = {
+                    let mut inflight = workflow_llm_inflight.lock().await;
+                    inflight.insert(session_id.clone())
+                };
+
+                if should_run {
+                    if let Some(suggestion) = wp.predict_with_llm(&provider_request).await {
+                        phase2_suggestions.push(suggestion);
+                    }
+
+                    let mut inflight = workflow_llm_inflight.lock().await;
+                    inflight.remove(&session_id);
+                }
+            }
+        }
+
         if phase2_suggestions.is_empty() {
             return;
         }
@@ -262,9 +295,28 @@ async fn handle_interaction(report: InteractionReport, state: &RuntimeState) -> 
             .get_last_accepted(&report.session_id)
             .await
         {
+            let exit_code = state
+                .session_manager
+                .get_last_exit_code(&report.session_id)
+                .await;
+            let project_type = state
+                .session_manager
+                .get_cwd(&report.session_id)
+                .await
+                .and_then(|cwd| {
+                    let path = std::path::Path::new(&cwd);
+                    let root = crate::project::find_project_root(path, 3)?;
+                    crate::project::detect_project_type(&root)
+                });
+
             state
                 .workflow_predictor
-                .record(&prev, &report.suggestion)
+                .record_with_context(
+                    &prev,
+                    &report.suggestion,
+                    exit_code,
+                    project_type.as_deref(),
+                )
                 .await;
         }
         state
@@ -311,6 +363,18 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
     }
 
     Response::Ack
+}
+
+/// Extract the WorkflowProvider from the provider list.
+fn find_workflow_provider(
+    providers: &[Provider],
+) -> Option<&Arc<crate::providers::workflow::WorkflowProvider>> {
+    for provider in providers {
+        if let Provider::Workflow(wp) = provider {
+            return Some(wp);
+        }
+    }
+    None
 }
 
 async fn collect_provider_suggestions(
