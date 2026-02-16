@@ -9,6 +9,7 @@ use crate::logging::InteractionLogger;
 use crate::providers::environment::EnvironmentProvider;
 use crate::providers::filesystem::FilesystemProvider;
 use crate::providers::history::HistoryProvider;
+use crate::providers::llm_argument::LlmArgumentProvider;
 use crate::providers::spec::SpecProvider;
 use crate::providers::workflow::WorkflowProvider;
 use crate::providers::Provider;
@@ -163,10 +164,7 @@ pub(super) async fn start_daemon(
     let llm_client =
         crate::llm::LlmClient::from_config(&config.llm, config.security.scrub_paths).map(Arc::new);
     if llm_client.is_some() {
-        tracing::info!(
-            "LLM spec discovery enabled (provider: {})",
-            config.llm.provider
-        );
+        tracing::info!("LLM enabled (provider: {})", config.llm.provider);
     } else if config.llm.enabled {
         tracing::warn!("LLM enabled in config but API key env var not set, falling back to regex");
     }
@@ -185,7 +183,7 @@ pub(super) async fn start_daemon(
     let workflow_provider = WorkflowProvider::new(
         workflow_predictor.clone(),
         config.workflow.clone(),
-        llm_client,
+        llm_client.clone(),
         config.llm.clone(),
     );
     if config.workflow.enabled {
@@ -199,6 +197,21 @@ pub(super) async fn start_daemon(
         Provider::Environment(Arc::new(environment_provider)),
         Provider::Workflow(Arc::new(workflow_provider)),
     ];
+    let mut phase2_providers = Vec::new();
+    if config.llm.contextual_args {
+        if let Some(client) = llm_client.clone() {
+            phase2_providers.push(Provider::LlmArgument(Arc::new(LlmArgumentProvider::new(
+                client,
+                &config.llm,
+                config.security.scrub_paths,
+            ))));
+            tracing::info!("LLM contextual argument suggestions enabled");
+        } else if config.llm.enabled {
+            tracing::warn!(
+                "LLM contextual args enabled but LLM client unavailable; phase 2 provider disabled"
+            );
+        }
+    }
 
     let ranker = Ranker::new(config.weights.clone());
 
@@ -210,6 +223,7 @@ pub(super) async fn start_daemon(
 
     let state = Arc::new(RuntimeState::new(
         providers,
+        phase2_providers,
         spec_store,
         ranker,
         workflow_predictor,

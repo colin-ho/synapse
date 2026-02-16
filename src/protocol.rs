@@ -86,6 +86,7 @@ pub enum SuggestionSource {
     Filesystem,
     Environment,
     Workflow,
+    Llm,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,6 +143,7 @@ impl SuggestionSource {
             Self::Filesystem => "filesystem",
             Self::Environment => "environment",
             Self::Workflow => "workflow",
+            Self::Llm => "llm",
         }
     }
 }
@@ -441,6 +443,7 @@ mod tests {
             SuggestionSource::Filesystem,
             SuggestionSource::Environment,
             SuggestionSource::Workflow,
+            SuggestionSource::Llm,
         ] {
             let serde_str = serde_json::to_string(&source).unwrap();
             assert_eq!(format!("\"{}\"", source.as_str()), serde_str);

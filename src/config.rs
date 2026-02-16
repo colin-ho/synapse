@@ -102,6 +102,9 @@ pub struct LlmConfig {
     pub max_calls_per_discovery: usize,
     pub workflow_prediction: bool,
     pub workflow_max_diff_tokens: usize,
+    pub contextual_args: bool,
+    pub arg_context_timeout_ms: u64,
+    pub arg_max_context_tokens: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -212,6 +215,9 @@ impl Default for LlmConfig {
             max_calls_per_discovery: 20,
             workflow_prediction: false,
             workflow_max_diff_tokens: 2000,
+            contextual_args: true,
+            arg_context_timeout_ms: 2_000,
+            arg_max_context_tokens: 3_000,
         }
     }
 }
@@ -334,6 +340,9 @@ mod tests {
         assert_eq!(config.weights.history, 0.30);
         assert_eq!(config.weights.spec, 0.50);
         assert_eq!(config.weights.recency, 0.20);
+        assert!(config.llm.contextual_args);
+        assert_eq!(config.llm.arg_context_timeout_ms, 2_000);
+        assert_eq!(config.llm.arg_max_context_tokens, 3_000);
     }
 
     #[test]

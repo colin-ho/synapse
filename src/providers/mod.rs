@@ -1,6 +1,7 @@
 pub mod environment;
 pub mod filesystem;
 pub mod history;
+pub mod llm_argument;
 pub mod spec;
 pub mod workflow;
 
@@ -142,4 +143,5 @@ pub enum Provider {
     Filesystem(Arc<filesystem::FilesystemProvider>),
     Environment(Arc<environment::EnvironmentProvider>),
     Workflow(Arc<workflow::WorkflowProvider>),
+    LlmArgument(Arc<llm_argument::LlmArgumentProvider>),
 }
