@@ -51,18 +51,38 @@ impl std::fmt::Debug for ProviderRequest {
 }
 
 impl ProviderRequest {
-    pub async fn from_suggest_request(request: &SuggestRequest, store: Arc<SpecStore>) -> Self {
-        let completion =
-            CompletionContext::build(&request.buffer, Path::new(&request.cwd), &store).await;
+    async fn from_parts(
+        session_id: String,
+        buffer: &str,
+        cwd: String,
+        recent_commands: Vec<String>,
+        last_exit_code: i32,
+        env_hints: HashMap<String, String>,
+        store: Arc<SpecStore>,
+    ) -> Self {
+        let completion = CompletionContext::build(buffer, Path::new(&cwd), &store).await;
         Self {
-            session_id: request.session_id.clone(),
-            cwd: request.cwd.clone(),
-            recent_commands: request.recent_commands.clone(),
-            last_exit_code: request.last_exit_code,
-            env_hints: request.env_hints.clone(),
+            session_id,
+            cwd,
+            recent_commands,
+            last_exit_code,
+            env_hints,
             completion,
             spec_store: store,
         }
+    }
+
+    pub async fn from_suggest_request(request: &SuggestRequest, store: Arc<SpecStore>) -> Self {
+        Self::from_parts(
+            request.session_id.clone(),
+            &request.buffer,
+            request.cwd.clone(),
+            request.recent_commands.clone(),
+            request.last_exit_code,
+            request.env_hints.clone(),
+            store,
+        )
+        .await
     }
 
     pub async fn from_list_request(
@@ -72,17 +92,16 @@ impl ProviderRequest {
         // Preserve compatibility with protocol fields that are currently unused by providers.
         let _ = request.cursor_pos;
 
-        let completion =
-            CompletionContext::build(&request.buffer, Path::new(&request.cwd), &store).await;
-        Self {
-            session_id: request.session_id.clone(),
-            cwd: request.cwd.clone(),
-            recent_commands: request.recent_commands.clone(),
-            last_exit_code: request.last_exit_code,
-            env_hints: request.env_hints.clone(),
-            completion,
-            spec_store: store,
-        }
+        Self::from_parts(
+            request.session_id.clone(),
+            &request.buffer,
+            request.cwd.clone(),
+            request.recent_commands.clone(),
+            request.last_exit_code,
+            request.env_hints.clone(),
+            store,
+        )
+        .await
     }
 
     pub fn completion(&self) -> &CompletionContext {

@@ -15,7 +15,7 @@ use crate::config::LlmConfig;
 use crate::llm::{scrub_home_paths, LlmClient};
 use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
-use crate::spec::{ArgSpec, CommandSpec, OptionSpec, SubcommandSpec};
+use crate::spec::{find_option, ArgSpec, CommandSpec, OptionSpec, SubcommandSpec};
 
 const CACHE_TTL_SECONDS: u64 = 60;
 const CACHE_MAX_ENTRIES: u64 = 200;
@@ -567,12 +567,6 @@ fn active_spec_view<'a>(spec: &'a CommandSpec, path: &[String]) -> ActiveSpecVie
     }
 
     view
-}
-
-fn find_option<'a>(options: &'a [OptionSpec], token: &str) -> Option<&'a OptionSpec> {
-    options
-        .iter()
-        .find(|opt| opt.long.as_deref() == Some(token) || opt.short.as_deref() == Some(token))
 }
 
 fn arg_for_index(args: &[ArgSpec], index: usize) -> Option<&ArgSpec> {

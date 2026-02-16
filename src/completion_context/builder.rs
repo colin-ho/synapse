@@ -1,34 +1,10 @@
 use std::path::Path;
 
-use crate::spec::{ArgTemplate, OptionSpec};
+use crate::spec::{find_option, ArgTemplate, OptionSpec};
 use crate::spec_store::SpecStore;
 
 use super::tokenizer::{last_segment, tokenize, tokenize_with_operators, Token};
 use super::{CompletionContext, ExpectedType, Position};
-
-/// Hardcoded argument types for common commands without specs.
-fn command_arg_type(cmd: &str) -> Option<ExpectedType> {
-    match cmd {
-        "cd" | "mkdir" | "rmdir" | "pushd" => Some(ExpectedType::Directory),
-        "cat" | "less" | "head" | "tail" | "vim" | "nvim" | "code" | "nano" | "bat" | "wc"
-        | "sort" | "uniq" | "file" | "stat" | "touch" | "open" => Some(ExpectedType::FilePath),
-        "cp" | "mv" | "rm" | "chmod" | "chown" | "ln" => Some(ExpectedType::FilePath),
-        "python" | "python3" | "node" | "ruby" | "perl" | "bash" | "sh" | "zsh" => {
-            Some(ExpectedType::FilePath)
-        }
-        "ssh" | "scp" | "sftp" | "ping" => Some(ExpectedType::Hostname),
-        "export" | "unset" => Some(ExpectedType::EnvVar),
-        _ => None,
-    }
-}
-
-/// Commands that take another command as their first argument (recursive).
-fn is_recursive_command(cmd: &str) -> bool {
-    matches!(
-        cmd,
-        "sudo" | "env" | "nohup" | "time" | "watch" | "xargs" | "nice" | "ionice" | "strace"
-    )
-}
 
 impl CompletionContext {
     /// Build a CompletionContext from a buffer, cwd, and spec store.
@@ -43,57 +19,40 @@ impl CompletionContext {
         }
 
         let trailing_space = buffer.ends_with(' ');
+        let buffer_tokens = tokenize(buffer);
 
         // Check for pipe/redirect by finding the last segment
         let (segment_words, preceding_op) = last_segment(&all_tokens);
 
         // If after a pipe and no words yet (or one partial word), it's PipeTarget
         if let Some(Token::Pipe) = preceding_op {
+            let segment_prefix = Self::prefix_up_to_last_segment(buffer, &all_tokens);
             if segment_words.is_empty() {
-                return Self {
-                    buffer: buffer.to_string(),
-                    tokens: tokenize(buffer),
-                    trailing_space,
-                    partial: String::new(),
-                    prefix: Self::prefix_up_to_last_segment(buffer, &all_tokens),
-                    command: None,
-                    position: Position::PipeTarget,
-                    expected_type: ExpectedType::Command,
-                    subcommand_path: Vec::new(),
-                    present_options: Vec::new(),
-                };
+                return Self::from_fields(
+                    buffer,
+                    buffer_tokens.clone(),
+                    String::new(),
+                    segment_prefix,
+                    None,
+                    Position::PipeTarget,
+                    ExpectedType::Command,
+                );
             }
             if segment_words.len() == 1 && !trailing_space {
-                return Self {
-                    buffer: buffer.to_string(),
-                    tokens: tokenize(buffer),
-                    trailing_space,
-                    partial: segment_words[0].clone(),
-                    prefix: Self::prefix_up_to_last_segment(buffer, &all_tokens),
-                    command: Some(segment_words[0].clone()),
-                    position: Position::PipeTarget,
-                    expected_type: ExpectedType::Command,
-                    subcommand_path: Vec::new(),
-                    present_options: Vec::new(),
-                };
+                return Self::from_fields(
+                    buffer,
+                    buffer_tokens.clone(),
+                    segment_words[0].clone(),
+                    segment_prefix,
+                    Some(segment_words[0].clone()),
+                    Position::PipeTarget,
+                    ExpectedType::Command,
+                );
             }
             // More than one word after pipe — treat the segment as a new command
             // Build context for just the segment
-            let segment_buffer = segment_words.join(" ");
-            let segment_buffer = if trailing_space {
-                format!("{segment_buffer} ")
-            } else {
-                segment_buffer
-            };
-            let mut inner = Box::pin(Self::build(&segment_buffer, cwd, store)).await;
-            inner.prefix = format!(
-                "{}{}",
-                Self::prefix_up_to_last_segment(buffer, &all_tokens),
-                inner.prefix
-            );
-            inner.buffer = buffer.to_string();
-            inner.tokens = tokenize(buffer);
-            return inner;
+            let inner = Self::build_segment_words(&segment_words, trailing_space, cwd, store).await;
+            return Self::rebase_inner(inner, buffer, buffer_tokens.clone(), &segment_prefix);
         }
 
         // If after a redirect, position is Redirect with FilePath expected
@@ -103,18 +62,15 @@ impl CompletionContext {
             } else {
                 String::new()
             };
-            return Self {
-                buffer: buffer.to_string(),
-                tokens: tokenize(buffer),
-                trailing_space,
+            return Self::from_fields(
+                buffer,
+                buffer_tokens.clone(),
                 partial,
-                prefix: Self::prefix_up_to_last_segment(buffer, &all_tokens),
-                command: None,
-                position: Position::Redirect,
-                expected_type: ExpectedType::FilePath,
-                subcommand_path: Vec::new(),
-                present_options: Vec::new(),
-            };
+                Self::prefix_up_to_last_segment(buffer, &all_tokens),
+                None,
+                Position::Redirect,
+                ExpectedType::FilePath,
+            );
         }
 
         // If after && or || or ;, treat as new command
@@ -122,35 +78,20 @@ impl CompletionContext {
             preceding_op,
             Some(Token::And) | Some(Token::Or) | Some(Token::Semicolon)
         ) {
+            let segment_prefix = Self::prefix_up_to_last_segment(buffer, &all_tokens);
             if segment_words.is_empty() {
-                return Self {
-                    buffer: buffer.to_string(),
-                    tokens: tokenize(buffer),
-                    trailing_space,
-                    partial: String::new(),
-                    prefix: Self::prefix_up_to_last_segment(buffer, &all_tokens),
-                    command: None,
-                    position: Position::CommandName,
-                    expected_type: ExpectedType::Command,
-                    subcommand_path: Vec::new(),
-                    present_options: Vec::new(),
-                };
+                return Self::from_fields(
+                    buffer,
+                    buffer_tokens.clone(),
+                    String::new(),
+                    segment_prefix,
+                    None,
+                    Position::CommandName,
+                    ExpectedType::Command,
+                );
             }
-            let segment_buffer = segment_words.join(" ");
-            let segment_buffer = if trailing_space {
-                format!("{segment_buffer} ")
-            } else {
-                segment_buffer
-            };
-            let mut inner = Box::pin(Self::build(&segment_buffer, cwd, store)).await;
-            inner.prefix = format!(
-                "{}{}",
-                Self::prefix_up_to_last_segment(buffer, &all_tokens),
-                inner.prefix
-            );
-            inner.buffer = buffer.to_string();
-            inner.tokens = tokenize(buffer);
-            return inner;
+            let inner = Self::build_segment_words(&segment_words, trailing_space, cwd, store).await;
+            return Self::rebase_inner(inner, buffer, buffer_tokens.clone(), &segment_prefix);
         }
 
         // No operators — use word-only tokens
@@ -161,124 +102,38 @@ impl CompletionContext {
 
         // Single token, no trailing space → completing the command name
         if tokens.len() == 1 && !trailing_space {
-            return Self {
-                buffer: buffer.to_string(),
-                tokens: tokens.clone(),
-                trailing_space,
-                partial: tokens[0].clone(),
-                prefix: String::new(),
-                command: Some(tokens[0].clone()),
-                position: Position::CommandName,
-                expected_type: ExpectedType::Command,
-                subcommand_path: Vec::new(),
-                present_options: Vec::new(),
-            };
+            return Self::from_fields(
+                buffer,
+                tokens.clone(),
+                tokens[0].clone(),
+                String::new(),
+                Some(tokens[0].clone()),
+                Position::CommandName,
+                ExpectedType::Command,
+            );
         }
 
         let command_name = &tokens[0];
 
-        // Handle recursive commands (sudo, env, etc.)
-        if is_recursive_command(command_name) {
-            let rest_tokens = &tokens[1..];
-            // Find the actual command (skip flags for env/sudo)
-            let mut cmd_start = 0;
-            for (i, tok) in rest_tokens.iter().enumerate() {
-                if !tok.starts_with('-') {
-                    cmd_start = i;
-                    break;
-                }
-                cmd_start = i + 1;
-            }
-
-            if cmd_start < rest_tokens.len() {
-                // Reconstruct buffer from the actual command onwards
-                let prefix_parts: Vec<&str> =
-                    tokens[..1 + cmd_start].iter().map(|s| s.as_str()).collect();
-                let prefix_str = format!("{} ", prefix_parts.join(" "));
-                let inner_tokens = &rest_tokens[cmd_start..];
-
-                if inner_tokens.len() == 1 && !trailing_space {
-                    // Still typing the inner command name
-                    return Self {
-                        buffer: buffer.to_string(),
-                        tokens: tokens.clone(),
-                        trailing_space,
-                        partial: inner_tokens[0].clone(),
-                        prefix: prefix_str,
-                        command: Some(inner_tokens[0].clone()),
-                        position: Position::CommandName,
-                        expected_type: ExpectedType::Command,
-                        subcommand_path: Vec::new(),
-                        present_options: Vec::new(),
-                    };
-                }
-
-                // Recurse: build context for the inner command
-                let inner_buffer_parts: Vec<&str> =
-                    inner_tokens.iter().map(|s| s.as_str()).collect();
-                let mut inner_buffer = inner_buffer_parts.join(" ");
-                if trailing_space {
-                    inner_buffer.push(' ');
-                }
-                let mut inner_ctx = Box::pin(Self::build(&inner_buffer, cwd, store)).await;
-                // Adjust prefix to include the recursive command
-                inner_ctx.prefix = format!("{}{}", prefix_str, inner_ctx.prefix);
-                inner_ctx.buffer = buffer.to_string();
-                inner_ctx.tokens = tokens;
-                return inner_ctx;
-            } else {
-                // After recursive command + its flags, waiting for the inner command
-                return Self {
-                    buffer: buffer.to_string(),
-                    tokens: tokens.clone(),
-                    trailing_space,
-                    partial: String::new(),
-                    prefix: format!("{} ", tokens.join(" ")),
-                    command: None,
-                    position: Position::CommandName,
-                    expected_type: ExpectedType::Command,
-                    subcommand_path: Vec::new(),
-                    present_options: Vec::new(),
-                };
-            }
-        }
-
-        // Try spec lookup
+        // Try spec lookup — handles recursive commands, arg types, and full specs
         if let Some(spec) = store.lookup(command_name, cwd).await {
+            if spec.recursive {
+                return Self::build_recursive(buffer, &tokens, trailing_space, cwd, store).await;
+            }
             return Self::build_from_spec(buffer, &tokens, trailing_space, &spec, store, cwd).await;
-        }
-
-        // No spec — check command argument table
-        if let Some(expected) = command_arg_type(command_name) {
-            let (partial, prefix) = Self::compute_partial_prefix(&tokens, trailing_space);
-            return Self {
-                buffer: buffer.to_string(),
-                tokens: tokens.clone(),
-                trailing_space,
-                partial,
-                prefix,
-                command: Some(command_name.clone()),
-                position: Position::Argument { index: 0 },
-                expected_type: expected,
-                subcommand_path: Vec::new(),
-                present_options: Vec::new(),
-            };
         }
 
         // Fallback: unknown
         let (partial, prefix) = Self::compute_partial_prefix(&tokens, trailing_space);
-        Self {
-            buffer: buffer.to_string(),
-            tokens: tokens.clone(),
-            trailing_space,
+        Self::from_fields(
+            buffer,
+            tokens.clone(),
             partial,
             prefix,
-            command: Some(command_name.clone()),
-            position: Position::Unknown,
-            expected_type: ExpectedType::Any,
-            subcommand_path: Vec::new(),
-            present_options: Vec::new(),
-        }
+            Some(command_name.clone()),
+            Position::Unknown,
+            ExpectedType::Any,
+        )
     }
 
     /// Build context using a resolved spec (tree-walk).
@@ -454,6 +309,102 @@ impl CompletionContext {
         ExpectedType::Any
     }
 
+    fn from_fields(
+        buffer: &str,
+        tokens: Vec<String>,
+        partial: String,
+        prefix: String,
+        command: Option<String>,
+        position: Position,
+        expected_type: ExpectedType,
+    ) -> Self {
+        Self {
+            buffer: buffer.to_string(),
+            tokens,
+            trailing_space: buffer.ends_with(' '),
+            partial,
+            prefix,
+            command,
+            position,
+            expected_type,
+            subcommand_path: Vec::new(),
+            present_options: Vec::new(),
+        }
+    }
+
+    /// Handle recursive commands (sudo, env, etc.) that take another command as an argument.
+    async fn build_recursive(
+        buffer: &str,
+        tokens: &[String],
+        trailing_space: bool,
+        cwd: &Path,
+        store: &SpecStore,
+    ) -> Self {
+        let rest_tokens = &tokens[1..];
+        // Find the actual command (skip flags for env/sudo)
+        let mut cmd_start = 0;
+        for (i, tok) in rest_tokens.iter().enumerate() {
+            if !tok.starts_with('-') {
+                cmd_start = i;
+                break;
+            }
+            cmd_start = i + 1;
+        }
+
+        if cmd_start < rest_tokens.len() {
+            let prefix_parts: Vec<&str> =
+                tokens[..1 + cmd_start].iter().map(|s| s.as_str()).collect();
+            let prefix_str = format!("{} ", prefix_parts.join(" "));
+            let inner_tokens = &rest_tokens[cmd_start..];
+
+            if inner_tokens.len() == 1 && !trailing_space {
+                return Self::from_fields(
+                    buffer,
+                    tokens.to_vec(),
+                    inner_tokens[0].clone(),
+                    prefix_str,
+                    Some(inner_tokens[0].clone()),
+                    Position::CommandName,
+                    ExpectedType::Command,
+                );
+            }
+
+            let inner_ctx =
+                Self::build_segment_words(inner_tokens, trailing_space, cwd, store).await;
+            Self::rebase_inner(inner_ctx, buffer, tokens.to_vec(), &prefix_str)
+        } else {
+            Self::from_fields(
+                buffer,
+                tokens.to_vec(),
+                String::new(),
+                format!("{} ", tokens.join(" ")),
+                None,
+                Position::CommandName,
+                ExpectedType::Command,
+            )
+        }
+    }
+
+    async fn build_segment_words(
+        segment_words: &[String],
+        trailing_space: bool,
+        cwd: &Path,
+        store: &SpecStore,
+    ) -> Self {
+        let mut segment_buffer = segment_words.join(" ");
+        if trailing_space {
+            segment_buffer.push(' ');
+        }
+        Box::pin(Self::build(&segment_buffer, cwd, store)).await
+    }
+
+    fn rebase_inner(mut inner: Self, buffer: &str, tokens: Vec<String>, prefix: &str) -> Self {
+        inner.prefix = format!("{prefix}{}", inner.prefix);
+        inner.buffer = buffer.to_string();
+        inner.tokens = tokens;
+        inner
+    }
+
     fn compute_partial_prefix(tokens: &[String], trailing_space: bool) -> (String, String) {
         let partial = if !trailing_space && !tokens.is_empty() {
             tokens.last().cloned().unwrap_or_default()
@@ -564,23 +515,14 @@ impl CompletionContext {
     }
 
     fn empty(buffer: &str) -> Self {
-        Self {
-            buffer: buffer.to_string(),
-            tokens: Vec::new(),
-            trailing_space: false,
-            partial: String::new(),
-            prefix: String::new(),
-            command: None,
-            position: Position::CommandName,
-            expected_type: ExpectedType::Command,
-            subcommand_path: Vec::new(),
-            present_options: Vec::new(),
-        }
+        Self::from_fields(
+            buffer,
+            Vec::new(),
+            String::new(),
+            String::new(),
+            None,
+            Position::CommandName,
+            ExpectedType::Command,
+        )
     }
-}
-
-fn find_option<'a>(options: &'a [OptionSpec], token: &str) -> Option<&'a OptionSpec> {
-    options
-        .iter()
-        .find(|opt| opt.long.as_deref() == Some(token) || opt.short.as_deref() == Some(token))
 }

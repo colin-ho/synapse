@@ -28,6 +28,9 @@ pub struct CommandSpec {
     pub options: Vec<OptionSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<ArgSpec>,
+    /// Command takes another command as its first argument (e.g. sudo, env).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recursive: bool,
     /// Set at load time, not from TOML
     #[serde(skip)]
     pub source: SpecSource,
@@ -43,6 +46,7 @@ impl Default for CommandSpec {
             subcommands: Vec::new(),
             options: Vec::new(),
             args: Vec::new(),
+            recursive: false,
             source: SpecSource::Builtin,
         }
     }
@@ -186,6 +190,12 @@ impl SubcommandSpec {
             .iter()
             .find(|s| s.name == name || s.aliases.iter().any(|a| a == name))
     }
+}
+
+pub fn find_option<'a>(options: &'a [OptionSpec], token: &str) -> Option<&'a OptionSpec> {
+    options
+        .iter()
+        .find(|opt| opt.long.as_deref() == Some(token) || opt.short.as_deref() == Some(token))
 }
 
 #[cfg(test)]

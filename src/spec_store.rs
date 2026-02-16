@@ -8,11 +8,16 @@ use moka::future::Cache;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
+use regex::Regex;
+use std::sync::LazyLock;
+
 use crate::config::SpecConfig;
 use crate::llm::LlmClient;
-use crate::spec::{CommandSpec, GeneratorSpec, SpecSource, SubcommandSpec};
+use crate::spec::{
+    ArgSpec, ArgTemplate, CommandSpec, GeneratorSpec, OptionSpec, SpecSource, SubcommandSpec,
+};
 use crate::spec_autogen;
-use crate::{help_parser, spec_cache};
+use crate::spec_cache;
 
 /// Commands that must never be run with --help for safety reasons.
 const DISCOVERY_BLOCKLIST: &[&str] = &[
@@ -69,6 +74,54 @@ impl SpecStore {
                 Err(e) => {
                     tracing::warn!("Failed to parse builtin spec {name}: {e}");
                 }
+            }
+        }
+
+        // Register minimal shell command specs (only if no full builtin spec exists)
+        for (names, template) in [
+            (
+                &["cd", "mkdir", "rmdir", "pushd"][..],
+                ArgTemplate::Directories,
+            ),
+            (
+                &[
+                    "cat", "less", "head", "tail", "vim", "nvim", "code", "nano", "bat", "wc",
+                    "sort", "uniq", "file", "stat", "touch", "open", "cp", "mv", "rm", "chmod",
+                    "chown", "ln", "node", "ruby", "perl", "bash", "sh", "zsh",
+                ][..],
+                ArgTemplate::FilePaths,
+            ),
+            (&["export", "unset"][..], ArgTemplate::EnvVars),
+        ] {
+            for name in names {
+                if !builtin.contains_key(*name) {
+                    builtin.insert(
+                        name.to_string(),
+                        CommandSpec {
+                            name: name.to_string(),
+                            args: vec![ArgSpec {
+                                name: "path".into(),
+                                template: Some(template.clone()),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        }
+        for name in [
+            "sudo", "env", "nohup", "time", "watch", "xargs", "nice", "ionice", "strace",
+        ] {
+            if !builtin.contains_key(name) {
+                builtin.insert(
+                    name.to_string(),
+                    CommandSpec {
+                        name: name.to_string(),
+                        recursive: true,
+                        ..Default::default()
+                    },
+                );
             }
         }
 
@@ -205,22 +258,12 @@ impl SpecStore {
         let timeout = Duration::from_millis(self.config.discover_timeout_ms);
         let args: Vec<String> = Vec::new();
 
-        // Try --help first, then -h
-        let help_text = match self
-            .run_help_command(command, &args, "--help", timeout, cwd)
-            .await
-        {
-            Some(text) if !text.trim().is_empty() => text,
-            _ => match self
-                .run_help_command(command, &args, "-h", timeout, cwd)
-                .await
-            {
-                Some(text) if !text.trim().is_empty() => text,
-                _ => {
-                    tracing::debug!("No help output for {command}");
-                    return;
-                }
-            },
+        let help_text = match self.fetch_help_output(command, &args, timeout, cwd).await {
+            Some(text) => text,
+            None => {
+                tracing::debug!("No help output for {command}");
+                return;
+            }
         };
 
         let llm_budget = AtomicUsize::new(
@@ -325,6 +368,26 @@ impl SpecStore {
         }
     }
 
+    async fn fetch_help_output(
+        &self,
+        command: &str,
+        args: &[String],
+        timeout: Duration,
+        cwd: Option<&Path>,
+    ) -> Option<String> {
+        for help_flag in ["--help", "-h"] {
+            if let Some(text) = self
+                .run_help_command(command, args, help_flag, timeout, cwd)
+                .await
+            {
+                if !text.trim().is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        None
+    }
+
     /// Recursively discover subcommand specs by running `command ...subcommand --help`.
     async fn discover_subcommands(
         &self,
@@ -362,19 +425,10 @@ impl SpecStore {
         let mut args = parent_path.to_vec();
         args.push(subcommand.name.clone());
 
-        let help_text = match self
-            .run_help_command(base_command, &args, "--help", timeout, cwd)
+        let help_text = self
+            .fetch_help_output(base_command, &args, timeout, cwd)
             .await
-        {
-            Some(text) if !text.trim().is_empty() => text,
-            _ => match self
-                .run_help_command(base_command, &args, "-h", timeout, cwd)
-                .await
-            {
-                Some(text) if !text.trim().is_empty() => text,
-                _ => String::new(),
-            },
-        };
+            .unwrap_or_default();
 
         if !help_text.trim().is_empty() {
             let sub_spec = self
@@ -413,7 +467,7 @@ impl SpecStore {
         }
     }
 
-    /// Try LLM parsing first (if available and budget allows), fall back to regex.
+    /// Try LLM parsing first (if available and budget allows), fall back to basic regex.
     async fn parse_with_llm_or_regex(
         &self,
         command_name: &str,
@@ -438,10 +492,10 @@ impl SpecStore {
             } else {
                 // Restore: fetch_sub already decremented past 0 (wraps for usize)
                 llm_budget.fetch_add(1, Ordering::Relaxed);
-                tracing::debug!("LLM budget exhausted, using regex for {command_name}");
+                tracing::debug!("LLM budget exhausted, using basic regex for {command_name}");
             }
         }
-        help_parser::parse_help_output(command_name, help_text)
+        parse_help_basic(command_name, help_text)
     }
 
     /// Resolve a command name to its full path.
@@ -639,5 +693,86 @@ impl SpecStore {
         self.generator_cache.insert(cache_key, result.clone()).await;
 
         result
+    }
+}
+
+/// Minimal best-effort help text parser used when LLM is unavailable.
+/// Extracts obvious `--option` lines and `command  description` subcommand lines.
+pub fn parse_help_basic(command_name: &str, help_text: &str) -> CommandSpec {
+    static OPT_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^\s+(-\w)?(?:\s*,\s*|\s+)?(--[\w][\w.-]*)?\s*(?:[=\s]\s*(\[?<?[\w.|/-]+>?\]?))?\s{2,}(.+)$").unwrap()
+    });
+    static SUBCMD_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^\s+([\w][\w.-]*)\s{2,}(.+)$").unwrap());
+
+    let mut options = Vec::new();
+    let mut subcommands = Vec::new();
+    let mut in_options = false;
+    let mut in_commands = false;
+
+    for line in help_text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+
+        // Detect section headers
+        if lower.ends_with("options:") || lower.ends_with("flags:") {
+            in_options = true;
+            in_commands = false;
+            continue;
+        }
+        if lower.ends_with("commands:") || lower.ends_with("subcommands:") {
+            in_commands = true;
+            in_options = false;
+            continue;
+        }
+        if !trimmed.is_empty()
+            && !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && trimmed.ends_with(':')
+        {
+            in_options = false;
+            in_commands = false;
+            continue;
+        }
+
+        if in_options {
+            if let Some(caps) = OPT_RE.captures(line) {
+                let short = caps.get(1).map(|m| m.as_str().to_string());
+                let long = caps.get(2).map(|m| m.as_str().to_string());
+                if long.as_deref() == Some("--help") || long.as_deref() == Some("--version") {
+                    continue;
+                }
+                let takes_arg = caps.get(3).is_some();
+                let description = caps.get(4).map(|m| m.as_str().trim().to_string());
+                if short.is_some() || long.is_some() {
+                    options.push(OptionSpec {
+                        short,
+                        long,
+                        description,
+                        takes_arg,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+
+        if in_commands {
+            if let Some(caps) = SUBCMD_RE.captures(line) {
+                let name = caps.get(1).unwrap().as_str().to_string();
+                let description = Some(caps.get(2).unwrap().as_str().trim().to_string());
+                subcommands.push(SubcommandSpec {
+                    name,
+                    description,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    CommandSpec {
+        name: command_name.to_string(),
+        subcommands,
+        options,
+        ..Default::default()
     }
 }

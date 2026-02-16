@@ -199,25 +199,24 @@ fn sanitize_tsv(s: &str) -> Cow<'_, str> {
 }
 
 impl Response {
+    fn to_tsv_suggestion(prefix: &str, suggestion: &SuggestionResponse) -> String {
+        let mut line = format!(
+            "{prefix}\t{}\t{}",
+            sanitize_tsv(&suggestion.text),
+            suggestion.source.as_str()
+        );
+        if let Some(ref desc) = suggestion.description {
+            line.push('\t');
+            line.push_str(&sanitize_tsv(desc));
+        }
+        line
+    }
+
     /// Serialize this response as a single TSV line (no trailing newline).
     pub fn to_tsv(&self) -> String {
         match self {
-            Response::Suggestion(s) => {
-                let mut line = format!("suggest\t{}\t{}", sanitize_tsv(&s.text), s.source.as_str());
-                if let Some(ref desc) = s.description {
-                    line.push('\t');
-                    line.push_str(&sanitize_tsv(desc));
-                }
-                line
-            }
-            Response::Update(s) => {
-                let mut line = format!("update\t{}\t{}", sanitize_tsv(&s.text), s.source.as_str());
-                if let Some(ref desc) = s.description {
-                    line.push('\t');
-                    line.push_str(&sanitize_tsv(desc));
-                }
-                line
-            }
+            Response::Suggestion(s) => Self::to_tsv_suggestion("suggest", s),
+            Response::Update(s) => Self::to_tsv_suggestion("update", s),
             Response::SuggestionList(list) => {
                 let mut out = format!("list\t{}", list.suggestions.len());
                 for item in &list.suggestions {

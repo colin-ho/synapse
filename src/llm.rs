@@ -128,38 +128,16 @@ impl LlmClient {
         command_name: &str,
         help_text: &str,
     ) -> Result<CommandSpec, LlmError> {
-        self.check_backoff().await?;
-        self.rate_limit().await;
-
-        let help_text = if self.scrub_paths {
-            scrub_home_paths(help_text)
-        } else {
-            help_text.to_string()
-        };
+        let help_text = self.scrub_if_enabled(help_text);
         let prompt = build_prompt(command_name, &help_text);
 
-        let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt, 4096).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt, 4096).await,
-        };
-
-        match result {
-            Ok(response_text) => {
-                let toml_text = extract_toml(&response_text);
-                let mut spec: CommandSpec = toml::from_str(toml_text)?;
-                if spec.name != command_name {
-                    spec.name = command_name.to_string();
-                }
-                Ok(spec)
-            }
-            Err(e) => {
-                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
-                {
-                    self.activate_backoff().await;
-                }
-                Err(e)
-            }
+        let response_text = self.request_completion(&prompt, 4096).await?;
+        let toml_text = extract_toml(&response_text);
+        let mut spec: CommandSpec = toml::from_str(toml_text)?;
+        if spec.name != command_name {
+            spec.name = command_name.to_string();
         }
+        Ok(spec)
     }
 
     /// Translate a natural language query into a shell command.
@@ -167,67 +145,27 @@ impl LlmClient {
         &self,
         ctx: &NlTranslationContext,
     ) -> Result<NlTranslationResult, LlmError> {
-        self.check_backoff().await?;
-        self.rate_limit().await;
-
-        let cwd = if self.scrub_paths {
-            scrub_home_paths(&ctx.cwd)
-        } else {
-            ctx.cwd.clone()
-        };
+        let cwd = self.scrub_if_enabled(&ctx.cwd);
         let prompt = build_nl_prompt(ctx, &cwd);
 
-        let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt, 512).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt, 512).await,
-        };
-
-        match result {
-            Ok(response_text) => {
-                let command = extract_command(&response_text);
-                if command.is_empty() {
-                    return Err(LlmError::EmptyResponse);
-                }
-                let warning = detect_destructive_command(&command);
-                Ok(NlTranslationResult { command, warning })
-            }
-            Err(e) => {
-                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
-                {
-                    self.activate_backoff().await;
-                }
-                Err(e)
-            }
+        let response_text = self.request_completion(&prompt, 512).await?;
+        let command = extract_command(&response_text);
+        if command.is_empty() {
+            return Err(LlmError::EmptyResponse);
         }
+        let warning = detect_destructive_command(&command);
+        Ok(NlTranslationResult { command, warning })
     }
 
     /// Ask the LLM to explain a command.
     pub async fn explain_command(&self, command: &str) -> Result<String, LlmError> {
-        self.check_backoff().await?;
-        self.rate_limit().await;
-
         let prompt = build_explain_prompt(command);
-        let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt, 512).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt, 512).await,
-        };
-
-        match result {
-            Ok(text) => {
-                let explanation = text.trim().to_string();
-                if explanation.is_empty() {
-                    return Err(LlmError::EmptyResponse);
-                }
-                Ok(explanation)
-            }
-            Err(e) => {
-                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
-                {
-                    self.activate_backoff().await;
-                }
-                Err(e)
-            }
+        let text = self.request_completion(&prompt, 512).await?;
+        let explanation = text.trim().to_string();
+        if explanation.is_empty() {
+            return Err(LlmError::EmptyResponse);
         }
+        Ok(explanation)
     }
 
     /// Predict the next command based on recent command history and context.
@@ -238,73 +176,25 @@ impl LlmClient {
         recent_commands: &[String],
         last_exit_code: i32,
     ) -> Result<String, LlmError> {
-        self.check_backoff().await?;
-        self.rate_limit().await;
-
-        let cwd_display = if self.scrub_paths {
-            scrub_home_paths(cwd)
-        } else {
-            cwd.to_string()
-        };
+        let cwd_display = self.scrub_if_enabled(cwd);
 
         let prompt =
             build_workflow_prompt(&cwd_display, project_type, recent_commands, last_exit_code);
-        let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt, 256).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt, 256).await,
-        };
-
-        match result {
-            Ok(text) => {
-                let text = text.trim();
-                let text = if text.starts_with('`') && text.ends_with('`') {
-                    text.trim_matches('`').trim()
-                } else {
-                    text
-                };
-                Ok(text.lines().next().unwrap_or("").to_string())
-            }
-            Err(e) => {
-                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
-                {
-                    self.activate_backoff().await;
-                }
-                Err(e)
-            }
-        }
+        let text = self.request_completion(&prompt, 256).await?;
+        Ok(parse_single_shell_line(&text))
     }
 
     /// Generate a commit message from staged diff content.
     pub async fn generate_commit_message(&self, staged_diff: &str) -> Result<String, LlmError> {
-        self.check_backoff().await?;
-        self.rate_limit().await;
-
-        let diff = if self.scrub_paths {
-            scrub_home_paths(staged_diff)
-        } else {
-            staged_diff.to_string()
-        };
+        let diff = self.scrub_if_enabled(staged_diff);
 
         let prompt = format!(
             "Generate a concise git commit message (one line, max 72 chars) for this diff. \
              Respond with ONLY the commit message, no quotes or explanation.\n\n{diff}"
         );
 
-        let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt, 512).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt, 512).await,
-        };
-
-        match result {
-            Ok(text) => Ok(text.trim().lines().next().unwrap_or("").to_string()),
-            Err(e) => {
-                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
-                {
-                    self.activate_backoff().await;
-                }
-                Err(e)
-            }
-        }
+        let text = self.request_completion(&prompt, 512).await?;
+        Ok(text.trim().lines().next().unwrap_or("").to_string())
     }
 
     /// Enrich a predicted command with contextual arguments.
@@ -314,14 +204,7 @@ impl LlmClient {
         recent_commands: &[String],
         cwd: &str,
     ) -> Result<String, LlmError> {
-        self.check_backoff().await?;
-        self.rate_limit().await;
-
-        let cwd_display = if self.scrub_paths {
-            scrub_home_paths(cwd)
-        } else {
-            cwd.to_string()
-        };
+        let cwd_display = self.scrub_if_enabled(cwd);
 
         let recent = recent_commands
             .iter()
@@ -339,29 +222,8 @@ impl LlmClient {
              Respond with ONLY the complete command (no explanation)."
         );
 
-        let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt, 256).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt, 256).await,
-        };
-
-        match result {
-            Ok(text) => {
-                let text = text.trim();
-                let text = if text.starts_with('`') && text.ends_with('`') {
-                    text.trim_matches('`').trim()
-                } else {
-                    text
-                };
-                Ok(text.lines().next().unwrap_or("").to_string())
-            }
-            Err(e) => {
-                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
-                {
-                    self.activate_backoff().await;
-                }
-                Err(e)
-            }
-        }
+        let text = self.request_completion(&prompt, 256).await?;
+        Ok(parse_single_shell_line(&text))
     }
 
     /// Ask the LLM for argument value suggestions and parse up to `max_values` lines.
@@ -370,24 +232,40 @@ impl LlmClient {
         prompt: &str,
         max_values: usize,
     ) -> Result<Vec<String>, LlmError> {
+        let response_text = self.request_completion(prompt, 256).await?;
+        Ok(parse_argument_values(&response_text, max_values))
+    }
+
+    fn scrub_if_enabled(&self, value: &str) -> String {
+        if self.scrub_paths {
+            scrub_home_paths(value)
+        } else {
+            value.to_string()
+        }
+    }
+
+    async fn request_completion(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         self.check_backoff().await?;
         self.rate_limit().await;
 
         let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(prompt, 256).await,
-            LlmProvider::OpenAI => self.call_openai(prompt, 256).await,
+            LlmProvider::Anthropic => self.call_anthropic(prompt, max_tokens).await,
+            LlmProvider::OpenAI => self.call_openai(prompt, max_tokens).await,
         };
 
-        match result {
-            Ok(response_text) => Ok(parse_argument_values(&response_text, max_values)),
-            Err(e) => {
-                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
-                {
-                    self.activate_backoff().await;
-                }
-                Err(e)
-            }
+        let should_backoff = result
+            .as_ref()
+            .err()
+            .is_some_and(Self::should_activate_backoff);
+        if should_backoff {
+            self.activate_backoff().await;
         }
+
+        result
+    }
+
+    fn should_activate_backoff(error: &LlmError) -> bool {
+        matches!(error, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
     }
 
     /// Wait until at least 1 second has passed since the last LLM call.
@@ -421,6 +299,17 @@ impl LlmClient {
         self.backoff_active.store(true, Ordering::Relaxed);
     }
 
+    async fn parse_api_response<T: serde::de::DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> Result<T, LlmError> {
+        let status = resp.status().as_u16();
+        if status != 200 {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
     async fn call_anthropic(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         let body = AnthropicRequest {
             model: self.model.clone(),
@@ -441,13 +330,7 @@ impl LlmClient {
             .send()
             .await?;
 
-        let status = resp.status().as_u16();
-        if status != 200 {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api { status, body });
-        }
-
-        let parsed: AnthropicResponse = resp.json().await?;
+        let parsed: AnthropicResponse = Self::parse_api_response(resp).await?;
         Ok(parsed
             .content
             .first()
@@ -474,13 +357,7 @@ impl LlmClient {
             .send()
             .await?;
 
-        let status = resp.status().as_u16();
-        if status != 200 {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api { status, body });
-        }
-
-        let parsed: OpenAIResponse = resp.json().await?;
+        let parsed: OpenAIResponse = Self::parse_api_response(resp).await?;
         Ok(parsed
             .choices
             .first()
@@ -694,23 +571,26 @@ Rules:
     )
 }
 
+/// Extract the content of a markdown fenced code block, skipping the language tag.
+fn extract_fenced_block(text: &str) -> Option<&str> {
+    let start = text.find("```")?;
+    let after_backticks = start + 3;
+    let content_start = if let Some(nl) = text[after_backticks..].find('\n') {
+        after_backticks + nl + 1
+    } else {
+        after_backticks
+    };
+    let end = text[content_start..].find("```")?;
+    Some(text[content_start..content_start + end].trim())
+}
+
 /// Extract the shell command from an LLM response.
 /// Handles markdown fences, leading/trailing whitespace, and commentary.
 fn extract_command(response: &str) -> String {
     let trimmed = response.trim();
 
-    if let Some(start) = trimmed.find("```") {
-        let content_start = start + 3;
-        let content_start = if let Some(nl) = trimmed[content_start..].find('\n') {
-            content_start + nl + 1
-        } else {
-            content_start
-        };
-        if let Some(end) = trimmed[content_start..].find("```") {
-            return trimmed[content_start..content_start + end]
-                .trim()
-                .to_string();
-        }
+    if let Some(block) = extract_fenced_block(trimmed) {
+        return block.to_string();
     }
 
     for line in trimmed.lines() {
@@ -750,26 +630,7 @@ fn detect_destructive_command(command: &str) -> Option<String> {
 
 /// Extract TOML from an LLM response that may contain markdown fences.
 pub(crate) fn extract_toml(response: &str) -> &str {
-    // Try ```toml ... ``` first
-    if let Some(start) = response.find("```toml") {
-        let content_start = start + "```toml".len();
-        if let Some(end) = response[content_start..].find("```") {
-            return response[content_start..content_start + end].trim();
-        }
-    }
-    // Try generic ``` ... ```
-    if let Some(start) = response.find("```") {
-        let content_start = start + "```".len();
-        let content_start = if let Some(nl) = response[content_start..].find('\n') {
-            content_start + nl + 1
-        } else {
-            content_start
-        };
-        if let Some(end) = response[content_start..].find("```") {
-            return response[content_start..content_start + end].trim();
-        }
-    }
-    response.trim()
+    extract_fenced_block(response).unwrap_or_else(|| response.trim())
 }
 
 pub(crate) fn scrub_home_paths(text: &str) -> String {
@@ -819,6 +680,16 @@ fn parse_argument_values(response: &str, max_values: usize) -> Vec<String> {
     }
 
     values
+}
+
+fn parse_single_shell_line(text: &str) -> String {
+    let trimmed = text.trim();
+    let content = if trimmed.starts_with('`') && trimmed.ends_with('`') {
+        trimmed.trim_matches('`').trim()
+    } else {
+        trimmed
+    };
+    content.lines().next().unwrap_or("").to_string()
 }
 
 fn strip_wrapping_quotes(value: &str) -> &str {

@@ -343,7 +343,7 @@ pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<Com
             };
 
             if !help_text.trim().is_empty() {
-                let spec = crate::help_parser::parse_help_output(&tool.name, &help_text);
+                let spec = crate::spec_store::parse_help_basic(&tool.name, &help_text);
                 if !spec.subcommands.is_empty() || !spec.options.is_empty() {
                     tracing::info!("Generated spec for project CLI tool: {}", tool.name);
                     specs.push(spec);
