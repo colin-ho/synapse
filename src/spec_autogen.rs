@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::spec::{ArgSpec, CommandSpec, OptionSpec, SubcommandSpec};
+use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, OptionSpec, SubcommandSpec};
 
 /// Auto-generate specs from project files at the given root.
 pub fn generate_specs(root: &Path) -> Vec<CommandSpec> {
@@ -29,7 +29,17 @@ pub fn generate_specs(root: &Path) -> Vec<CommandSpec> {
         specs.push(justfile_spec(just_recipes));
     }
 
-    // Python: no structured spec yet
+    if let Some(py) = crate::project::parse_python_info(root) {
+        if py.has_poetry {
+            specs.push(poetry_spec());
+        }
+        if py.has_ruff {
+            specs.push(ruff_spec());
+        }
+        if py.has_venv {
+            specs.push(pytest_spec());
+        }
+    }
 
     specs
 }
@@ -235,6 +245,105 @@ fn justfile_spec(recipes: Vec<String>) -> CommandSpec {
     CommandSpec {
         name: "just".to_string(),
         subcommands,
+        ..Default::default()
+    }
+}
+
+fn poetry_spec() -> CommandSpec {
+    let subcommands = [
+        ("install", "Install dependencies"),
+        ("run", "Run a command in the venv"),
+        ("build", "Build the package"),
+        ("lock", "Lock dependencies"),
+        ("update", "Update dependencies"),
+        ("add", "Add a dependency"),
+        ("remove", "Remove a dependency"),
+        ("shell", "Activate the venv shell"),
+    ]
+    .into_iter()
+    .map(|(name, desc)| SubcommandSpec {
+        name: name.into(),
+        description: Some(desc.into()),
+        ..Default::default()
+    })
+    .collect();
+
+    CommandSpec {
+        name: "poetry".to_string(),
+        subcommands,
+        ..Default::default()
+    }
+}
+
+fn ruff_spec() -> CommandSpec {
+    let path_arg = ArgSpec {
+        name: "path".into(),
+        template: Some(ArgTemplate::FilePaths),
+        ..Default::default()
+    };
+
+    let subcommands = vec![
+        SubcommandSpec {
+            name: "check".into(),
+            description: Some("Run linting".into()),
+            args: vec![path_arg.clone()],
+            options: vec![OptionSpec {
+                long: Some("--fix".into()),
+                description: Some("Fix auto-fixable violations".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        SubcommandSpec {
+            name: "format".into(),
+            description: Some("Format code".into()),
+            args: vec![path_arg],
+            ..Default::default()
+        },
+    ];
+
+    CommandSpec {
+        name: "ruff".to_string(),
+        subcommands,
+        ..Default::default()
+    }
+}
+
+fn pytest_spec() -> CommandSpec {
+    CommandSpec {
+        name: "pytest".to_string(),
+        description: Some("Run tests".into()),
+        options: vec![
+            OptionSpec {
+                short: Some("-v".into()),
+                long: Some("--verbose".into()),
+                description: Some("Increase verbosity".into()),
+                ..Default::default()
+            },
+            OptionSpec {
+                short: Some("-x".into()),
+                long: Some("--exitfirst".into()),
+                description: Some("Stop on first failure".into()),
+                ..Default::default()
+            },
+            OptionSpec {
+                short: Some("-k".into()),
+                takes_arg: true,
+                description: Some("Filter by expression".into()),
+                ..Default::default()
+            },
+            OptionSpec {
+                long: Some("--tb".into()),
+                takes_arg: true,
+                description: Some("Traceback style (short/long/no)".into()),
+                ..Default::default()
+            },
+        ],
+        args: vec![ArgSpec {
+            name: "path".into(),
+            template: Some(ArgTemplate::FilePaths),
+            ..Default::default()
+        }],
         ..Default::default()
     }
 }

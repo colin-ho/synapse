@@ -12,7 +12,6 @@ struct PositionWeights {
     filesystem: f64,
     history: f64,
     environment: f64,
-    context: f64,
     recency: f64,
 }
 
@@ -23,7 +22,6 @@ impl PositionWeights {
             SuggestionSource::Filesystem => self.filesystem,
             SuggestionSource::History => self.history,
             SuggestionSource::Environment => self.environment,
-            SuggestionSource::Context => self.context,
         }
     }
 }
@@ -31,19 +29,17 @@ impl PositionWeights {
 fn weights_for_position(ctx: &CompletionContext) -> PositionWeights {
     match &ctx.position {
         Position::CommandName => PositionWeights {
-            spec: 0.15,
+            spec: 0.25,
             filesystem: 0.0,
             history: 0.30,
             environment: 0.20,
-            context: 0.10,
             recency: 0.25,
         },
         Position::Subcommand => PositionWeights {
-            spec: 0.40,
+            spec: 0.55,
             filesystem: 0.0,
             history: 0.20,
             environment: 0.0,
-            context: 0.15,
             recency: 0.25,
         },
         Position::OptionFlag => PositionWeights {
@@ -51,7 +47,6 @@ fn weights_for_position(ctx: &CompletionContext) -> PositionWeights {
             filesystem: 0.0,
             history: 0.10,
             environment: 0.0,
-            context: 0.0,
             recency: 0.30,
         },
         Position::OptionValue { .. } => PositionWeights {
@@ -59,7 +54,6 @@ fn weights_for_position(ctx: &CompletionContext) -> PositionWeights {
             filesystem: 0.20,
             history: 0.20,
             environment: 0.0,
-            context: 0.0,
             recency: 0.20,
         },
         Position::Argument { .. } => match &ctx.expected_type {
@@ -68,7 +62,6 @@ fn weights_for_position(ctx: &CompletionContext) -> PositionWeights {
                 filesystem: 0.50,
                 history: 0.15,
                 environment: 0.0,
-                context: 0.0,
                 recency: 0.25,
             },
             ExpectedType::Generator(_) => PositionWeights {
@@ -76,15 +69,13 @@ fn weights_for_position(ctx: &CompletionContext) -> PositionWeights {
                 filesystem: 0.0,
                 history: 0.25,
                 environment: 0.0,
-                context: 0.0,
                 recency: 0.30,
             },
             _ => PositionWeights {
-                spec: 0.20,
+                spec: 0.35,
                 filesystem: 0.0,
                 history: 0.30,
                 environment: 0.0,
-                context: 0.15,
                 recency: 0.35,
             },
         },
@@ -93,7 +84,6 @@ fn weights_for_position(ctx: &CompletionContext) -> PositionWeights {
             filesystem: 0.0,
             history: 0.40,
             environment: 0.25,
-            context: 0.0,
             recency: 0.35,
         },
         Position::Redirect => PositionWeights {
@@ -101,15 +91,13 @@ fn weights_for_position(ctx: &CompletionContext) -> PositionWeights {
             filesystem: 0.60,
             history: 0.10,
             environment: 0.0,
-            context: 0.0,
             recency: 0.30,
         },
         Position::Unknown => PositionWeights {
-            spec: 0.10,
+            spec: 0.25,
             filesystem: 0.0,
             history: 0.35,
             environment: 0.0,
-            context: 0.15,
             recency: 0.40,
         },
     }
@@ -232,7 +220,6 @@ impl Ranker {
     fn static_weight_for(&self, source: SuggestionSource) -> f64 {
         match source {
             SuggestionSource::History => self.weights.history,
-            SuggestionSource::Context => self.weights.context,
             SuggestionSource::Spec => self.weights.spec,
             SuggestionSource::Filesystem => self.weights.spec,
             SuggestionSource::Environment => self.weights.spec,

@@ -1,4 +1,3 @@
-pub mod context;
 pub mod environment;
 pub mod filesystem;
 pub mod history;
@@ -118,7 +117,6 @@ where
 #[enum_dispatch(SuggestionProvider)]
 pub enum Provider {
     History(Arc<history::HistoryProvider>),
-    Context(Arc<context::ContextProvider>),
     Spec(Arc<spec::SpecProvider>),
     Filesystem(Arc<filesystem::FilesystemProvider>),
     Environment(Arc<environment::EnvironmentProvider>),

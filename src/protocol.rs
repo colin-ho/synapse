@@ -83,7 +83,6 @@ pub enum InteractionAction {
 #[serde(rename_all = "snake_case")]
 pub enum SuggestionSource {
     History,
-    Context,
     Spec,
     Filesystem,
     Environment,
@@ -139,7 +138,6 @@ impl SuggestionSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::History => "history",
-            Self::Context => "context",
             Self::Spec => "spec",
             Self::Filesystem => "filesystem",
             Self::Environment => "environment",
@@ -382,10 +380,10 @@ mod tests {
     fn test_to_tsv_update() {
         let resp = Response::Update(SuggestionResponse {
             text: "git status --verbose".into(),
-            source: SuggestionSource::Context,
+            source: SuggestionSource::Spec,
             confidence: 0.87,
         });
-        assert_eq!(resp.to_tsv(), "update\tgit status --verbose\tcontext");
+        assert_eq!(resp.to_tsv(), "update\tgit status --verbose\tspec");
     }
 
     #[test]
@@ -438,7 +436,6 @@ mod tests {
     fn test_as_str_matches_serde() {
         for source in [
             SuggestionSource::History,
-            SuggestionSource::Context,
             SuggestionSource::Spec,
             SuggestionSource::Filesystem,
             SuggestionSource::Environment,

@@ -56,13 +56,12 @@ Install pre-commit hooks (runs `cargo fmt --check` and `cargo clippy` before eac
 
 2. **Rust Daemon** (`src/main.rs`) — Single long-running Tokio async process serving all terminal sessions concurrently over a Unix domain socket at `$XDG_RUNTIME_DIR/synapse.sock`.
 
-### Suggestion Pipeline (5-Layer Cascade)
+### Suggestion Pipeline (4-Layer Cascade)
 
 All providers implement the `SuggestionProvider` trait (`src/providers/mod.rs`) with `suggest()` (single best) and `suggest_multi()` (top N for dropdown):
 
 - **History** (`src/providers/history.rs`) — BTreeMap prefix search + Levenshtein fuzzy matching. Target: <5ms.
-- **Context** (`src/providers/context.rs`) — Scans project files (Makefile, package.json, Cargo.toml, docker-compose, Justfile) walking up from cwd. Detects package managers from lockfiles. Target: <20ms.
-- **Spec** (`src/providers/spec.rs`) — Structured CLI completions from TOML specs. Tokenizes buffer, walks spec tree, completes subcommands/options/arguments. Target: <10ms.
+- **Spec** (`src/providers/spec.rs`) — Structured CLI completions from TOML specs and auto-generated project specs. Tokenizes buffer, walks spec tree, completes subcommands/options/arguments. Target: <10ms.
 - **Filesystem** (`src/providers/filesystem.rs`) — File and directory completions with quoting/escaping support.
 - **Environment** (`src/providers/environment.rs`) — PATH and virtualenv executable suggestions.
 
@@ -70,7 +69,7 @@ All providers implement the `SuggestionProvider` trait (`src/providers/mod.rs`) 
 
 - **Data model** (`src/spec.rs`) — `CommandSpec`, `SubcommandSpec`, `OptionSpec`, `ArgSpec`, `GeneratorSpec`, `ArgTemplate`.
 - **Spec store** (`src/spec_store.rs`) — Loads built-in specs (embedded via `include_str!`), caches project specs per-cwd (5min TTL), runs generators with timeout and caching (30s TTL).
-- **Auto-generation** (`src/spec_autogen.rs`) — Generates specs from project files (Makefile targets, package.json scripts, Cargo.toml, docker-compose services, Justfile recipes).
+- **Auto-generation** (`src/spec_autogen.rs`) — Generates specs from project files (Makefile targets, package.json scripts, Cargo.toml, docker-compose services, Justfile recipes, Python tools).
 - **Built-in specs** (`specs/builtin/*.toml`) — git, cargo, npm, docker.
 - **User specs** — `.synapse/specs/*.toml` in project root (highest priority).
 
@@ -80,11 +79,11 @@ All providers run concurrently per request, are ranked, and the best suggestion 
 
 ### Key Subsystems
 
-- **Ranking** (`src/ranking.rs`) — Weighted score merging (history: 0.30, context: 0.15, spec: 0.35, recency: 0.20). `rank_multi()` for dropdown: scores, deduplicates by text, sorts, truncates.
+- **Ranking** (`src/ranking.rs`) — Weighted score merging (history: 0.30, spec: 0.50, recency: 0.20). Position-dependent weights adjust per cursor context. `rank_multi()` for dropdown: scores, deduplicates by text, sorts, truncates.
 - **Security** (`src/security.rs`) — Scrubs paths, env vars, and sensitive command-like inputs.
 - **Caching** — Providers and spec store use `moka::future::Cache` with TTL for hot paths.
 - **Sessions** (`src/session.rs`) — Per-session state (cwd, recent commands, last buffer) identified by 12-char hex IDs.
-- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON. Request types: Suggest, ListSuggestions, Interaction, Ping, Shutdown, ReloadConfig, ClearCache. Response types: Suggestion, SuggestionList, Pong, Ack, Error. Suggestion sources: History, Context, Spec, Filesystem, Environment. Suggestion kinds: Command, Subcommand, Option, Argument, File, History.
+- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON. Request types: Suggest, ListSuggestions, Interaction, Ping, Shutdown, ReloadConfig, ClearCache. Response types: Suggestion, SuggestionList, Pong, Ack, Error. Suggestion sources: History, Spec, Filesystem, Environment. Suggestion kinds: Command, Subcommand, Option, Argument, File, History.
 - **Logging** (`src/logging.rs`) — Append-only JSONL interaction log at `~/.local/share/synapse/interactions.jsonl` with rotation at 50MB.
 
 ### Config
