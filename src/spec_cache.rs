@@ -31,7 +31,7 @@ pub fn specs_dir() -> PathBuf {
 }
 
 /// Load all discovered specs from disk.
-pub fn load_all_discovered() -> HashMap<String, CommandSpec> {
+pub fn load_all_discovered() -> HashMap<String, DiscoveredSpec> {
     let dir = specs_dir();
     let mut specs = HashMap::new();
 
@@ -51,10 +51,9 @@ pub fn load_all_discovered() -> HashMap<String, CommandSpec> {
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "toml") {
             match load_spec_file(&path) {
-                Ok(discovered) => {
-                    let mut spec = discovered.spec;
-                    spec.source = SpecSource::Discovered;
-                    specs.insert(spec.name.clone(), spec);
+                Ok(mut discovered) => {
+                    discovered.spec.source = SpecSource::Discovered;
+                    specs.insert(discovered.spec.name.clone(), discovered);
                 }
                 Err(e) => {
                     tracing::debug!("Failed to load discovered spec {}: {e}", path.display());
@@ -78,7 +77,7 @@ pub fn save_discovered(spec: &DiscoveredSpec) -> std::io::Result<()> {
     let dir = specs_dir();
     std::fs::create_dir_all(&dir)?;
 
-    let path = dir.join(format!("{}.toml", spec.spec.name));
+    let path = dir.join(format!("{}.toml", command_cache_key(&spec.spec.name)));
 
     let toml_str = toml::to_string_pretty(spec)
         .map_err(|e| std::io::Error::other(format!("TOML serialize error: {e}")))?;
@@ -103,17 +102,41 @@ pub fn is_stale(spec: &DiscoveredSpec, max_age_secs: u64) -> bool {
     };
 
     let age = chrono::Utc::now().signed_duration_since(timestamp);
+    if age.num_seconds() < 0 {
+        return false;
+    }
     age.num_seconds() as u64 > max_age_secs
 }
 
 /// Remove a discovered spec from disk.
 #[allow(dead_code)]
 pub fn remove_discovered(command: &str) -> std::io::Result<()> {
-    let path = specs_dir().join(format!("{command}.toml"));
+    let path = specs_dir().join(format!("{}.toml", command_cache_key(command)));
     if path.exists() {
         std::fs::remove_file(&path)?;
     }
     Ok(())
+}
+
+fn command_cache_key(command: &str) -> String {
+    if is_safe_command_name(command) {
+        return command.to_string();
+    }
+
+    // Hex-encode unsafe command names to prevent path traversal and invalid filenames.
+    let hex: String = command
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("cmd-{hex}")
+}
+
+fn is_safe_command_name(command: &str) -> bool {
+    !command.is_empty()
+        && command
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 #[cfg(test)]
@@ -210,5 +233,13 @@ mod tests {
         let loaded = load_spec_file(&path).unwrap();
         assert_eq!(loaded.spec.name, "test");
         assert_eq!(loaded.spec.description.as_deref(), Some("A test tool"));
+    }
+
+    #[test]
+    fn test_command_cache_key_sanitizes_paths() {
+        let key = command_cache_key("../bin/tool");
+        assert!(key.starts_with("cmd-"));
+        assert!(!key.contains('/'));
+        assert!(!key.contains(".."));
     }
 }

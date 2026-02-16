@@ -8,7 +8,7 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 
 use crate::config::SpecConfig;
-use crate::spec::{CommandSpec, GeneratorSpec, SpecSource};
+use crate::spec::{CommandSpec, GeneratorSpec, SpecSource, SubcommandSpec};
 use crate::spec_autogen;
 use crate::{help_parser, spec_cache};
 
@@ -24,7 +24,7 @@ const MAX_HELP_OUTPUT_BYTES: usize = 256 * 1024;
 /// Manages loading, caching, and resolution of command specs.
 pub struct SpecStore {
     builtin: HashMap<String, CommandSpec>,
-    discovered: RwLock<HashMap<String, CommandSpec>>,
+    discovered: RwLock<HashMap<String, spec_cache::DiscoveredSpec>>,
     discovering: RwLock<HashSet<String>>,
     project_cache: Cache<PathBuf, Arc<HashMap<String, CommandSpec>>>,
     generator_cache: Cache<(String, PathBuf), Vec<String>>,
@@ -121,8 +121,10 @@ impl SpecStore {
         drop(alias_map);
 
         // Check discovered specs (lowest priority)
-        if let Some(spec) = self.discovered.read().await.get(command) {
-            return Some(spec.clone());
+        if let Some(discovered) = self.discovered.read().await.get(command) {
+            let mut spec = discovered.spec.clone();
+            spec.source = SpecSource::Discovered;
+            return Some(spec);
         }
 
         None
@@ -149,21 +151,26 @@ impl SpecStore {
         names
     }
 
-    /// Trigger background discovery for an unknown command.
+    /// Trigger background discovery for an unknown command or stale discovered spec.
     /// Returns immediately — the spec will be available on subsequent lookups.
-    pub async fn trigger_discovery(self: &Arc<Self>, command: &str) {
+    pub async fn trigger_discovery(self: &Arc<Self>, command: &str, cwd: Option<&Path>) {
         if !self.config.discover_from_help {
             return;
         }
 
         let command = command.to_string();
+        let cwd = cwd.map(Path::to_path_buf);
 
-        // Skip if we already have a spec or are already discovering
+        // Skip if we already have a builtin spec
         if self.builtin.contains_key(&command) {
             return;
         }
-        if self.discovered.read().await.contains_key(&command) {
-            return;
+
+        // Skip fresh discovered specs; stale ones are eligible for refresh.
+        if let Some(discovered) = self.discovered.read().await.get(&command) {
+            if !spec_cache::is_stale(discovered, self.config.discover_max_age_secs) {
+                return;
+            }
         }
 
         // Check blocklist
@@ -184,19 +191,26 @@ impl SpecStore {
 
         let store = Arc::clone(self);
         tokio::spawn(async move {
-            store.discover_command_impl(&command).await;
+            store.discover_command_impl(&command, cwd.as_deref()).await;
             store.discovering.write().await.remove(&command);
         });
     }
 
     /// Run the actual discovery process for a command.
-    async fn discover_command_impl(&self, command: &str) {
+    async fn discover_command_impl(&self, command: &str, cwd: Option<&Path>) {
         let timeout = Duration::from_millis(self.config.discover_timeout_ms);
+        let args: Vec<String> = Vec::new();
 
         // Try --help first, then -h
-        let help_text = match self.run_help_command(command, "--help", timeout).await {
+        let help_text = match self
+            .run_help_command(command, &args, "--help", timeout, cwd)
+            .await
+        {
             Some(text) if !text.trim().is_empty() => text,
-            _ => match self.run_help_command(command, "-h", timeout).await {
+            _ => match self
+                .run_help_command(command, &args, "-h", timeout, cwd)
+                .await
+            {
                 Some(text) if !text.trim().is_empty() => text,
                 _ => {
                     tracing::debug!("No help output for {command}");
@@ -216,11 +230,11 @@ impl SpecStore {
 
         // Recurse into subcommands if configured
         if self.config.discover_max_depth > 0 && !spec.subcommands.is_empty() {
-            self.discover_subcommands(command, &mut spec, 1).await;
+            self.discover_subcommands(command, &mut spec, cwd).await;
         }
 
         // Resolve command path for staleness tracking
-        let command_path = self.resolve_command_path(command).await;
+        let command_path = self.resolve_command_path(command, cwd).await;
 
         // Save to disk
         let discovered = spec_cache::DiscoveredSpec {
@@ -238,7 +252,7 @@ impl SpecStore {
         self.discovered
             .write()
             .await
-            .insert(command.to_string(), spec);
+            .insert(command.to_string(), discovered);
         tracing::info!("Discovered spec for {command}");
     }
 
@@ -246,13 +260,18 @@ impl SpecStore {
     async fn run_help_command(
         &self,
         command: &str,
+        args: &[String],
         help_flag: &str,
         timeout: Duration,
+        cwd: Option<&Path>,
     ) -> Option<String> {
         let result = tokio::time::timeout(timeout, async {
-            Command::new(command)
-                .arg(help_flag)
-                .stdin(std::process::Stdio::null())
+            let mut cmd = Command::new(command);
+            cmd.args(args).arg(help_flag);
+            if let Some(cwd) = cwd {
+                cmd.current_dir(cwd);
+            }
+            cmd.stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output()
@@ -292,81 +311,112 @@ impl SpecStore {
         }
     }
 
-    /// Recursively discover subcommand specs by running `command subcommand --help`.
-    async fn discover_subcommands(&self, base_command: &str, spec: &mut CommandSpec, depth: usize) {
+    /// Recursively discover subcommand specs by running `command ...subcommand --help`.
+    async fn discover_subcommands(
+        &self,
+        base_command: &str,
+        spec: &mut CommandSpec,
+        cwd: Option<&Path>,
+    ) {
+        for subcommand in spec.subcommands.iter_mut().take(30) {
+            self.discover_subcommand_tree(base_command, &[], subcommand, 1, cwd)
+                .await;
+        }
+    }
+
+    async fn discover_subcommand_tree(
+        &self,
+        base_command: &str,
+        parent_path: &[String],
+        subcommand: &mut SubcommandSpec,
+        depth: usize,
+        cwd: Option<&Path>,
+    ) {
         if depth > self.config.discover_max_depth {
+            return;
+        }
+
+        // Skip "help" subcommands — not useful for completions.
+        if subcommand.name == "help" {
             return;
         }
 
         let timeout = Duration::from_millis(self.config.discover_timeout_ms);
 
-        // Limit concurrency: only process up to 30 subcommands
-        let subcmd_names: Vec<String> = spec
-            .subcommands
-            .iter()
-            .take(30)
-            .map(|s| s.name.clone())
-            .collect();
+        let mut args = parent_path.to_vec();
+        args.push(subcommand.name.clone());
 
-        for subcmd_name in &subcmd_names {
-            // Skip "help" subcommand — not useful for completions
-            if subcmd_name == "help" {
-                continue;
+        let help_text = match self
+            .run_help_command(base_command, &args, "--help", timeout, cwd)
+            .await
+        {
+            Some(text) if !text.trim().is_empty() => text,
+            _ => match self
+                .run_help_command(base_command, &args, "-h", timeout, cwd)
+                .await
+            {
+                Some(text) if !text.trim().is_empty() => text,
+                _ => String::new(),
+            },
+        };
+
+        if !help_text.trim().is_empty() {
+            let sub_spec = help_parser::parse_help_output(&subcommand.name, &help_text);
+            if subcommand.options.is_empty() {
+                subcommand.options = sub_spec.options;
             }
+            if subcommand.subcommands.is_empty() {
+                subcommand.subcommands = sub_spec.subcommands;
+            }
+            if subcommand.args.is_empty() {
+                subcommand.args = sub_spec.args;
+            }
+            if subcommand.description.is_none() {
+                subcommand.description = sub_spec.description;
+            }
+        }
 
-            let result = tokio::time::timeout(timeout, async {
-                Command::new(base_command)
-                    .arg(subcmd_name)
-                    .arg("--help")
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .output()
-                    .await
-            })
+        if depth >= self.config.discover_max_depth || subcommand.subcommands.is_empty() {
+            return;
+        }
+
+        let mut next_parent = parent_path.to_vec();
+        next_parent.push(subcommand.name.clone());
+        for nested in subcommand.subcommands.iter_mut().take(30) {
+            Box::pin(self.discover_subcommand_tree(
+                base_command,
+                &next_parent,
+                nested,
+                depth + 1,
+                cwd,
+            ))
             .await;
-
-            if let Ok(Ok(output)) = result {
-                let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                stdout.truncate(MAX_HELP_OUTPUT_BYTES);
-
-                if stdout.trim().is_empty() {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    let lower = stderr.to_lowercase();
-                    if lower.contains("usage") || lower.contains("options") {
-                        stdout = stderr;
-                        stdout.truncate(MAX_HELP_OUTPUT_BYTES);
-                    }
-                }
-
-                if !stdout.trim().is_empty() {
-                    let sub_spec = help_parser::parse_help_output(subcmd_name, &stdout);
-
-                    // Merge parsed data into the existing subcommand entry
-                    if let Some(existing) =
-                        spec.subcommands.iter_mut().find(|s| s.name == *subcmd_name)
-                    {
-                        if existing.options.is_empty() {
-                            existing.options = sub_spec.options;
-                        }
-                        if existing.subcommands.is_empty() {
-                            existing.subcommands = sub_spec.subcommands;
-                        }
-                        if existing.args.is_empty() {
-                            existing.args = sub_spec.args;
-                        }
-                        if existing.description.is_none() {
-                            existing.description = sub_spec.description;
-                        }
-                    }
-                }
-            }
         }
     }
 
-    /// Resolve a command name to its full path via `which`.
-    async fn resolve_command_path(&self, command: &str) -> Option<String> {
-        let output = Command::new("which").arg(command).output().await.ok()?;
+    /// Resolve a command name to its full path.
+    async fn resolve_command_path(&self, command: &str, cwd: Option<&Path>) -> Option<String> {
+        if command.contains('/') {
+            let path = Path::new(command);
+            if path.is_absolute() {
+                return std::fs::canonicalize(path)
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string());
+            }
+
+            if let Some(cwd) = cwd {
+                return std::fs::canonicalize(cwd.join(path))
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string());
+            }
+        }
+
+        let mut cmd = Command::new("which");
+        cmd.arg(command);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        let output = cmd.output().await.ok()?;
 
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -432,8 +482,10 @@ impl SpecStore {
             }
         }
 
-        // Discover specs for CLI tools built by the current project
-        if self.config.discover_project_cli {
+        // Discover specs for CLI tools built by the current project.
+        // This is intentionally gated behind trust_project_generators since it executes
+        // project-built binaries.
+        if self.config.discover_project_cli && self.config.trust_project_generators {
             let cli_specs = spec_autogen::discover_project_cli_specs(
                 scan_root,
                 self.config.discover_timeout_ms,
