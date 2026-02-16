@@ -77,9 +77,9 @@ async fn handle_connection(
             }
         };
 
-        let response_json = serde_json::to_string(&response)?;
+        let response_line = response.to_tsv();
         let mut w = writer.lock().await;
-        w.send(response_json).await?;
+        w.send(response_line).await?;
     }
 
     Ok(())

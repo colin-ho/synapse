@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 // --- Requests (Zsh → Daemon) ---
@@ -126,14 +127,77 @@ pub struct SuggestionItem {
     pub kind: SuggestionKind,
 }
 
+impl SuggestionSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::History => "history",
+            Self::Context => "context",
+            Self::Spec => "spec",
+            Self::Filesystem => "filesystem",
+            Self::Environment => "environment",
+        }
+    }
+}
+
 impl std::fmt::Display for SuggestionSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl SuggestionKind {
+    pub fn as_str(&self) -> &'static str {
         match self {
-            SuggestionSource::History => write!(f, "history"),
-            SuggestionSource::Context => write!(f, "context"),
-            SuggestionSource::Spec => write!(f, "spec"),
-            SuggestionSource::Filesystem => write!(f, "filesystem"),
-            SuggestionSource::Environment => write!(f, "environment"),
+            Self::Command => "command",
+            Self::Subcommand => "subcommand",
+            Self::Option => "option",
+            Self::Argument => "argument",
+            Self::File => "file",
+            Self::History => "history",
+        }
+    }
+}
+
+/// Sanitize a string for TSV transport: replace tabs with spaces,
+/// newlines with a space, and strip carriage returns.
+fn sanitize_tsv(s: &str) -> Cow<'_, str> {
+    if s.contains(['\t', '\n', '\r']) {
+        Cow::Owned(s.replace('\t', "    ").replace('\n', " ").replace('\r', ""))
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+impl Response {
+    /// Serialize this response as a single TSV line (no trailing newline).
+    pub fn to_tsv(&self) -> String {
+        match self {
+            Response::Suggestion(s) => {
+                format!("suggest\t{}\t{}", sanitize_tsv(&s.text), s.source.as_str())
+            }
+            Response::Update(s) => {
+                format!("update\t{}\t{}", sanitize_tsv(&s.text), s.source.as_str())
+            }
+            Response::SuggestionList(list) => {
+                let mut out = format!("list\t{}", list.suggestions.len());
+                for item in &list.suggestions {
+                    let desc = item.description.as_deref().unwrap_or("");
+                    out.push('\t');
+                    out.push_str(&sanitize_tsv(&item.text));
+                    out.push('\t');
+                    out.push_str(item.source.as_str());
+                    out.push('\t');
+                    out.push_str(&sanitize_tsv(desc));
+                    out.push('\t');
+                    out.push_str(item.kind.as_str());
+                }
+                out
+            }
+            Response::Pong => "pong".to_string(),
+            Response::Ack => "ack".to_string(),
+            Response::Error { message } => {
+                format!("error\t{}", sanitize_tsv(message))
+            }
         }
     }
 }
@@ -267,5 +331,114 @@ mod tests {
             serde_json::to_string(&SuggestionKind::History).unwrap(),
             "\"history\""
         );
+    }
+
+    #[test]
+    fn test_to_tsv_pong() {
+        assert_eq!(Response::Pong.to_tsv(), "pong");
+    }
+
+    #[test]
+    fn test_to_tsv_ack() {
+        assert_eq!(Response::Ack.to_tsv(), "ack");
+    }
+
+    #[test]
+    fn test_to_tsv_error() {
+        let resp = Response::Error {
+            message: "bad request".into(),
+        };
+        assert_eq!(resp.to_tsv(), "error\tbad request");
+    }
+
+    #[test]
+    fn test_to_tsv_suggestion() {
+        let resp = Response::Suggestion(SuggestionResponse {
+            text: "git status".into(),
+            source: SuggestionSource::History,
+            confidence: 0.9,
+        });
+        assert_eq!(resp.to_tsv(), "suggest\tgit status\thistory");
+    }
+
+    #[test]
+    fn test_to_tsv_update() {
+        let resp = Response::Update(SuggestionResponse {
+            text: "git status --verbose".into(),
+            source: SuggestionSource::Context,
+            confidence: 0.87,
+        });
+        assert_eq!(resp.to_tsv(), "update\tgit status --verbose\tcontext");
+    }
+
+    #[test]
+    fn test_to_tsv_suggestion_list() {
+        let resp = Response::SuggestionList(SuggestionListResponse {
+            suggestions: vec![
+                SuggestionItem {
+                    text: "git status".into(),
+                    source: SuggestionSource::History,
+                    confidence: 0.9,
+                    description: None,
+                    kind: SuggestionKind::Command,
+                },
+                SuggestionItem {
+                    text: "git stash".into(),
+                    source: SuggestionSource::Spec,
+                    confidence: 0.88,
+                    description: Some("Stash changes".into()),
+                    kind: SuggestionKind::Subcommand,
+                },
+            ],
+        });
+        assert_eq!(
+            resp.to_tsv(),
+            "list\t2\tgit status\thistory\t\tcommand\tgit stash\tspec\tStash changes\tsubcommand"
+        );
+    }
+
+    #[test]
+    fn test_to_tsv_sanitizes_tabs_and_newlines() {
+        let resp = Response::Suggestion(SuggestionResponse {
+            text: "echo\thello\nworld".into(),
+            source: SuggestionSource::History,
+            confidence: 0.5,
+        });
+        assert_eq!(resp.to_tsv(), "suggest\techo    hello world\thistory");
+    }
+
+    #[test]
+    fn test_to_tsv_empty_suggestion() {
+        let resp = Response::Suggestion(SuggestionResponse {
+            text: String::new(),
+            source: SuggestionSource::History,
+            confidence: 0.0,
+        });
+        assert_eq!(resp.to_tsv(), "suggest\t\thistory");
+    }
+
+    #[test]
+    fn test_as_str_matches_serde() {
+        for source in [
+            SuggestionSource::History,
+            SuggestionSource::Context,
+            SuggestionSource::Spec,
+            SuggestionSource::Filesystem,
+            SuggestionSource::Environment,
+        ] {
+            let serde_str = serde_json::to_string(&source).unwrap();
+            assert_eq!(format!("\"{}\"", source.as_str()), serde_str);
+        }
+        for kind in [
+            SuggestionKind::Command,
+            SuggestionKind::Subcommand,
+            SuggestionKind::Option,
+            SuggestionKind::Argument,
+            SuggestionKind::File,
+            SuggestionKind::History,
+        ] {
+            let serde_str = serde_json::to_string(&kind).unwrap();
+            assert_eq!(format!("\"{}\"", kind.as_str()), serde_str);
+        }
     }
 }
