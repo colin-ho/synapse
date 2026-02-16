@@ -341,7 +341,7 @@ impl SuggestionProvider for AiProvider {
         // Determine project context
         let cwd = std::path::Path::new(&request.cwd);
         let project_type = ContextProvider::project_type_for(cwd);
-        let git_branch = crate::providers::context::read_git_branch_pub(cwd);
+        let git_branch = crate::providers::context::read_git_branch_for_path(cwd);
 
         // Check cache first
         let key = self.cache_key(request, project_type.clone(), git_branch.clone());
