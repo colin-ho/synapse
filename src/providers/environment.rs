@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use crate::completion_context::{CompletionContext, Position};
-use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
-use crate::providers::{ProviderSuggestion, SuggestionProvider};
+use crate::protocol::{SuggestionKind, SuggestionSource};
+use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
 pub struct EnvironmentProvider {
     executables: Arc<RwLock<Vec<String>>>,
@@ -129,18 +129,16 @@ impl EnvironmentProvider {
 
 #[async_trait]
 impl SuggestionProvider for EnvironmentProvider {
-    async fn suggest(
-        &self,
-        _request: &SuggestRequest,
-        ctx: Option<&CompletionContext>,
-    ) -> Option<ProviderSuggestion> {
-        let ctx = ctx?;
-        if !Self::should_activate(ctx) {
-            return None;
+    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+        if max == 0 {
+            return Vec::new();
         }
 
-        let results = self.complete(&ctx.partial, 1).await;
-        results.into_iter().next()
+        if !Self::should_activate(request) {
+            return Vec::new();
+        }
+
+        self.complete(&request.partial, max).await
     }
 
     fn source(&self) -> SuggestionSource {
@@ -149,19 +147,5 @@ impl SuggestionProvider for EnvironmentProvider {
 
     fn is_available(&self) -> bool {
         true
-    }
-
-    async fn suggest_multi(
-        &self,
-        _request: &SuggestRequest,
-        max: usize,
-        ctx: Option<&CompletionContext>,
-    ) -> Vec<ProviderSuggestion> {
-        let ctx = match ctx {
-            Some(c) if Self::should_activate(c) => c,
-            _ => return Vec::new(),
-        };
-
-        self.complete(&ctx.partial, max).await
     }
 }

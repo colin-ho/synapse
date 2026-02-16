@@ -31,7 +31,7 @@ use crate::providers::environment::EnvironmentProvider;
 use crate::providers::filesystem::FilesystemProvider;
 use crate::providers::history::HistoryProvider;
 use crate::providers::spec::SpecProvider;
-use crate::providers::SuggestionProvider;
+use crate::providers::{ProviderRequest, SuggestionProvider};
 use crate::ranking::Ranker;
 use crate::security::Scrubber;
 use crate::session::SessionManager;
@@ -635,43 +635,31 @@ async fn handle_request(
 
             session_manager.update_from_request(&req).await;
 
-            // Build CompletionContext
-            let cwd = std::path::Path::new(&req.cwd);
-            let completion_ctx = crate::completion_context::CompletionContext::build(
-                &req.buffer,
-                cwd,
-                spec_provider.store(),
-            )
-            .await;
+            let provider_request =
+                ProviderRequest::from_suggest_request(&req, spec_provider.store()).await;
 
             // Phase 1: Immediate — query all providers concurrently
             let (history_result, context_result, spec_result, fs_result, env_result) = tokio::join!(
-                history_provider.suggest(&req, Some(&completion_ctx)),
-                context_provider.suggest(&req, Some(&completion_ctx)),
-                spec_provider.suggest(&req, Some(&completion_ctx)),
-                filesystem_provider.suggest(&req, Some(&completion_ctx)),
-                environment_provider.suggest(&req, Some(&completion_ctx)),
+                history_provider.suggest(&provider_request, 1),
+                context_provider.suggest(&provider_request, 1),
+                spec_provider.suggest(&provider_request, 1),
+                filesystem_provider.suggest(&provider_request, 1),
+                environment_provider.suggest(&provider_request, 1),
             );
 
             let mut suggestions = Vec::new();
-            if let Some(s) = history_result {
-                suggestions.push(s);
-            }
-            if let Some(s) = context_result {
-                suggestions.push(s);
-            }
-            if let Some(s) = spec_result {
-                suggestions.push(s);
-            }
-            if let Some(s) = fs_result {
-                suggestions.push(s);
-            }
-            if let Some(s) = env_result {
-                suggestions.push(s);
-            }
+            suggestions.extend(history_result);
+            suggestions.extend(context_result);
+            suggestions.extend(spec_result);
+            suggestions.extend(fs_result);
+            suggestions.extend(env_result);
 
             // Rank immediate results
-            let ranked = ranker.rank(suggestions, &req.recent_commands, Some(&completion_ctx));
+            let ranked = ranker.rank(
+                suggestions,
+                &provider_request.recent_commands,
+                Some(provider_request.completion()),
+            );
 
             let current_score = ranked.as_ref().map(|r| r.score).unwrap_or(0.0);
 
@@ -707,8 +695,9 @@ async fn handle_request(
                 let sm = session_manager.clone();
                 let cfg = config.clone();
                 let rk = ranker.clone();
-                let buffer_snapshot = req.buffer.clone();
-                let session_id = req.session_id.clone();
+                let provider_request = provider_request.clone();
+                let buffer_snapshot = provider_request.buffer.clone();
+                let session_id = provider_request.session_id.clone();
 
                 tokio::spawn(async move {
                     // Debounce: wait before calling AI
@@ -724,28 +713,28 @@ async fn handle_request(
                     }
 
                     // Call AI provider
-                    if let Some(ai_suggestion) = ap.suggest(&req, None).await {
-                        let ai_ranked = rk.rank(vec![ai_suggestion], &req.recent_commands, None);
-                        if let Some(ai_r) = ai_ranked {
-                            // Only push update if AI score beats current best
-                            if ai_r.score > current_score {
-                                let mut text = ai_r.text;
-                                if text.len() > cfg.general.max_suggestion_length {
-                                    text.truncate(cfg.general.max_suggestion_length);
-                                }
+                    let ai_suggestions = ap.suggest(&provider_request, 1).await;
+                    let ai_ranked =
+                        rk.rank(ai_suggestions, &provider_request.recent_commands, None);
+                    if let Some(ai_r) = ai_ranked {
+                        // Only push update if AI score beats current best
+                        if ai_r.score > current_score {
+                            let mut text = ai_r.text;
+                            if text.len() > cfg.general.max_suggestion_length {
+                                text.truncate(cfg.general.max_suggestion_length);
+                            }
 
-                                let update = Response::Update(SuggestionResponse {
-                                    text,
-                                    source: ai_r.source,
-                                    confidence: ai_r.score.min(1.0),
-                                });
+                            let update = Response::Update(SuggestionResponse {
+                                text,
+                                source: ai_r.source,
+                                confidence: ai_r.score.min(1.0),
+                            });
 
-                                if let Ok(mut json) = serde_json::to_string(&update) {
-                                    json.push('\n');
-                                    let mut w = writer.lock().await;
-                                    let _ = w.write_all(json.as_bytes()).await;
-                                    let _ = w.flush().await;
-                                }
+                            if let Ok(mut json) = serde_json::to_string(&update) {
+                                json.push('\n');
+                                let mut w = writer.lock().await;
+                                let _ = w.write_all(json.as_bytes()).await;
+                                let _ = w.flush().await;
                             }
                         }
                     }
@@ -763,17 +752,9 @@ async fn handle_request(
                 "ListSuggestions request"
             );
 
-            let suggest_req = req.as_suggest_request();
             let max = req.max_results.min(config.spec.max_list_results);
-
-            // Build CompletionContext for list suggestions
-            let cwd = std::path::Path::new(&req.cwd);
-            let completion_ctx = crate::completion_context::CompletionContext::build(
-                &req.buffer,
-                cwd,
-                spec_provider.store(),
-            )
-            .await;
+            let provider_request =
+                ProviderRequest::from_list_request(&req, spec_provider.store()).await;
 
             // Query all providers concurrently for multi-results
             // Include AI with a 200ms timeout so it doesn't block the dropdown
@@ -781,7 +762,7 @@ async fn handle_request(
                 if config.ai.enabled {
                     tokio::time::timeout(
                         std::time::Duration::from_millis(200),
-                        ai_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
+                        ai_provider.suggest(&provider_request, max),
                     )
                     .await
                     .unwrap_or_default()
@@ -798,11 +779,11 @@ async fn handle_request(
                 env_results,
                 ai_results,
             ) = tokio::join!(
-                history_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
-                context_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
-                spec_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
-                filesystem_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
-                environment_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
+                history_provider.suggest(&provider_request, max),
+                context_provider.suggest(&provider_request, max),
+                spec_provider.suggest(&provider_request, max),
+                filesystem_provider.suggest(&provider_request, max),
+                environment_provider.suggest(&provider_request, max),
                 ai_future,
             );
 
@@ -816,9 +797,9 @@ async fn handle_request(
 
             let ranked = ranker.rank_multi(
                 all_suggestions,
-                &req.recent_commands,
+                &provider_request.recent_commands,
                 max,
-                Some(&completion_ctx),
+                Some(provider_request.completion()),
             );
 
             let items = ranked.iter().map(|r| r.to_suggestion_item()).collect();

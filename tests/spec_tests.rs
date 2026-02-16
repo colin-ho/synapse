@@ -48,10 +48,10 @@ async fn test_git_subcommand_completion() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = common::make_suggest_request("git co", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    let suggestion = result.unwrap();
+    let req = common::make_provider_request("git co", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    let suggestion = &result[0];
     // Should suggest "git commit" or "git config" (starts with "co")
     assert!(
         suggestion.text.starts_with("git co"),
@@ -67,8 +67,8 @@ async fn test_git_multi_suggestions() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = common::make_suggest_request("git ", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 10, None).await;
+    let req = common::make_provider_request("git ", dir.path().to_str().unwrap()).await;
+    let results = provider.suggest(&req, 10).await;
     assert!(
         results.len() > 1,
         "Expected multiple suggestions for 'git '"
@@ -86,8 +86,8 @@ async fn test_git_checkout_alias() {
     let dir = tempfile::tempdir().unwrap();
 
     // "git ch" should match both "checkout" and "cherry-pick" etc.
-    let req = common::make_suggest_request("git ch", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 10, None).await;
+    let req = common::make_provider_request("git ch", dir.path().to_str().unwrap()).await;
+    let results = provider.suggest(&req, 10).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
         texts
@@ -105,10 +105,10 @@ async fn test_cargo_subcommand_completion() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = common::make_suggest_request("cargo b", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "cargo build");
+    let req = common::make_provider_request("cargo b", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "cargo build");
 }
 
 #[tokio::test]
@@ -116,10 +116,10 @@ async fn test_cargo_test_completion() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = common::make_suggest_request("cargo t", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "cargo test");
+    let req = common::make_provider_request("cargo t", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "cargo test");
 }
 
 // --- Option completions ---
@@ -129,8 +129,8 @@ async fn test_git_commit_option_completion() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = common::make_suggest_request("git commit --m", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 10, None).await;
+    let req = common::make_provider_request("git commit --m", dir.path().to_str().unwrap()).await;
+    let results = provider.suggest(&req, 10).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
         texts.iter().any(|t| t.contains("--message")),
@@ -168,8 +168,8 @@ command = "printf '%s\n' alpha beta"
     let store = Arc::new(SpecStore::new(config));
     let provider = SpecProvider::new(store);
 
-    let req = common::make_suggest_request("tool --profile a", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 10, None).await;
+    let req = common::make_provider_request("tool --profile a", dir.path().to_str().unwrap()).await;
+    let results = provider.suggest(&req, 10).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
         texts.iter().any(|t| *t == "tool --profile alpha"),
@@ -185,9 +185,9 @@ async fn test_empty_buffer_returns_none() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = common::make_suggest_request("", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_none());
+    let req = common::make_provider_request("", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(result.is_empty());
 }
 
 // --- Unknown command ---
@@ -197,9 +197,9 @@ async fn test_unknown_command_returns_empty() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = common::make_suggest_request("nonexistent_cmd ", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_none());
+    let req = common::make_provider_request("nonexistent_cmd ", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(result.is_empty());
 }
 
 // --- Project spec auto-generation ---
@@ -217,10 +217,10 @@ async fn test_autogen_cargo_spec() {
     let store = Arc::new(SpecStore::new(config));
     let provider = SpecProvider::new(store);
 
-    let req = common::make_suggest_request("cargo b", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "cargo build");
+    let req = common::make_provider_request("cargo b", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "cargo build");
 }
 
 #[tokio::test]
@@ -236,21 +236,21 @@ async fn test_autogen_makefile_spec() {
     let store = Arc::new(SpecStore::new(config));
     let provider = SpecProvider::new(store);
 
-    let req = common::make_suggest_request("make d", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "make deploy");
+    let req = common::make_provider_request("make d", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "make deploy");
 }
 
-// --- suggest_multi ---
+// --- suggest max ---
 
 #[tokio::test]
-async fn test_suggest_multi_truncates() {
+async fn test_suggest_truncates_to_max() {
     let provider = make_spec_provider();
     let dir = tempfile::tempdir().unwrap();
 
-    let req = common::make_suggest_request("git ", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 3, None).await;
+    let req = common::make_provider_request("git ", dir.path().to_str().unwrap()).await;
+    let results = provider.suggest(&req, 3).await;
     assert!(
         results.len() <= 3,
         "Expected at most 3 results, got {}",

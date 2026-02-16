@@ -1,13 +1,8 @@
-use std::sync::Arc;
-
 mod common;
 
-use synapse::completion_context::CompletionContext;
 use synapse::config::ContextConfig;
-use synapse::config::SpecConfig;
 use synapse::providers::context::ContextProvider;
 use synapse::providers::SuggestionProvider;
-use synapse::spec_store::SpecStore;
 
 #[tokio::test]
 async fn test_cargo_context() {
@@ -23,10 +18,10 @@ async fn test_cargo_context() {
         scan_depth: 3,
     });
 
-    let req = common::make_suggest_request("cargo b", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "cargo build");
+    let req = common::make_provider_request("cargo b", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "cargo build");
 }
 
 #[tokio::test]
@@ -43,10 +38,10 @@ async fn test_package_json_scripts() {
         scan_depth: 3,
     });
 
-    let req = common::make_suggest_request("npm run d", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "npm run dev");
+    let req = common::make_provider_request("npm run d", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "npm run dev");
 }
 
 #[tokio::test]
@@ -62,13 +57,11 @@ async fn test_package_json_scripts_with_completion_context() {
         enabled: true,
         scan_depth: 3,
     });
-    let store = Arc::new(SpecStore::new(SpecConfig::default()));
 
-    let req = common::make_suggest_request("npm run d", dir.path().to_str().unwrap());
-    let ctx = CompletionContext::build(&req.buffer, dir.path(), &store).await;
-    let result = provider.suggest(&req, Some(&ctx)).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "npm run dev");
+    let req = common::make_provider_request("npm run d", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "npm run dev");
 }
 
 #[tokio::test]
@@ -85,10 +78,10 @@ async fn test_makefile_targets() {
         scan_depth: 3,
     });
 
-    let req = common::make_suggest_request("make b", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "make build");
+    let req = common::make_provider_request("make b", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "make build");
 }
 
 #[tokio::test]
@@ -106,10 +99,10 @@ async fn test_yarn_detection() {
         scan_depth: 3,
     });
 
-    let req = common::make_suggest_request("yarn s", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "yarn start");
+    let req = common::make_provider_request("yarn s", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "yarn start");
 }
 
 #[tokio::test]
@@ -126,7 +119,7 @@ async fn test_empty_buffer_returns_none() {
         scan_depth: 3,
     });
 
-    let req = common::make_suggest_request("", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_none());
+    let req = common::make_provider_request("", dir.path().to_str().unwrap()).await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(result.is_empty());
 }

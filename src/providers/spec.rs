@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::completion_context::{tokenize, CompletionContext};
-use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
-use crate::providers::{ProviderSuggestion, SuggestionProvider};
+use crate::completion_context::tokenize;
+use crate::protocol::{SuggestionKind, SuggestionSource};
+use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 use crate::spec::{ArgSpec, ArgTemplate, OptionSpec, SpecSource};
 use crate::spec_store::SpecStore;
 
@@ -334,11 +334,11 @@ impl SpecProvider {
 
 #[async_trait]
 impl SuggestionProvider for SpecProvider {
-    async fn suggest(
-        &self,
-        request: &SuggestRequest,
-        _ctx: Option<&CompletionContext>,
-    ) -> Option<ProviderSuggestion> {
+    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+        if max == 0 {
+            return Vec::new();
+        }
+
         let cwd = Path::new(&request.cwd);
         let mut completions = self.complete(&request.buffer, cwd).await;
 
@@ -351,7 +351,8 @@ impl SuggestionProvider for SpecProvider {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        completions.into_iter().next()
+        completions.truncate(max);
+        completions
     }
 
     fn source(&self) -> SuggestionSource {
@@ -360,27 +361,6 @@ impl SuggestionProvider for SpecProvider {
 
     fn is_available(&self) -> bool {
         true
-    }
-
-    async fn suggest_multi(
-        &self,
-        request: &SuggestRequest,
-        max: usize,
-        _ctx: Option<&CompletionContext>,
-    ) -> Vec<ProviderSuggestion> {
-        let cwd = Path::new(&request.cwd);
-        let mut completions = self.complete(&request.buffer, cwd).await;
-
-        // Filter out empty text entries and entries matching the buffer exactly
-        completions.retain(|s| !s.text.is_empty() && s.text != request.buffer);
-
-        completions.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        completions.truncate(max);
-        completions
     }
 }
 

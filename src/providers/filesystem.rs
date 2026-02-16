@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use moka::future::Cache;
 
 use crate::completion_context::{CompletionContext, ExpectedType, Position};
-use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
-use crate::providers::{ProviderSuggestion, SuggestionProvider};
+use crate::protocol::{SuggestionKind, SuggestionSource};
+use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
 pub struct FilesystemProvider {
     dir_cache: Cache<PathBuf, Vec<DirEntry>>,
@@ -140,49 +140,17 @@ impl FilesystemProvider {
 
 #[async_trait]
 impl SuggestionProvider for FilesystemProvider {
-    async fn suggest(
-        &self,
-        request: &SuggestRequest,
-        ctx: Option<&CompletionContext>,
-    ) -> Option<ProviderSuggestion> {
-        let ctx = ctx?;
-        if !Self::should_activate(ctx) {
-            return None;
+    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+        if max == 0 {
+            return Vec::new();
+        }
+
+        if !Self::should_activate(request) {
+            return Vec::new();
         }
 
         let cwd = Path::new(&request.cwd);
-        let mut results = self.complete(ctx, cwd).await;
-
-        // Return best
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        results.into_iter().next()
-    }
-
-    fn source(&self) -> SuggestionSource {
-        SuggestionSource::Filesystem
-    }
-
-    fn is_available(&self) -> bool {
-        true
-    }
-
-    async fn suggest_multi(
-        &self,
-        request: &SuggestRequest,
-        max: usize,
-        ctx: Option<&CompletionContext>,
-    ) -> Vec<ProviderSuggestion> {
-        let ctx = match ctx {
-            Some(c) if Self::should_activate(c) => c,
-            _ => return Vec::new(),
-        };
-
-        let cwd = Path::new(&request.cwd);
-        let mut results = self.complete(ctx, cwd).await;
+        let mut results = self.complete(request, cwd).await;
 
         results.sort_by(|a, b| {
             b.score
@@ -191,5 +159,13 @@ impl SuggestionProvider for FilesystemProvider {
         });
         results.truncate(max);
         results
+    }
+
+    fn source(&self) -> SuggestionSource {
+        SuggestionSource::Filesystem
+    }
+
+    fn is_available(&self) -> bool {
+        true
     }
 }

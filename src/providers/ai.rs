@@ -6,11 +6,10 @@ use moka::future::Cache;
 use tokio::sync::Semaphore;
 
 use crate::cache::AiCacheKey;
-use crate::completion_context::CompletionContext;
 use crate::config::AiConfig;
-use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
+use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::context::ContextProvider;
-use crate::providers::{ProviderSuggestion, SuggestionProvider};
+use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 use crate::security::Scrubber;
 
 /// Token bucket for rate limiting
@@ -86,10 +85,9 @@ impl AiProvider {
 
     fn build_prompt(
         &self,
-        request: &SuggestRequest,
+        request: &ProviderRequest,
         project_type: Option<&str>,
         git_branch: Option<&str>,
-        ctx: Option<&CompletionContext>,
     ) -> String {
         let (cwd, recent, buffer) = if let Some(ref scrubber) = self.scrubber {
             let cwd = scrubber.scrub_path(&request.cwd);
@@ -131,35 +129,32 @@ impl AiProvider {
             prompt.push_str(&format!("Recent commands: {recent_str}\n"));
         }
 
-        // Include CompletionContext info when available
-        if let Some(ctx) = ctx {
-            let pos = match &ctx.position {
-                crate::completion_context::Position::CommandName => "command name",
-                crate::completion_context::Position::Subcommand => "subcommand",
-                crate::completion_context::Position::OptionFlag => "option/flag",
-                crate::completion_context::Position::OptionValue { option } => {
-                    prompt.push_str(&format!("Completing value for option: {option}\n"));
-                    "option value"
-                }
-                crate::completion_context::Position::Argument { index } => {
-                    prompt.push_str(&format!("Argument position: {index}\n"));
-                    "argument"
-                }
-                crate::completion_context::Position::PipeTarget => "command after pipe",
-                crate::completion_context::Position::Redirect => "file path after redirect",
-                crate::completion_context::Position::Unknown => "unknown",
-            };
-            prompt.push_str(&format!("Completion position: {pos}\n"));
+        let pos = match &request.position {
+            crate::completion_context::Position::CommandName => "command name",
+            crate::completion_context::Position::Subcommand => "subcommand",
+            crate::completion_context::Position::OptionFlag => "option/flag",
+            crate::completion_context::Position::OptionValue { option } => {
+                prompt.push_str(&format!("Completing value for option: {option}\n"));
+                "option value"
+            }
+            crate::completion_context::Position::Argument { index } => {
+                prompt.push_str(&format!("Argument position: {index}\n"));
+                "argument"
+            }
+            crate::completion_context::Position::PipeTarget => "command after pipe",
+            crate::completion_context::Position::Redirect => "file path after redirect",
+            crate::completion_context::Position::Unknown => "unknown",
+        };
+        prompt.push_str(&format!("Completion position: {pos}\n"));
 
-            if let Some(ref cmd) = ctx.command {
-                prompt.push_str(&format!("Command: {cmd}\n"));
-            }
-            if !ctx.subcommand_path.is_empty() {
-                prompt.push_str(&format!(
-                    "Subcommand path: {}\n",
-                    ctx.subcommand_path.join(" ")
-                ));
-            }
+        if let Some(ref cmd) = request.command {
+            prompt.push_str(&format!("Command: {cmd}\n"));
+        }
+        if !request.subcommand_path.is_empty() {
+            prompt.push_str(&format!(
+                "Subcommand path: {}\n",
+                request.subcommand_path.join(" ")
+            ));
         }
 
         prompt.push_str(&format!("Current input: \"{buffer}\"\n"));
@@ -169,7 +164,7 @@ impl AiProvider {
 
     fn cache_key(
         &self,
-        request: &SuggestRequest,
+        request: &ProviderRequest,
         project_type: Option<String>,
         git_branch: Option<String>,
     ) -> AiCacheKey {
@@ -329,13 +324,9 @@ impl AiProvider {
 
 #[async_trait]
 impl SuggestionProvider for AiProvider {
-    async fn suggest(
-        &self,
-        request: &SuggestRequest,
-        ctx: Option<&CompletionContext>,
-    ) -> Option<ProviderSuggestion> {
-        if !self.config.enabled || request.buffer.is_empty() {
-            return None;
+    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+        if max == 0 || !self.config.enabled || request.buffer.is_empty() {
+            return Vec::new();
         }
 
         // Determine project context
@@ -347,30 +338,32 @@ impl SuggestionProvider for AiProvider {
         let key = self.cache_key(request, project_type.clone(), git_branch.clone());
         if let Some(cached) = self.cache.get(&key).await {
             if cached.starts_with(&request.buffer) {
-                return Some(ProviderSuggestion {
+                return vec![ProviderSuggestion {
                     text: cached,
                     source: SuggestionSource::Ai,
                     score: 0.8,
                     description: None,
                     kind: SuggestionKind::Command,
-                });
+                }];
             }
         }
 
         // Rate limit check
         if !self.rate_limiter.try_acquire().await {
             tracing::debug!("AI rate limit exceeded, skipping");
-            return None;
+            return Vec::new();
         }
 
         // Concurrency limit
-        let _permit = self.concurrency.try_acquire().ok()?;
+        let _permit = match self.concurrency.try_acquire().ok() {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
 
-        let prompt =
-            self.build_prompt(request, project_type.as_deref(), git_branch.as_deref(), ctx);
+        let prompt = self.build_prompt(request, project_type.as_deref(), git_branch.as_deref());
         if prompt.is_empty() {
             tracing::debug!("Buffer matched security blocklist, skipping AI");
-            return None;
+            return Vec::new();
         }
         let result = self.call_backend(&prompt).await;
 
@@ -384,23 +377,23 @@ impl SuggestionProvider for AiProvider {
                 // Cache the result
                 self.cache.insert(key, text.clone()).await;
 
-                Some(ProviderSuggestion {
+                vec![ProviderSuggestion {
                     text,
                     source: SuggestionSource::Ai,
                     score: 0.85,
                     description: None,
                     kind: SuggestionKind::Command,
-                })
+                }]
             }
             Some(text) => {
                 tracing::debug!("AI suggestion doesn't match buffer prefix, discarding: {text}");
-                None
+                Vec::new()
             }
             None => {
                 if self.config.fallback_to_local && !self.is_local_provider() {
                     tracing::debug!("AI API failed, skipping");
                 }
-                None
+                Vec::new()
             }
         }
     }

@@ -7,8 +7,8 @@ use async_trait::async_trait;
 
 use crate::completion_context::{CompletionContext, Position};
 use crate::config::HistoryConfig;
-use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
-use crate::providers::{ProviderSuggestion, SuggestionProvider};
+use crate::protocol::{SuggestionKind, SuggestionSource};
+use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
 #[derive(Debug, Clone)]
 struct HistoryEntry {
@@ -372,75 +372,56 @@ impl HistoryProvider {
 
 #[async_trait]
 impl SuggestionProvider for HistoryProvider {
-    async fn suggest(
-        &self,
-        request: &SuggestRequest,
-        ctx: Option<&CompletionContext>,
-    ) -> Option<ProviderSuggestion> {
-        let buffer = request.buffer.as_str();
-
-        // When we have context, dispatch by position
-        if let Some(ctx) = ctx {
-            match &ctx.position {
-                Position::Argument { .. } | Position::Subcommand | Position::OptionValue { .. } => {
-                    if let Some(s) = self.argument_search(ctx).await {
-                        return Some(s);
-                    }
-                }
-                Position::CommandName | Position::PipeTarget => {
-                    if let Some(s) = self.first_token_search(&ctx.partial).await {
-                        return Some(s);
-                    }
-                }
-                _ => {}
-            }
+    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+        if max == 0 {
+            return Vec::new();
         }
 
-        // Fallback: full prefix match
-        if let Some(suggestion) = self.prefix_search(buffer).await {
-            return Some(suggestion);
-        }
-
-        // Fall back to fuzzy if enabled
-        if self.config.fuzzy {
-            return self.fuzzy_search(buffer).await;
-        }
-
-        None
-    }
-
-    fn source(&self) -> SuggestionSource {
-        SuggestionSource::History
-    }
-
-    fn is_available(&self) -> bool {
-        true
-    }
-
-    async fn suggest_multi(
-        &self,
-        request: &SuggestRequest,
-        max: usize,
-        ctx: Option<&CompletionContext>,
-    ) -> Vec<ProviderSuggestion> {
         let buffer = request.buffer.as_str();
         if buffer.is_empty() {
             return Vec::new();
         }
 
-        if let Some(ctx) = ctx {
-            let contextual = match &ctx.position {
+        if max == 1 {
+            // Preserve single-suggestion behavior for inline ghost text mode.
+            match &request.position {
                 Position::Argument { .. } | Position::Subcommand | Position::OptionValue { .. } => {
-                    self.argument_search_multi(ctx, max).await
+                    if let Some(s) = self.argument_search(request).await {
+                        return vec![s];
+                    }
                 }
                 Position::CommandName | Position::PipeTarget => {
-                    self.first_token_search_multi(&ctx.partial, max).await
+                    if let Some(s) = self.first_token_search(&request.partial).await {
+                        return vec![s];
+                    }
                 }
-                _ => Vec::new(),
-            };
-            if !contextual.is_empty() {
-                return contextual;
+                _ => {}
             }
+
+            // Fallback: full prefix match
+            if let Some(suggestion) = self.prefix_search(buffer).await {
+                return vec![suggestion];
+            }
+
+            // Fall back to fuzzy if enabled
+            if self.config.fuzzy {
+                return self.fuzzy_search(buffer).await.into_iter().collect();
+            }
+
+            return Vec::new();
+        }
+
+        let contextual = match &request.position {
+            Position::Argument { .. } | Position::Subcommand | Position::OptionValue { .. } => {
+                self.argument_search_multi(request, max).await
+            }
+            Position::CommandName | Position::PipeTarget => {
+                self.first_token_search_multi(&request.partial, max).await
+            }
+            _ => Vec::new(),
+        };
+        if !contextual.is_empty() {
+            return contextual;
         }
 
         let entries = self.entries.read().await;
@@ -509,6 +490,14 @@ impl SuggestionProvider for HistoryProvider {
                 kind: SuggestionKind::History,
             })
             .collect()
+    }
+
+    fn source(&self) -> SuggestionSource {
+        SuggestionSource::History
+    }
+
+    fn is_available(&self) -> bool {
+        true
     }
 }
 

@@ -52,21 +52,6 @@ fn default_max_results() -> usize {
     10
 }
 
-impl ListSuggestionsRequest {
-    /// Convert to a SuggestRequest for providers that use the common interface.
-    pub fn as_suggest_request(&self) -> SuggestRequest {
-        SuggestRequest {
-            session_id: self.session_id.clone(),
-            buffer: self.buffer.clone(),
-            cursor_pos: self.cursor_pos,
-            cwd: self.cwd.clone(),
-            last_exit_code: self.last_exit_code,
-            recent_commands: self.recent_commands.clone(),
-            env_hints: self.env_hints.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 pub struct InteractionReport {
     pub session_id: String,
