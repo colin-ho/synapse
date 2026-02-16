@@ -6,7 +6,6 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::logging::InteractionLogger;
-use crate::providers::ai::AiProvider;
 use crate::providers::context::ContextProvider;
 use crate::providers::environment::EnvironmentProvider;
 use crate::providers::filesystem::FilesystemProvider;
@@ -14,7 +13,6 @@ use crate::providers::history::HistoryProvider;
 use crate::providers::spec::SpecProvider;
 use crate::providers::Provider;
 use crate::ranking::Ranker;
-use crate::security::Scrubber;
 use crate::session::SessionManager;
 use crate::spec_store::SpecStore;
 use crate::workflow::WorkflowPredictor;
@@ -163,14 +161,6 @@ pub(super) async fn start_daemon(
 
     let context_provider = ContextProvider::new(config.context.clone());
 
-    // Set up scrubber for external AI providers
-    let scrubber = if config.ai.provider != "ollama" {
-        Some(Arc::new(Scrubber::new(config.security.clone())))
-    } else {
-        None
-    };
-    let ai_provider = AiProvider::new(config.ai.clone(), scrubber);
-
     // Init spec system
     let spec_store = Arc::new(SpecStore::new(config.spec.clone()));
     let spec_provider = SpecProvider::new(spec_store.clone());
@@ -186,7 +176,6 @@ pub(super) async fn start_daemon(
         Provider::Spec(Arc::new(spec_provider)),
         Provider::Filesystem(Arc::new(filesystem_provider)),
         Provider::Environment(Arc::new(environment_provider)),
-        Provider::Ai(Arc::new(ai_provider)),
     ];
 
     let ranker = Ranker::new(config.weights.clone());

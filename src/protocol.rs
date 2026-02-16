@@ -75,7 +75,6 @@ pub enum InteractionAction {
 pub enum SuggestionSource {
     History,
     Context,
-    Ai,
     Spec,
     Filesystem,
     Environment,
@@ -132,7 +131,6 @@ impl std::fmt::Display for SuggestionSource {
         match self {
             SuggestionSource::History => write!(f, "history"),
             SuggestionSource::Context => write!(f, "context"),
-            SuggestionSource::Ai => write!(f, "ai"),
             SuggestionSource::Spec => write!(f, "spec"),
             SuggestionSource::Filesystem => write!(f, "filesystem"),
             SuggestionSource::Environment => write!(f, "environment"),

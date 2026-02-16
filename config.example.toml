@@ -3,7 +3,6 @@
 
 [general]
 # socket_path = "/tmp/synapse.sock"     # auto-detected if omitted
-debounce_ms = 150                       # AI trigger delay (ms)
 max_suggestion_length = 200             # truncate long suggestions
 accept_key = "right-arrow"              # or "tab"
 log_level = "warn"                      # "error" | "warn" | "info" | "debug" | "trace"
@@ -17,19 +16,6 @@ fuzzy = true                            # enable fuzzy matching when prefix fail
 enabled = true
 scan_depth = 3                          # max levels to walk up (ignored inside git repos)
 
-[ai]
-enabled = true
-provider = "ollama"                     # "ollama" | "anthropic" | "openai"
-model = "llama3"                        # model name
-endpoint = "http://localhost:11434"      # for ollama; ignored for anthropic/openai
-api_key_env = "ANTHROPIC_API_KEY"       # env var name for API providers
-max_tokens = 50
-temperature = 0.0
-timeout_ms = 2000                       # give up after this (ms)
-fallback_to_local = true                # if API fails, skip AI layer silently
-rate_limit_rpm = 30                     # max API requests per minute
-max_concurrent_requests = 2             # max in-flight API requests
-
 [spec]
 enabled = true
 auto_generate = true                   # auto-generate specs from project files
@@ -41,9 +27,8 @@ trust_project_generators = false       # allow .synapse/specs/ generators to run
 # Weights are normalized to sum to 1.0
 history = 0.30
 context = 0.15
-ai = 0.25
-spec = 0.15
-recency = 0.15
+spec = 0.35
+recency = 0.20
 
 [security]
 scrub_paths = true                      # redact home directory in API payloads

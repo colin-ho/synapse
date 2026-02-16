@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Synapse** is a Zsh plugin that provides intelligent, real-time command suggestions by combining shell history, contextual project awareness, spec-based CLI completions, and AI-powered suggestions. It offers two interaction modes: inline ghost text as the user types, and an on-demand dropdown menu showing multiple ranked suggestions.
+**Synapse** is a Zsh plugin that provides intelligent, real-time command suggestions by combining shell history, contextual project awareness, and spec-based CLI completions. It offers two interaction modes: inline ghost text as the user types, and an on-demand dropdown menu showing multiple ranked suggestions.
 
 The goal is to reduce the cognitive load of remembering exact commands, flags, and workflows — especially across different project types and tools.
 
@@ -12,7 +12,7 @@ The goal is to reduce the cognitive load of remembering exact commands, flags, a
 
 ### Goals
 - Provide fast (<50ms p95) suggestions for the common case (history + context + spec)
-- Gracefully augment with AI suggestions when simpler strategies lack confidence
+- Gracefully fall back across providers when one source lacks confidence
 - Be project-aware: understand git state, package managers, Makefiles, Docker, etc.
 - Offer structured CLI completions via a spec system (subcommands, options, arguments)
 - Provide both inline ghost text and an optional dropdown menu for exploring multiple suggestions
@@ -52,8 +52,8 @@ The goal is to reduce the cognitive load of remembering exact commands, flags, a
 │  │           Suggestion Pipeline              │   │
 │  │                                            │   │
 │  │  ┌────────┐ ┌────────┐ ┌──────┐ ┌──────┐  │   │
-│  │  │History │ │Context │ │ Spec │ │  AI  │  │   │
-│  │  │ <5ms   │ │ <20ms  │ │<10ms │ │<500ms│  │   │
+│  │  │History │ │Context │ │ Spec │ │FS/Env│  │   │
+│  │  │ <5ms   │ │ <20ms  │ │<10ms │ │<20ms │  │   │
 │  │  └───┬────┘ └───┬────┘ └──┬───┘ └──┬───┘  │   │
 │  │      │          │         │        │       │   │
 │  │      └──────────┼─────────┼────────┘       │   │
@@ -84,7 +84,7 @@ The daemon serves all terminal sessions from one process. Each connection is tra
 
 **Pros:**
 - Shared history index, context caches, and spec store across sessions — lower total memory
-- AI rate limiting is centralized — one token bucket for all sessions
+- Provider caches and indexes are centralized across sessions
 - Single process to manage (start/stop/monitor)
 - Cross-session learning: a command run in session A immediately improves suggestions in session B
 
@@ -125,14 +125,14 @@ If the daemon crashes or is unreachable:
 - Start the daemon automatically if it's not running (with lock file coordination)
 - Report user interactions back to the daemon (accept, dismiss, ignore)
 
-**Async Update Mechanism (via `zle -F`):**
+**Async Response Mechanism (via `zle -F`):**
 
-Zsh's `zle` is synchronous by default — widgets run to completion before the editor redraws. To receive async AI upgrades, the widget uses `zle -F`, which registers a callback on a file descriptor:
+Zsh's `zle` is synchronous by default — widgets run to completion before the editor redraws. To handle non-blocking daemon responses, the widget uses `zle -F`, which registers a callback on a file descriptor:
 
 1. The widget opens a persistent connection (Unix socket fd) to the daemon
 2. It registers the fd with `zle -F $fd _synapse_async_handler`
-3. When the daemon pushes an update, Zsh invokes `_synapse_async_handler` during the next editor idle cycle
-4. The handler reads the update, replaces the ghost text via `POSTDISPLAY`, and triggers a redraw with `zle -R`
+3. When the daemon responds, Zsh invokes `_synapse_async_handler` during the next editor idle cycle
+4. The handler reads the response, updates ghost text or dropdown state, and triggers a redraw with `zle -R`
 
 Key considerations:
 - `zle -F` only fires when `zle` is active (user is at the prompt). This is fine — we only show suggestions while the user is typing.
@@ -292,40 +292,15 @@ description = "Switch branches or restore working tree files"
 
 **Target latency:** <10ms (cached spec lookup + tree walk)
 
-#### 2d. AI Provider
+#### 2d. Filesystem & Environment Providers
 
-- Calls an LLM for intelligent suggestions when the other providers lack confidence
-- Supports multiple backends via a provider trait:
-  - **Local:** Ollama (llama3, codellama, etc.)
-  - **API:** Anthropic Claude, OpenAI
-- Sends a compact prompt including the buffer, cwd, recent commands, git branch, and project type
-- Uses **debouncing**: only triggers after the user pauses typing for 150ms (configurable)
-- Caches recent AI responses keyed by `(buffer_prefix, cwd, project_type, git_branch)` to avoid redundant calls
-- Returns asynchronously — if a history/context suggestion is already shown, AI can silently upgrade it
-- Applies input scrubbing before sending to external APIs (see Security section)
+- **Filesystem provider** suggests paths for file-oriented contexts (`cd`, redirects, path arguments).
+- Uses cached directory scans (`moka::future::Cache`) to keep lookups fast while handling quoting and escaping rules.
+- Supports directory-first behavior when the completion context expects directories.
+- **Environment provider** suggests executable names from `$PATH` and optional virtualenv bins.
+- PATH scanning is refreshed periodically and merged into command-position suggestions.
 
-**Rate limiting (configurable):**
-- Token bucket: max `rate_limit_rpm` requests per minute (default: 30)
-- Max concurrent requests: `max_concurrent_requests` (default: 2)
-- If the bucket is empty, the AI provider is silently skipped for that suggestion cycle
-
-**Target latency:** <500ms (but non-blocking; user sees history/context/spec suggestion first)
-
-**Example prompt sent to LLM:**
-
-```
-You are a terminal command autocomplete engine. Given the context below,
-suggest the single most likely command the user is trying to type.
-Respond with ONLY the completed command on a single line, nothing else.
-
-Working directory: /home/user/webapp
-Project type: Node.js (package.json detected)
-Git branch: feature/auth
-Recent commands: git status, npm test, npm run dev
-Current input: "git push ori"
-```
-
-Note: multi-line commands are never suggested. If the LLM returns multiple lines, only the first line is used.
+**Target latency:** <20ms for directory cache hits and <50ms for PATH refreshes.
 
 #### 2e. Ranking & Merge
 
@@ -336,7 +311,6 @@ When multiple providers return suggestions, they are ranked by a weighted score:
 ```
 score = (w_history × history_score)
       + (w_context × context_score)
-      + (w_ai × ai_score)
       + (w_spec × spec_score)
       + (w_recency × recency_bonus)
 ```
@@ -344,11 +318,8 @@ score = (w_history × history_score)
 Default weights (configurable, normalized to sum to 1.0):
 - `w_history`: 0.30
 - `w_context`: 0.15
-- `w_ai`: 0.25
-- `w_spec`: 0.15
-- `w_recency`: 0.15
-
-If the AI suggestion arrives after the initial response has been sent, and it scores higher, the daemon pushes an **update** over the socket to replace the displayed suggestion.
+- `w_spec`: 0.35
+- `w_recency`: 0.20
 
 **Multiple suggestions (dropdown list):**
 
@@ -376,13 +347,11 @@ The log file is rotated when it exceeds 50MB (configurable). This data will be u
 
 ## Security
 
-When the AI provider sends context to an external API (Anthropic, OpenAI), a scrubbing layer is applied:
+Sensitive inputs are scrubbed before they are reused across providers and logs:
 
 1. **Path redaction:** Home directory paths are replaced with `~`. Usernames in paths are stripped (e.g., `/home/jsmith/project` becomes `~/project`).
 2. **Env var scrubbing:** Only env var keys are sent in `env_hints`, never values. Keys matching sensitive patterns (`*_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`, `*_CREDENTIALS`) are excluded entirely.
 3. **Command scrubbing:** Recent commands containing patterns matching a configurable blocklist are excluded. Default blocklist: commands containing `export *=`, `curl -u`, `curl -H "Authorization"`, `echo $*_KEY`, and similar patterns.
-4. **No scrubbing for local models:** When using Ollama or other local providers, scrubbing is skipped (traffic stays on localhost).
-
 The scrubbing blocklist is configurable in `config.toml` under `[security]`.
 
 ---
@@ -401,12 +370,6 @@ Messages over the Unix socket use newline-delimited JSON.
 
 ```json
 {"type": "suggestion", "text": "docker compose up -d", "source": "history", "confidence": 0.92}
-```
-
-**Async update (Daemon → Zsh, pushed):**
-
-```json
-{"type": "update", "text": "docker compose up --build -d", "source": "ai", "confidence": 0.95}
 ```
 
 **List suggestions request (Zsh → Daemon):**
@@ -440,7 +403,7 @@ Messages over the Unix socket use newline-delimited JSON.
 {"type": "clear_cache"}
 ```
 
-**Suggestion sources:** `history`, `context`, `ai`, `spec`
+**Suggestion sources:** `history`, `context`, `spec`, `filesystem`, `environment`
 
 **Suggestion kinds:** `command`, `subcommand`, `option`, `argument`, `file`, `history`
 
@@ -453,7 +416,6 @@ Config lives at `~/.config/synapse/config.toml`:
 ```toml
 [general]
 socket_path = "/tmp/synapse.sock"       # auto-detected if omitted
-debounce_ms = 150                       # AI trigger delay
 max_suggestion_length = 200             # truncate long suggestions
 accept_key = "right-arrow"              # or "tab"
 log_level = "warn"                      # "error" | "warn" | "info" | "debug" | "trace"
@@ -467,19 +429,6 @@ fuzzy = true
 enabled = true
 scan_depth = 3                          # max levels to walk up (ignored if inside a git repo — walks to git root)
 
-[ai]
-enabled = true
-provider = "ollama"                     # "ollama" | "anthropic" | "openai"
-model = "llama3"                        # model name
-endpoint = "http://localhost:11434"      # for ollama
-api_key_env = "ANTHROPIC_API_KEY"       # env var name for API providers
-max_tokens = 50
-temperature = 0.0
-timeout_ms = 2000                       # give up after this
-fallback_to_local = true                # if API fails, skip AI layer
-rate_limit_rpm = 30                     # max API requests per minute
-max_concurrent_requests = 2             # max in-flight API requests
-
 [spec]
 enabled = true
 auto_generate = true                    # auto-generate specs from project files
@@ -490,9 +439,8 @@ max_list_results = 10                   # max items in dropdown list
 # Weights are normalized to sum to 1.0
 history = 0.30
 context = 0.15
-ai = 0.25
-spec = 0.15
-recency = 0.15
+spec = 0.35
+recency = 0.20
 
 [security]
 scrub_paths = true                      # redact home directory in API payloads
@@ -599,10 +547,9 @@ synapse/
 │   ├── config.rs                    # Config parsing
 │   ├── protocol.rs                  # JSON message types
 │   ├── session.rs                   # Per-session state management
-│   ├── security.rs                  # Input scrubbing for external APIs
+│   ├── security.rs                  # Input scrubbing helpers
 │   ├── logging.rs                   # Interaction logger (append-only JSONL)
 │   ├── ranking.rs                   # Score merging, dedup, and ranking
-│   ├── cache.rs                     # LRU caches for context and AI
 │   ├── spec.rs                      # Spec data model (CommandSpec, SubcommandSpec, etc.)
 │   ├── spec_store.rs                # Spec loading, caching, resolution, generators
 │   ├── spec_autogen.rs              # Auto-generate specs from project files
@@ -610,7 +557,8 @@ synapse/
 │       ├── mod.rs                   # SuggestionProvider trait (suggest + suggest_multi)
 │       ├── history.rs               # History-based suggestions
 │       ├── context.rs               # Project/environment context
-│       ├── ai.rs                    # LLM-backed suggestions
+│       ├── environment.rs           # PATH executable suggestions
+│       ├── filesystem.rs            # File and directory suggestions
 │       └── spec.rs                  # Spec-based CLI completions
 ├── tests/
 │   ├── history_tests.rs
@@ -634,8 +582,6 @@ synapse/
 | Time to first suggestion (history) | <5ms |
 | Time to first suggestion (context) | <20ms |
 | Time to first suggestion (spec) | <10ms |
-| AI suggestion latency (local LLM) | <500ms |
-| AI suggestion latency (API) | <1000ms |
 | Dropdown list generation | <30ms |
 | Daemon memory usage (idle) | <30MB |
 | Daemon memory usage (50k history) | <80MB |
@@ -646,8 +592,8 @@ synapse/
 ## Design Decisions
 
 1. **Dual interaction modes.** Inline ghost text for the common case (fast, unobtrusive), with an on-demand dropdown for exploring multiple options. The dropdown uses `recursive-edit` with a custom keymap for modal navigation.
-2. **Spec-based completions.** Structured CLI specs (inspired by Fig autocomplete) provide accurate subcommand/option/argument completions without relying on AI. Built-in specs are embedded in the binary; project-specific specs are auto-generated from project files or user-defined in `.synapse/specs/`.
+2. **Spec-based completions.** Structured CLI specs (inspired by Fig autocomplete) provide accurate subcommand/option/argument completions. Built-in specs are embedded in the binary; project-specific specs are auto-generated from project files or user-defined in `.synapse/specs/`.
 3. **Local interaction logging.** All suggestion interactions (accept/dismiss/ignore) are logged locally. Data never leaves the machine. Will be used to auto-tune ranking weights in a future iteration.
-4. **Single-line suggestions only.** Multi-line ghost text is unreliable across terminal emulators. If the AI returns multiple lines, only the first is used.
-5. **Security scrubbing is required.** Path redaction, env var filtering, and command blocklisting are applied before any data is sent to external APIs. See the Security section.
+4. **Single-line suggestions only.** Multi-line ghost text is unreliable across terminal emulators.
+5. **Security scrubbing is required.** Path redaction, env var filtering, and command blocklisting are applied before reusing input across providers and logs. See the Security section.
 6. **Trait-based provider architecture.** All providers implement `SuggestionProvider` with `suggest()` (single best) and `suggest_multi()` (top N). This makes adding new providers straightforward.
