@@ -3,12 +3,10 @@ use std::sync::Mutex;
 
 mod common;
 
-use synapse::completion_context::{CompletionContext, Position};
+use synapse::completion_context::Position;
 use synapse::config::HistoryConfig;
-use synapse::config::SpecConfig;
 use synapse::providers::history::HistoryProvider;
 use synapse::providers::SuggestionProvider;
-use synapse::spec_store::SpecStore;
 
 // Serialize tests that mutate the HISTFILE env var
 static HISTFILE_LOCK: Mutex<()> = Mutex::new(());
@@ -42,10 +40,10 @@ async fn test_simple_prefix_match() {
     });
     provider.load_history().await;
 
-    let req = common::make_suggest_request("git s", "/tmp");
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().text, "git status");
+    let req = common::make_provider_request("git s", "/tmp").await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert_eq!(result[0].text, "git status");
 }
 
 #[tokio::test]
@@ -65,10 +63,10 @@ async fn test_extended_history_format() {
     });
     provider.load_history().await;
 
-    let req = common::make_suggest_request("docker c", "/tmp");
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    let text = result.unwrap().text;
+    let req = common::make_provider_request("docker c", "/tmp").await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    let text = result[0].text.clone();
     assert!(text.starts_with("docker compose"));
 }
 
@@ -85,11 +83,11 @@ async fn test_frequency_ranking() {
     });
     provider.load_history().await;
 
-    let req = common::make_suggest_request("git st", "/tmp");
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
+    let req = common::make_provider_request("git st", "/tmp").await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
     // "git status" has frequency 3 vs "git stash" with 1
-    assert_eq!(result.unwrap().text, "git status");
+    assert_eq!(result[0].text, "git status");
 }
 
 #[tokio::test]
@@ -106,10 +104,10 @@ async fn test_fuzzy_match() {
     provider.load_history().await;
 
     // "git chekout" is misspelled — fuzzy should match "git checkout main"
-    let req = common::make_suggest_request("git chekout", "/tmp");
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_some());
-    assert!(result.unwrap().text.starts_with("git checkout"));
+    let req = common::make_provider_request("git chekout", "/tmp").await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(!result.is_empty());
+    assert!(result[0].text.starts_with("git checkout"));
 }
 
 #[tokio::test]
@@ -125,9 +123,9 @@ async fn test_empty_buffer_returns_none() {
     });
     provider.load_history().await;
 
-    let req = common::make_suggest_request("", "/tmp");
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_none());
+    let req = common::make_provider_request("", "/tmp").await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(result.is_empty());
 }
 
 #[tokio::test]
@@ -143,13 +141,13 @@ async fn test_no_match_returns_none() {
     });
     provider.load_history().await;
 
-    let req = common::make_suggest_request("zzz_no_match", "/tmp");
-    let result = provider.suggest(&req, None).await;
-    assert!(result.is_none());
+    let req = common::make_provider_request("zzz_no_match", "/tmp").await;
+    let result = provider.suggest(&req, 1).await;
+    assert!(result.is_empty());
 }
 
 #[tokio::test]
-async fn test_suggest_multi_pipe_target_uses_context() {
+async fn test_suggest_pipe_target_uses_context() {
     let _lock = HISTFILE_LOCK.lock().unwrap();
     let file = write_history_file(&["git status", "git switch main", "ls -la"]);
     std::env::set_var("HISTFILE", file.path().to_str().unwrap());
@@ -161,12 +159,10 @@ async fn test_suggest_multi_pipe_target_uses_context() {
     });
     provider.load_history().await;
 
-    let req = common::make_suggest_request("echo hi | gi", "/tmp");
-    let store = SpecStore::new(SpecConfig::default());
-    let ctx = CompletionContext::build(&req.buffer, std::path::Path::new("/tmp"), &store).await;
-    assert_eq!(ctx.position, Position::PipeTarget);
+    let req = common::make_provider_request("echo hi | gi", "/tmp").await;
+    assert_eq!(req.position, Position::PipeTarget);
 
-    let results = provider.suggest_multi(&req, 5, Some(&ctx)).await;
+    let results = provider.suggest(&req, 5).await;
     assert!(
         results.iter().any(|r| r.text.starts_with("git ")),
         "expected git command suggestion for pipe target, got: {:?}",

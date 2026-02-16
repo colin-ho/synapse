@@ -5,10 +5,9 @@ use async_trait::async_trait;
 use moka::future::Cache;
 use tokio::sync::RwLock;
 
-use crate::completion_context::CompletionContext;
 use crate::config::ContextConfig;
-use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
-use crate::providers::{ProviderSuggestion, SuggestionProvider};
+use crate::protocol::{SuggestionKind, SuggestionSource};
+use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
 #[derive(Debug, Clone)]
 pub struct ContextCommand {
@@ -234,63 +233,8 @@ impl ContextProvider {
 
 #[async_trait]
 impl SuggestionProvider for ContextProvider {
-    async fn suggest(
-        &self,
-        request: &SuggestRequest,
-        completion_ctx: Option<&CompletionContext>,
-    ) -> Option<ProviderSuggestion> {
-        if request.buffer.is_empty() {
-            return None;
-        }
-
-        let cwd = Path::new(&request.cwd);
-        let dir_ctx = self.get_context(cwd).await;
-        let buffer = &request.buffer;
-
-        // Word-level matching when CompletionContext is available
-        if let Some(cc) = completion_ctx {
-            if !cc.prefix.is_empty() {
-                let command = cc.command.as_deref().unwrap_or_default();
-                return self.word_level_suggest(&dir_ctx, command, &cc.partial, &cc.prefix);
-            }
-        }
-
-        // Fallback: full-buffer prefix matching
-        let mut best: Option<(f64, &ContextCommand)> = None;
-
-        for cmd in &dir_ctx.commands {
-            if cmd.command.starts_with(buffer) && cmd.command.len() > buffer.len() {
-                let score = cmd.relevance;
-                if best.as_ref().is_none_or(|(s, _)| score > *s) {
-                    best = Some((score, cmd));
-                }
-            }
-        }
-
-        best.map(|(score, cmd)| ProviderSuggestion {
-            text: cmd.command.clone(),
-            source: SuggestionSource::Context,
-            score,
-            description: None,
-            kind: SuggestionKind::Command,
-        })
-    }
-
-    fn source(&self) -> SuggestionSource {
-        SuggestionSource::Context
-    }
-
-    fn is_available(&self) -> bool {
-        self.config.enabled
-    }
-
-    async fn suggest_multi(
-        &self,
-        request: &SuggestRequest,
-        max: usize,
-        completion_ctx: Option<&CompletionContext>,
-    ) -> Vec<ProviderSuggestion> {
-        if request.buffer.is_empty() {
+    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+        if max == 0 || request.buffer.is_empty() {
             return Vec::new();
         }
 
@@ -298,20 +242,49 @@ impl SuggestionProvider for ContextProvider {
         let dir_ctx = self.get_context(cwd).await;
         let buffer = &request.buffer;
 
-        // Word-level matching when CompletionContext is available
-        if let Some(cc) = completion_ctx {
-            if !cc.prefix.is_empty() {
-                let command = cc.command.as_deref().unwrap_or_default();
-                let mut results =
-                    self.word_level_suggest_multi(&dir_ctx, command, &cc.partial, &cc.prefix);
-                results.sort_by(|a, b| {
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                results.truncate(max);
-                return results;
+        if !request.prefix.is_empty() {
+            let command = request.command.as_deref().unwrap_or_default();
+            if max == 1 {
+                return self
+                    .word_level_suggest(&dir_ctx, command, &request.partial, &request.prefix)
+                    .into_iter()
+                    .collect();
             }
+
+            let mut results =
+                self.word_level_suggest_multi(&dir_ctx, command, &request.partial, &request.prefix);
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            results.truncate(max);
+            return results;
+        }
+
+        if max == 1 {
+            // Fallback: full-buffer prefix matching
+            let mut best: Option<(f64, &ContextCommand)> = None;
+
+            for cmd in &dir_ctx.commands {
+                if cmd.command.starts_with(buffer) && cmd.command.len() > buffer.len() {
+                    let score = cmd.relevance;
+                    if best.as_ref().is_none_or(|(s, _)| score > *s) {
+                        best = Some((score, cmd));
+                    }
+                }
+            }
+
+            return best
+                .map(|(score, cmd)| ProviderSuggestion {
+                    text: cmd.command.clone(),
+                    source: SuggestionSource::Context,
+                    score,
+                    description: None,
+                    kind: SuggestionKind::Command,
+                })
+                .into_iter()
+                .collect();
         }
 
         // Fallback: full-buffer prefix matching
@@ -335,6 +308,14 @@ impl SuggestionProvider for ContextProvider {
         });
         results.truncate(max);
         results
+    }
+
+    fn source(&self) -> SuggestionSource {
+        SuggestionSource::Context
+    }
+
+    fn is_available(&self) -> bool {
+        self.config.enabled
     }
 }
 
