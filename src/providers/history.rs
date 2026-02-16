@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
+use strsim::levenshtein;
 use tokio::sync::RwLock;
 
 use async_trait::async_trait;
@@ -312,24 +313,6 @@ fn compute_score(entry: &HistoryEntry, max_epoch: u64, max_freq: u32) -> f64 {
     };
 
     (0.6 * freq_score + 0.4 * recency_score).clamp(0.0, 1.0)
-}
-
-/// Simple Levenshtein distance (single-row DP)
-fn levenshtein(a: &str, b: &str) -> usize {
-    let b_chars: Vec<char> = b.chars().collect();
-    let n = b_chars.len();
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0; n + 1];
-
-    for (i, a_char) in a.chars().enumerate() {
-        curr[0] = i + 1;
-        for (j, &b_char) in b_chars.iter().enumerate() {
-            let cost = usize::from(a_char != b_char);
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
 }
 
 #[cfg(test)]

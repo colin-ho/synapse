@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use governor::{DefaultDirectRateLimiter, Quota};
 use moka::future::Cache;
 use tokio::sync::Semaphore;
 
@@ -11,48 +12,11 @@ use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 use crate::security::Scrubber;
 
-/// Token bucket for rate limiting
-struct RateLimiter {
-    tokens: tokio::sync::Mutex<f64>,
-    max_tokens: f64,
-    refill_rate: f64, // tokens per second
-    last_refill: tokio::sync::Mutex<std::time::Instant>,
-}
-
-impl RateLimiter {
-    fn new(rpm: u32) -> Self {
-        let max_tokens = rpm as f64;
-        Self {
-            tokens: tokio::sync::Mutex::new(max_tokens),
-            max_tokens,
-            refill_rate: rpm as f64 / 60.0,
-            last_refill: tokio::sync::Mutex::new(std::time::Instant::now()),
-        }
-    }
-
-    async fn try_acquire(&self) -> bool {
-        let mut tokens = self.tokens.lock().await;
-        let mut last = self.last_refill.lock().await;
-
-        let now = std::time::Instant::now();
-        let elapsed = now.duration_since(*last).as_secs_f64();
-        *tokens = (*tokens + elapsed * self.refill_rate).min(self.max_tokens);
-        *last = now;
-
-        if *tokens >= 1.0 {
-            *tokens -= 1.0;
-            true
-        } else {
-            false
-        }
-    }
-}
-
 pub struct AiProvider {
     config: AiConfig,
     client: reqwest::Client,
     cache: Cache<AiCacheKey, String>,
-    rate_limiter: RateLimiter,
+    rate_limiter: Option<DefaultDirectRateLimiter>,
     concurrency: Arc<Semaphore>,
     scrubber: Option<Arc<Scrubber>>,
 }
@@ -69,7 +33,9 @@ impl AiProvider {
             .time_to_live(Duration::from_secs(600))
             .build();
 
-        let rate_limiter = RateLimiter::new(config.rate_limit_rpm);
+        let rate_limiter = std::num::NonZeroU32::new(config.rate_limit_rpm)
+            .map(Quota::per_minute)
+            .map(DefaultDirectRateLimiter::direct);
         let concurrency = Arc::new(Semaphore::new(config.max_concurrent_requests as usize));
 
         Self {
@@ -350,9 +316,17 @@ impl SuggestionProvider for AiProvider {
         }
 
         // Rate limit check
-        if !self.rate_limiter.try_acquire().await {
-            tracing::debug!("AI rate limit exceeded, skipping");
-            return Vec::new();
+        match &self.rate_limiter {
+            Some(rate_limiter) => {
+                if rate_limiter.check().is_err() {
+                    tracing::debug!("AI rate limit exceeded, skipping");
+                    return Vec::new();
+                }
+            }
+            None => {
+                tracing::debug!("AI rate limit set to 0 RPM, skipping");
+                return Vec::new();
+            }
         }
 
         // Concurrency limit

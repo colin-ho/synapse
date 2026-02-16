@@ -1,9 +1,12 @@
 use crate::config::SecurityConfig;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 
 pub struct Scrubber {
     config: SecurityConfig,
     home_dir: String,
     username: String,
+    env_key_matcher: Option<GlobSet>,
+    command_matcher: Option<GlobSet>,
 }
 
 impl Scrubber {
@@ -15,11 +18,15 @@ impl Scrubber {
         let username = std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_default();
+        let env_key_matcher = Self::build_env_key_matcher(&config.scrub_env_keys);
+        let command_matcher = Self::build_command_matcher(&config.command_blocklist);
 
         Self {
             config,
             home_dir,
             username,
+            env_key_matcher,
+            command_matcher,
         }
     }
 
@@ -63,34 +70,77 @@ impl Scrubber {
             .collect()
     }
 
+    fn simple_wildcard_to_glob(pattern: &str) -> String {
+        let mut escaped = String::new();
+        for ch in pattern.chars() {
+            if ch == '*' {
+                escaped.push('*');
+            } else {
+                escaped.push_str(&globset::escape(&ch.to_string()));
+            }
+        }
+        escaped
+    }
+
+    fn build_globset(patterns: Vec<String>) -> Option<GlobSet> {
+        let mut builder = GlobSetBuilder::new();
+        let mut has_patterns = false;
+
+        for pattern in patterns {
+            match Glob::new(&pattern) {
+                Ok(glob) => {
+                    builder.add(glob);
+                    has_patterns = true;
+                }
+                Err(e) => {
+                    tracing::warn!("Ignoring invalid security pattern '{pattern}': {e}");
+                }
+            }
+        }
+
+        if !has_patterns {
+            return None;
+        }
+
+        match builder.build() {
+            Ok(set) => Some(set),
+            Err(e) => {
+                tracing::warn!("Failed to build security matcher set: {e}");
+                None
+            }
+        }
+    }
+
+    fn build_env_key_matcher(patterns: &[String]) -> Option<GlobSet> {
+        let globs = patterns
+            .iter()
+            .map(|pattern| Self::simple_wildcard_to_glob(&pattern.to_uppercase()))
+            .collect();
+        Self::build_globset(globs)
+    }
+
+    fn build_command_matcher(patterns: &[String]) -> Option<GlobSet> {
+        let globs = patterns
+            .iter()
+            .map(|pattern| {
+                let p = Self::simple_wildcard_to_glob(pattern);
+                format!("*{p}*")
+            })
+            .collect();
+        Self::build_globset(globs)
+    }
+
     fn is_sensitive_env_key(&self, key: &str) -> bool {
         let upper = key.to_uppercase();
-        self.config.scrub_env_keys.iter().any(|pattern| {
-            if let Some(suffix) = pattern.strip_prefix('*') {
-                upper.ends_with(&suffix.to_uppercase())
-            } else if let Some(prefix) = pattern.strip_suffix('*') {
-                upper.starts_with(&prefix.to_uppercase())
-            } else {
-                upper == pattern.to_uppercase()
-            }
-        })
+        self.env_key_matcher
+            .as_ref()
+            .is_some_and(|matcher| matcher.is_match(upper))
     }
 
     fn is_blocked_command(&self, command: &str) -> bool {
-        self.config.command_blocklist.iter().any(|pattern| {
-            if pattern.contains('*') {
-                // Simple glob: "export *=" matches any command containing "export " followed by "="
-                let parts: Vec<&str> = pattern.split('*').collect();
-                if parts.len() == 2 {
-                    if let Some(pos) = command.find(parts[0]) {
-                        return command[pos + parts[0].len()..].contains(parts[1]);
-                    }
-                }
-                false
-            } else {
-                command.contains(pattern)
-            }
-        })
+        self.command_matcher
+            .as_ref()
+            .is_some_and(|matcher| matcher.is_match(command))
     }
 }
 

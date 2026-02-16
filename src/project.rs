@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 /// First tries an unbounded walk to find a `.git` directory.
 /// If none found, walks up `max_depth` levels looking for project files.
 pub fn find_project_root(cwd: &Path, max_depth: usize) -> Option<PathBuf> {
+    if let Some((_, root)) = discover_git_repository(cwd) {
+        return Some(root);
+    }
+
     // Unbounded walk to find git root
     let mut current = cwd.to_path_buf();
     loop {
@@ -55,19 +59,59 @@ pub fn detect_project_type(root: &Path) -> Option<String> {
 }
 
 pub fn read_git_branch_for_path(path: &Path) -> Option<String> {
+    if let Some((git_dir, _)) = discover_git_repository(path) {
+        return read_git_branch(&git_dir);
+    }
+
+    // Fallback for minimal synthetic repositories used in tests.
     let mut current = path.to_path_buf();
     loop {
-        if current.join(".git").exists() {
-            return read_git_branch(&current);
+        let git_dir = current.join(".git");
+        if git_dir.exists() {
+            return read_git_branch(&git_dir);
         }
         if !current.pop() {
-            return None;
+            break;
+        }
+    }
+    None
+}
+
+fn discover_git_repository(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let (repo_path, _) = gix_discover::upwards(path).ok()?;
+    let (git_dir, work_tree) = repo_path.into_repository_and_work_tree_directories();
+    let root = work_tree.unwrap_or_else(|| git_dir.clone());
+    Some((git_dir, root))
+}
+
+fn read_git_branch_with_gix(git_dir: &Path) -> Option<String> {
+    let store = gix_ref::file::Store::at(
+        git_dir.to_path_buf(),
+        gix_ref::store::init::Options::default(),
+    );
+    let head = store.try_find_loose("HEAD").ok().flatten()?;
+    match head.target {
+        gix_ref::Target::Symbolic(name) => {
+            let full = name.to_string();
+            Some(
+                full.strip_prefix("refs/heads/")
+                    .unwrap_or(full.as_str())
+                    .to_string(),
+            )
+        }
+        gix_ref::Target::Object(id) => {
+            let hex = id.to_string();
+            Some(hex[..8.min(hex.len())].to_string())
         }
     }
 }
 
-fn read_git_branch(root: &Path) -> Option<String> {
-    let head_path = root.join(".git").join("HEAD");
+fn read_git_branch(git_dir: &Path) -> Option<String> {
+    if let Some(branch) = read_git_branch_with_gix(git_dir) {
+        return Some(branch);
+    }
+
+    let head_path = git_dir.join("HEAD");
     let content = std::fs::read_to_string(head_path).ok()?;
     let trimmed = content.trim();
     if let Some(branch) = trimmed.strip_prefix("ref: refs/heads/") {
@@ -140,8 +184,8 @@ pub fn parse_npm_scripts(root: &Path) -> Option<Vec<(String, Option<String>)>> {
 /// Parse Cargo.toml for workspace and binary target info.
 /// Returns (is_workspace, has_bin_targets).
 pub fn parse_cargo_info(root: &Path) -> Option<(bool, bool)> {
-    let content = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
-    Some((content.contains("[workspace]"), content.contains("[[bin]]")))
+    let manifest = parse_cargo_manifest(&root.join("Cargo.toml"))?;
+    Some((manifest.workspace.is_some(), !manifest.bin.is_empty()))
 }
 
 /// Parse docker-compose services. Returns None if no compose file exists.
@@ -157,30 +201,14 @@ pub fn parse_docker_services(root: &Path) -> Option<Vec<String>> {
     .find(|p| p.exists())?;
 
     let content = std::fs::read_to_string(compose_path).ok()?;
-
-    let mut services = Vec::new();
-    let mut in_services = false;
-    for line in content.lines() {
-        if line.trim() == "services:" {
-            in_services = true;
-            continue;
-        }
-        if in_services {
-            if line.starts_with("  ") && !line.starts_with("    ") {
-                if let Some(name) = line.trim().strip_suffix(':') {
-                    let name = name.trim();
-                    if !name.is_empty() && !name.starts_with('#') {
-                        services.push(name.to_string());
-                    }
-                }
-            }
-            if !line.is_empty() && !line.starts_with(' ') && !line.starts_with('#') {
-                in_services = false;
-            }
-        }
-    }
-
-    Some(services)
+    let yaml: serde_yml::Value = serde_yml::from_str(&content).ok()?;
+    let service_map = yaml.get("services")?.as_mapping()?;
+    Some(
+        service_map
+            .keys()
+            .filter_map(|key| key.as_str().map(ToString::to_string))
+            .collect(),
+    )
 }
 
 /// Parse justfile recipes. Returns empty vec if no justfile or no valid recipes.
@@ -221,6 +249,11 @@ pub fn parse_justfile_recipes(root: &Path) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn parse_cargo_manifest(path: &Path) -> Option<cargo_toml::Manifest> {
+    let content = std::fs::read_to_string(path).ok()?;
+    cargo_toml::Manifest::from_slice(content.as_bytes()).ok()
 }
 
 #[derive(Debug, Clone)]

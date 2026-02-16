@@ -151,7 +151,7 @@ impl FilesystemProvider {
     }
 
     fn should_escape_unquoted_char(ch: char) -> bool {
-        ch.is_ascii_whitespace()
+        let manual_escape = ch.is_ascii_whitespace()
             || matches!(
                 ch,
                 '\\' | '"'
@@ -173,7 +173,15 @@ impl FilesystemProvider {
                     | '?'
                     | '!'
                     | '#'
-            )
+            );
+        if manual_escape {
+            return true;
+        }
+
+        let char_str = ch.to_string();
+        shlex::try_quote(&char_str)
+            .map(|quoted| quoted.as_ref() != char_str)
+            .unwrap_or(false)
     }
 
     fn escape_suffix(suffix: &str, mode: QuoteMode) -> String {
