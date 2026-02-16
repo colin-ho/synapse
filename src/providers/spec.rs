@@ -18,10 +18,6 @@ impl SpecProvider {
         Self { store }
     }
 
-    pub fn store(&self) -> &Arc<SpecStore> {
-        &self.store
-    }
-
     /// Generate completions based on spec tree-walk.
     /// Returns multiple suggestions sorted by relevance.
     async fn complete(&self, buffer: &str, cwd: &Path) -> Vec<ProviderSuggestion> {

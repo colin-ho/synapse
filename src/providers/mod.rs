@@ -6,8 +6,10 @@ pub mod history;
 pub mod spec;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use enum_dispatch::enum_dispatch;
 
 use crate::completion_context::CompletionContext;
 use crate::protocol::{ListSuggestionsRequest, SuggestRequest, SuggestionKind, SuggestionSource};
@@ -73,10 +75,40 @@ impl std::ops::Deref for ProviderRequest {
 }
 
 #[async_trait]
+#[enum_dispatch]
 pub trait SuggestionProvider: Send + Sync {
     async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion>;
     #[allow(dead_code)]
     fn source(&self) -> SuggestionSource;
     #[allow(dead_code)]
     fn is_available(&self) -> bool;
+}
+
+#[async_trait]
+impl<T> SuggestionProvider for Arc<T>
+where
+    T: SuggestionProvider + ?Sized,
+{
+    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+        (**self).suggest(request, max).await
+    }
+
+    fn source(&self) -> SuggestionSource {
+        (**self).source()
+    }
+
+    fn is_available(&self) -> bool {
+        (**self).is_available()
+    }
+}
+
+/// Enum-backed provider dispatch used by the daemon runtime.
+#[enum_dispatch(SuggestionProvider)]
+pub enum Provider {
+    History(Arc<history::HistoryProvider>),
+    Context(Arc<context::ContextProvider>),
+    Spec(Arc<spec::SpecProvider>),
+    Filesystem(Arc<filesystem::FilesystemProvider>),
+    Environment(Arc<environment::EnvironmentProvider>),
+    Ai(Arc<ai::AiProvider>),
 }
