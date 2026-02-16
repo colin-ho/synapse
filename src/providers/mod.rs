@@ -4,6 +4,7 @@ pub mod filesystem;
 pub mod history;
 pub mod spec;
 
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -79,7 +80,11 @@ impl std::ops::Deref for ProviderRequest {
 #[async_trait]
 #[enum_dispatch]
 pub trait SuggestionProvider: Send + Sync {
-    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion>;
+    async fn suggest(
+        &self,
+        request: &ProviderRequest,
+        max: NonZeroUsize,
+    ) -> Vec<ProviderSuggestion>;
     #[allow(dead_code)]
     fn source(&self) -> SuggestionSource;
     #[allow(dead_code)]
@@ -91,7 +96,11 @@ impl<T> SuggestionProvider for Arc<T>
 where
     T: SuggestionProvider + ?Sized,
 {
-    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+    async fn suggest(
+        &self,
+        request: &ProviderRequest,
+        max: NonZeroUsize,
+    ) -> Vec<ProviderSuggestion> {
         (**self).suggest(request, max).await
     }
 

@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -139,8 +140,12 @@ impl ContextProvider {
 
 #[async_trait]
 impl SuggestionProvider for ContextProvider {
-    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
-        if max == 0 || request.buffer.is_empty() {
+    async fn suggest(
+        &self,
+        request: &ProviderRequest,
+        max: NonZeroUsize,
+    ) -> Vec<ProviderSuggestion> {
+        if request.buffer.is_empty() {
             return Vec::new();
         }
 
@@ -172,7 +177,7 @@ impl SuggestionProvider for ContextProvider {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        results.truncate(max);
+        results.truncate(max.get());
         results
     }
 

@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use crate::protocol::{
     InteractionAction, InteractionReport, ListSuggestionsRequest, Request, Response,
     SuggestRequest, SuggestionListResponse, SuggestionResponse, SuggestionSource,
@@ -53,7 +55,12 @@ async fn handle_suggest(req: SuggestRequest, state: &RuntimeState) -> Response {
     let provider_request = ProviderRequest::from_suggest_request(&req, &state.spec_store).await;
 
     // Phase 1: Immediate - query all providers concurrently.
-    let suggestions = collect_provider_suggestions(&state.providers, &provider_request, 1).await;
+    let suggestions = collect_provider_suggestions(
+        &state.providers,
+        &provider_request,
+        NonZeroUsize::new(1).unwrap(),
+    )
+    .await;
 
     // Rank immediate results.
     let ranked = state.ranker.rank(
@@ -156,7 +163,7 @@ async fn handle_interaction(report: InteractionReport, state: &RuntimeState) -> 
 async fn collect_provider_suggestions(
     providers: &[Provider],
     request: &ProviderRequest,
-    max: usize,
+    max: NonZeroUsize,
 ) -> Vec<ProviderSuggestion> {
     let mut task_set = tokio::task::JoinSet::new();
 

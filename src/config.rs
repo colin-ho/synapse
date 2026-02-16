@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::{num::NonZeroUsize, path::PathBuf};
 
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
@@ -45,7 +45,7 @@ pub struct SpecConfig {
     pub enabled: bool,
     pub auto_generate: bool,
     pub generator_timeout_ms: u64,
-    pub max_list_results: usize,
+    pub max_list_results: NonZeroUsize,
     /// Whether to run generator commands from project-level specs (.synapse/specs/).
     /// Disabled by default for security: a malicious repo could include specs with
     /// arbitrary shell commands that execute during completion.
@@ -114,7 +114,7 @@ impl Default for SpecConfig {
             enabled: true,
             auto_generate: true,
             generator_timeout_ms: 500,
-            max_list_results: 10,
+            max_list_results: NonZeroUsize::new(10).unwrap(),
             trust_project_generators: false,
         }
     }

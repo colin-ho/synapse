@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -344,11 +345,11 @@ impl FilesystemProvider {
 
 #[async_trait]
 impl SuggestionProvider for FilesystemProvider {
-    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
-        if max == 0 {
-            return Vec::new();
-        }
-
+    async fn suggest(
+        &self,
+        request: &ProviderRequest,
+        max: NonZeroUsize,
+    ) -> Vec<ProviderSuggestion> {
         if !Self::should_activate(request) {
             return Vec::new();
         }
@@ -362,7 +363,7 @@ impl SuggestionProvider for FilesystemProvider {
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| a.text.cmp(&b.text))
         });
-        results.truncate(max);
+        results.truncate(max.get());
         results
     }
 

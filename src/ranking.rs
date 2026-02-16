@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
 use crate::completion_context::{CompletionContext, ExpectedType, Position};
 use crate::config::WeightsConfig;
@@ -171,7 +172,7 @@ impl Ranker {
         &self,
         suggestions: Vec<ProviderSuggestion>,
         recent_commands: &[String],
-        max: usize,
+        max: NonZeroUsize,
         ctx: Option<&CompletionContext>,
     ) -> Vec<RankedSuggestion> {
         if suggestions.is_empty() {
@@ -210,7 +211,7 @@ impl Ranker {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        results.truncate(max);
+        results.truncate(max.get());
         results
     }
 

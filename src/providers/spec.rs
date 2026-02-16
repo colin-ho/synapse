@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -330,11 +331,11 @@ impl SpecProvider {
 
 #[async_trait]
 impl SuggestionProvider for SpecProvider {
-    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
-        if max == 0 {
-            return Vec::new();
-        }
-
+    async fn suggest(
+        &self,
+        request: &ProviderRequest,
+        max: NonZeroUsize,
+    ) -> Vec<ProviderSuggestion> {
         let cwd = Path::new(&request.cwd);
         let mut completions = self.complete(&request.buffer, cwd).await;
 
@@ -347,7 +348,7 @@ impl SuggestionProvider for SpecProvider {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        completions.truncate(max);
+        completions.truncate(max.get());
         completions
     }
 

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -189,7 +190,11 @@ impl EnvironmentProvider {
     }
 
     /// Complete command names from PATH.
-    async fn complete(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+    async fn complete(
+        &self,
+        request: &ProviderRequest,
+        max: NonZeroUsize,
+    ) -> Vec<ProviderSuggestion> {
         let execs = self.cached_executables(&request.env_hints).await;
         let partial = request.partial.as_str();
         let prefix = request.prefix.as_str();
@@ -213,7 +218,7 @@ impl EnvironmentProvider {
                 kind: SuggestionKind::Command,
             });
 
-            if results.len() >= max {
+            if results.len() >= max.get() {
                 break;
             }
         }
@@ -232,11 +237,11 @@ impl EnvironmentProvider {
 
 #[async_trait]
 impl SuggestionProvider for EnvironmentProvider {
-    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
-        if max == 0 {
-            return Vec::new();
-        }
-
+    async fn suggest(
+        &self,
+        request: &ProviderRequest,
+        max: NonZeroUsize,
+    ) -> Vec<ProviderSuggestion> {
         if !Self::should_activate(request) {
             return Vec::new();
         }

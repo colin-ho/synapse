@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use strsim::levenshtein;
 use tokio::sync::RwLock;
@@ -181,9 +182,9 @@ fn collect_prefix_matches<'a>(
 }
 
 /// Sort scored tuples by score descending, truncate, and convert to suggestions.
-fn to_suggestions(mut results: Vec<(f64, &str)>, max: usize) -> Vec<ProviderSuggestion> {
+fn to_suggestions(mut results: Vec<(f64, &str)>, max: NonZeroUsize) -> Vec<ProviderSuggestion> {
     results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    results.truncate(max);
+    results.truncate(max.get());
     results
         .into_iter()
         .map(|(score, cmd)| make_suggestion(cmd, score))
@@ -227,11 +228,11 @@ fn fuzzy_matches<'a>(
 
 #[async_trait]
 impl SuggestionProvider for HistoryProvider {
-    async fn suggest(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
-        if max == 0 {
-            return Vec::new();
-        }
-
+    async fn suggest(
+        &self,
+        request: &ProviderRequest,
+        max: NonZeroUsize,
+    ) -> Vec<ProviderSuggestion> {
         let buffer = request.buffer.as_str();
         if buffer.is_empty() {
             return Vec::new();

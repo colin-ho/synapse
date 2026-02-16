@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
 // --- Requests (Zsh → Daemon) ---
 
@@ -40,7 +41,7 @@ pub struct ListSuggestionsRequest {
     pub cursor_pos: usize,
     pub cwd: String,
     #[serde(default = "default_max_results")]
-    pub max_results: usize,
+    pub max_results: NonZeroUsize,
     #[serde(default)]
     pub last_exit_code: i32,
     #[serde(default)]
@@ -49,8 +50,8 @@ pub struct ListSuggestionsRequest {
     pub env_hints: HashMap<String, String>,
 }
 
-fn default_max_results() -> usize {
-    10
+fn default_max_results() -> NonZeroUsize {
+    NonZeroUsize::new(10).unwrap()
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +205,8 @@ impl Response {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::{
         Request, Response, SuggestionItem, SuggestionKind, SuggestionListResponse,
         SuggestionResponse, SuggestionSource,
@@ -286,7 +289,7 @@ mod tests {
                 assert_eq!(ls.session_id, "abc123");
                 assert_eq!(ls.buffer, "git co");
                 assert_eq!(ls.cursor_pos, 6);
-                assert_eq!(ls.max_results, 5);
+                assert_eq!(ls.max_results, NonZeroUsize::new(5).unwrap());
             }
             _ => panic!("Expected ListSuggestions request"),
         }
@@ -299,7 +302,7 @@ mod tests {
 
         match req {
             Request::ListSuggestions(ls) => {
-                assert_eq!(ls.max_results, 10);
+                assert_eq!(ls.max_results, NonZeroUsize::new(10).unwrap());
             }
             _ => panic!("Expected ListSuggestions request"),
         }
