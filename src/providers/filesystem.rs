@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -15,6 +16,21 @@ pub struct FilesystemProvider {
 struct DirEntry {
     name: String,
     is_dir: bool,
+}
+
+#[derive(Debug)]
+struct PathQuery {
+    search_dir: PathBuf,
+    typed_dir_part: String,
+    file_prefix: String,
+    include_hidden: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QuoteMode {
+    None,
+    Single,
+    Double,
 }
 
 impl Default for FilesystemProvider {
@@ -41,87 +57,267 @@ impl FilesystemProvider {
         ) || matches!(ctx.position, Position::Redirect)
     }
 
+    fn resolve_dir_input(input: &str, cwd: &Path) -> PathBuf {
+        let trimmed = input.trim_end_matches('/');
+
+        if trimmed.is_empty() {
+            return cwd.to_path_buf();
+        }
+
+        if trimmed == "~" {
+            if let Some(home) = dirs::home_dir() {
+                return home;
+            }
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("~/") {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(rest);
+            }
+        }
+
+        let path = Path::new(trimmed);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        }
+    }
+
+    fn parse_path_query(partial: &str, cwd: &Path) -> PathQuery {
+        if partial.is_empty() {
+            return PathQuery {
+                search_dir: cwd.to_path_buf(),
+                typed_dir_part: String::new(),
+                file_prefix: String::new(),
+                include_hidden: false,
+            };
+        }
+
+        let (typed_dir_part, file_prefix) = if partial.ends_with('/') {
+            (partial.to_string(), String::new())
+        } else if let Some(idx) = partial.rfind('/') {
+            (partial[..=idx].to_string(), partial[idx + 1..].to_string())
+        } else {
+            (String::new(), partial.to_string())
+        };
+
+        let search_dir = if typed_dir_part.is_empty() {
+            cwd.to_path_buf()
+        } else {
+            Self::resolve_dir_input(&typed_dir_part, cwd)
+        };
+
+        PathQuery {
+            search_dir,
+            typed_dir_part,
+            include_hidden: file_prefix.starts_with('.'),
+            file_prefix,
+        }
+    }
+
+    fn quote_mode_for_buffer(buffer: &str) -> QuoteMode {
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut escaped = false;
+
+        for ch in buffer.chars() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            if ch == '\\' && !in_single {
+                escaped = true;
+                continue;
+            }
+            if ch == '\'' && !in_double {
+                in_single = !in_single;
+                continue;
+            }
+            if ch == '"' && !in_single {
+                in_double = !in_double;
+                continue;
+            }
+        }
+
+        if in_single {
+            QuoteMode::Single
+        } else if in_double {
+            QuoteMode::Double
+        } else {
+            QuoteMode::None
+        }
+    }
+
+    fn should_escape_unquoted_char(ch: char) -> bool {
+        ch.is_ascii_whitespace()
+            || matches!(
+                ch,
+                '\\' | '"'
+                    | '\''
+                    | '$'
+                    | '`'
+                    | '&'
+                    | '|'
+                    | ';'
+                    | '<'
+                    | '>'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '*'
+                    | '?'
+                    | '!'
+                    | '#'
+            )
+    }
+
+    fn escape_suffix(suffix: &str, mode: QuoteMode) -> String {
+        let mut out = String::with_capacity(suffix.len());
+
+        match mode {
+            QuoteMode::None => {
+                for ch in suffix.chars() {
+                    if Self::should_escape_unquoted_char(ch) {
+                        out.push('\\');
+                    }
+                    out.push(ch);
+                }
+            }
+            QuoteMode::Double => {
+                for ch in suffix.chars() {
+                    if matches!(ch, '\\' | '"' | '$' | '`') {
+                        out.push('\\');
+                    }
+                    out.push(ch);
+                }
+            }
+            QuoteMode::Single => {
+                for ch in suffix.chars() {
+                    if ch == '\'' {
+                        out.push_str("'\\''");
+                        continue;
+                    }
+                    out.push(ch);
+                }
+            }
+        }
+
+        out
+    }
+
+    fn render_suggestion_text(
+        buffer: &str,
+        logical_partial: &str,
+        logical_completed: &str,
+    ) -> String {
+        debug_assert!(
+            logical_completed.starts_with(logical_partial),
+            "logical completion must extend the typed partial"
+        );
+
+        let Some(suffix) = logical_completed.strip_prefix(logical_partial) else {
+            return buffer.to_string();
+        };
+        if !suffix.is_empty() {
+            let rendered_suffix = Self::escape_suffix(suffix, Self::quote_mode_for_buffer(buffer));
+            return format!("{buffer}{rendered_suffix}");
+        }
+
+        buffer.to_string()
+    }
+
+    fn read_dir_entries(dir: &Path) -> Vec<DirEntry> {
+        let mut entries = match std::fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                    DirEntry { name, is_dir }
+                })
+                .collect::<Vec<_>>(),
+            Err(err) => {
+                tracing::debug!(
+                    path = %dir.display(),
+                    "FilesystemProvider: failed to read directory: {err}"
+                );
+                Vec::new()
+            }
+        };
+
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    }
+
     /// List directory entries, using cache.
     async fn list_dir(&self, dir: &Path) -> Vec<DirEntry> {
-        if let Some(cached) = self.dir_cache.get(&dir.to_path_buf()).await {
+        let key = dir.to_path_buf();
+        if let Some(cached) = self.dir_cache.get(&key).await {
             return cached;
         }
 
-        let entries = match std::fs::read_dir(dir) {
-            Ok(rd) => rd
-                .filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    // Skip hidden files
-                    if name.starts_with('.') {
-                        return None;
-                    }
-                    let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                    Some(DirEntry { name, is_dir })
-                })
-                .collect(),
-            Err(_) => Vec::new(),
-        };
+        let read_path = key.clone();
+        let entries =
+            match tokio::task::spawn_blocking(move || Self::read_dir_entries(&read_path)).await {
+                Ok(entries) => entries,
+                Err(err) => {
+                    tracing::debug!(
+                        path = %key.display(),
+                        "FilesystemProvider: directory task failed: {err}"
+                    );
+                    Vec::new()
+                }
+            };
 
-        self.dir_cache
-            .insert(dir.to_path_buf(), entries.clone())
-            .await;
+        self.dir_cache.insert(key, entries.clone()).await;
         entries
     }
 
     /// Complete file/directory paths given the partial and cwd.
     async fn complete(&self, ctx: &CompletionContext, cwd: &Path) -> Vec<ProviderSuggestion> {
-        let partial = &ctx.partial;
         let dirs_only = matches!(ctx.expected_type, ExpectedType::Directory);
+        let path_query = Self::parse_path_query(&ctx.partial, cwd);
 
-        // Parse partial into directory prefix and filename prefix
-        let (search_dir, file_prefix) = if partial.contains('/') {
-            let path = Path::new(partial);
-            let parent = path.parent().unwrap_or(Path::new(""));
-            let fname = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            let resolved = if parent.is_absolute() {
-                parent.to_path_buf()
-            } else {
-                cwd.join(parent)
-            };
-            (resolved, fname)
-        } else {
-            (cwd.to_path_buf(), partial.clone())
-        };
-
-        let entries = self.list_dir(&search_dir).await;
+        let entries = self.list_dir(&path_query.search_dir).await;
 
         let mut results = Vec::new();
         for entry in &entries {
+            if !path_query.include_hidden && entry.name.starts_with('.') {
+                continue;
+            }
             if dirs_only && !entry.is_dir {
                 continue;
             }
-            if !file_prefix.is_empty() && !entry.name.starts_with(&file_prefix) {
+            if !path_query.file_prefix.is_empty()
+                && !entry.name.starts_with(&path_query.file_prefix)
+            {
                 continue;
             }
 
-            // Build the completion text: prefix + dir_part + name
-            let dir_part = if partial.contains('/') {
-                let idx = partial.rfind('/').unwrap();
-                &partial[..=idx]
-            } else {
-                ""
-            };
-
             let suffix = if entry.is_dir { "/" } else { "" };
-            let completed = format!("{}{}{}{}", ctx.prefix, dir_part, entry.name, suffix);
+            let logical_completed =
+                format!("{}{}{}", path_query.typed_dir_part, entry.name, suffix);
+            let completed =
+                Self::render_suggestion_text(&ctx.buffer, &ctx.partial, &logical_completed);
 
-            // Score: base 0.5 + specificity bonus for longer prefix matches
-            let specificity = if file_prefix.is_empty() {
+            let specificity = if path_query.file_prefix.is_empty() {
                 0.0
             } else {
-                0.1 * (file_prefix.len() as f64 / entry.name.len() as f64).min(1.0)
+                path_query.file_prefix.len() as f64 / entry.name.len().max(1) as f64
             };
-            let score = (0.5 + specificity).clamp(0.0, 1.0);
+            let dir_bonus = if entry.is_dir { 0.02 } else { 0.0 };
+            let exact_bonus =
+                if !path_query.file_prefix.is_empty() && path_query.file_prefix == entry.name {
+                    0.04
+                } else {
+                    0.0
+                };
+            let score = (0.5 + 0.12 * specificity + dir_bonus + exact_bonus).clamp(0.0, 1.0);
 
             let kind = SuggestionKind::File;
 
@@ -155,7 +351,8 @@ impl SuggestionProvider for FilesystemProvider {
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.text.cmp(&b.text))
         });
         results.truncate(max);
         results
