@@ -1,6 +1,7 @@
 pub mod environment;
 pub mod filesystem;
 pub mod history;
+pub mod llm_argument;
 pub mod spec;
 
 use std::num::NonZeroUsize;
@@ -138,4 +139,5 @@ pub enum Provider {
     Spec(Arc<spec::SpecProvider>),
     Filesystem(Arc<filesystem::FilesystemProvider>),
     Environment(Arc<environment::EnvironmentProvider>),
+    LlmArgument(Arc<llm_argument::LlmArgumentProvider>),
 }

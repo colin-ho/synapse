@@ -16,6 +16,7 @@ pub(super) type SharedWriter =
 
 pub(super) struct RuntimeState {
     pub(super) providers: Vec<Provider>,
+    pub(super) phase2_providers: Vec<Provider>,
     pub(super) spec_store: Arc<SpecStore>,
     pub(super) ranker: Ranker,
     pub(super) workflow_predictor: WorkflowPredictor,
@@ -28,6 +29,7 @@ impl RuntimeState {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         providers: Vec<Provider>,
+        phase2_providers: Vec<Provider>,
         spec_store: Arc<SpecStore>,
         ranker: Ranker,
         workflow_predictor: WorkflowPredictor,
@@ -37,6 +39,7 @@ impl RuntimeState {
     ) -> Self {
         Self {
             providers,
+            phase2_providers,
             spec_store,
             ranker,
             workflow_predictor,
