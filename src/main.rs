@@ -2,6 +2,7 @@ mod cache;
 mod completion_context;
 mod config;
 mod logging;
+mod project;
 mod protocol;
 mod providers;
 mod ranking;

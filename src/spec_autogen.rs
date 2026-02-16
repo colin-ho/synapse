@@ -1,7 +1,4 @@
-use std::collections::BTreeMap;
 use std::path::Path;
-
-use serde::Deserialize;
 
 use crate::spec::{ArgSpec, CommandSpec, OptionSpec, SubcommandSpec};
 
@@ -9,55 +6,44 @@ use crate::spec::{ArgSpec, CommandSpec, OptionSpec, SubcommandSpec};
 pub fn generate_specs(root: &Path) -> Vec<CommandSpec> {
     let mut specs = Vec::new();
 
-    if let Some(spec) = generate_makefile_spec(root) {
-        specs.push(spec);
+    let make_targets = crate::project::parse_makefile_targets(root);
+    if !make_targets.is_empty() {
+        specs.push(make_spec(make_targets));
     }
-    if let Some(spec) = generate_package_json_spec(root) {
-        specs.push(spec);
+
+    if let Some(scripts) = crate::project::parse_npm_scripts(root) {
+        let manager = crate::project::detect_package_manager(root);
+        specs.push(package_json_spec(manager, scripts));
     }
-    if let Some(spec) = generate_cargo_spec(root) {
-        specs.push(spec);
+
+    if let Some((is_workspace, has_bin_targets)) = crate::project::parse_cargo_info(root) {
+        specs.push(cargo_spec(is_workspace, has_bin_targets));
     }
-    if let Some(spec) = generate_docker_compose_spec(root) {
-        specs.push(spec);
+
+    if let Some(services) = crate::project::parse_docker_services(root) {
+        specs.push(docker_compose_spec(services));
     }
-    if let Some(spec) = generate_justfile_spec(root) {
-        specs.push(spec);
+
+    let just_recipes = crate::project::parse_justfile_recipes(root);
+    if !just_recipes.is_empty() {
+        specs.push(justfile_spec(just_recipes));
     }
+
+    // Python: no structured spec yet
 
     specs
 }
 
-fn generate_makefile_spec(root: &Path) -> Option<CommandSpec> {
-    let path = root.join("Makefile");
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut subcommands = Vec::new();
+fn make_spec(targets: Vec<String>) -> CommandSpec {
+    let subcommands = targets
+        .into_iter()
+        .map(|name| SubcommandSpec {
+            name,
+            ..Default::default()
+        })
+        .collect();
 
-    for line in content.lines() {
-        if let Some(target) = line.split(':').next() {
-            let target = target.trim();
-            if !target.is_empty()
-                && !target.starts_with('#')
-                && !target.starts_with('.')
-                && !target.starts_with('\t')
-                && !target.contains(' ')
-                && !target.contains('$')
-                && !target.contains('=')
-            {
-                subcommands.push(SubcommandSpec {
-                    name: target.to_string(),
-                    description: None,
-                    ..Default::default()
-                });
-            }
-        }
-    }
-
-    if subcommands.is_empty() {
-        return None;
-    }
-
-    Some(CommandSpec {
+    CommandSpec {
         name: "make".to_string(),
         subcommands,
         options: vec![
@@ -76,116 +62,56 @@ fn generate_makefile_spec(root: &Path) -> Option<CommandSpec> {
             },
         ],
         ..Default::default()
-    })
+    }
 }
 
-fn generate_package_json_spec(root: &Path) -> Option<CommandSpec> {
-    let path = root.join("package.json");
-    let content = std::fs::read_to_string(path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let scripts = json.get("scripts")?.as_object()?;
+fn package_json_spec(manager: &str, scripts: Vec<(String, Option<String>)>) -> CommandSpec {
+    let script_subcmds: Vec<SubcommandSpec> = scripts
+        .into_iter()
+        .map(|(name, description)| SubcommandSpec {
+            name,
+            description,
+            ..Default::default()
+        })
+        .collect();
 
-    if scripts.is_empty() {
-        return None;
-    }
-
-    // Detect package manager
-    let pm = if root.join("pnpm-lock.yaml").exists() {
-        "pnpm"
-    } else if root.join("yarn.lock").exists() {
-        "yarn"
-    } else if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
-        "bun"
-    } else {
-        "npm"
-    };
-
-    let mut subcommands = Vec::new();
-
-    if pm == "npm" {
-        // For npm, scripts go under a "run" subcommand
-        let script_subcmds: Vec<SubcommandSpec> = scripts
-            .keys()
-            .map(|name| SubcommandSpec {
-                name: name.clone(),
-                description: scripts.get(name).and_then(|v| v.as_str()).map(String::from),
-                ..Default::default()
-            })
-            .collect();
-
-        subcommands.push(SubcommandSpec {
+    let subcommands = if manager == "npm" {
+        vec![SubcommandSpec {
             name: "run".to_string(),
             description: Some("Run a script".into()),
             subcommands: script_subcmds,
             ..Default::default()
-        });
+        }]
     } else {
-        // For pnpm/yarn/bun, scripts are direct subcommands
-        for name in scripts.keys() {
-            subcommands.push(SubcommandSpec {
-                name: name.clone(),
-                description: scripts.get(name).and_then(|v| v.as_str()).map(String::from),
-                ..Default::default()
-            });
-        }
-    }
+        script_subcmds
+    };
 
-    Some(CommandSpec {
-        name: pm.to_string(),
+    CommandSpec {
+        name: manager.to_string(),
         subcommands,
         ..Default::default()
-    })
+    }
 }
 
-fn generate_cargo_spec(root: &Path) -> Option<CommandSpec> {
-    let path = root.join("Cargo.toml");
-    if !path.exists() {
-        return None;
-    }
+fn cargo_spec(is_workspace: bool, has_bin_targets: bool) -> CommandSpec {
+    let mut subcommands: Vec<SubcommandSpec> = [
+        ("build", vec!["b"], "Compile the current package"),
+        ("test", vec!["t"], "Run tests"),
+        ("run", vec!["r"], "Run a binary"),
+        ("check", vec!["c"], "Analyze without building"),
+        ("clippy", vec![], "Run Clippy lints"),
+        ("fmt", vec![], "Format code"),
+    ]
+    .into_iter()
+    .map(|(name, aliases, desc)| SubcommandSpec {
+        name: name.into(),
+        aliases: aliases.into_iter().map(String::from).collect(),
+        description: Some(desc.into()),
+        ..Default::default()
+    })
+    .collect();
 
-    let manifest = parse_cargo_manifest(&path);
-    let mut subcommands = vec![
-        SubcommandSpec {
-            name: "build".into(),
-            aliases: vec!["b".into()],
-            description: Some("Compile the current package".into()),
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "test".into(),
-            aliases: vec!["t".into()],
-            description: Some("Run tests".into()),
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "run".into(),
-            aliases: vec!["r".into()],
-            description: Some("Run a binary".into()),
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "check".into(),
-            aliases: vec!["c".into()],
-            description: Some("Analyze without building".into()),
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "clippy".into(),
-            description: Some("Run Clippy lints".into()),
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "fmt".into(),
-            description: Some("Format code".into()),
-            ..Default::default()
-        },
-    ];
-
-    if manifest
-        .as_ref()
-        .is_some_and(|manifest| manifest.workspace.is_some())
-    {
-        // Add workspace-specific options to build/test/check
+    if is_workspace {
         for sub in &mut subcommands {
             if matches!(sub.name.as_str(), "build" | "test" | "check") {
                 sub.options.push(OptionSpec {
@@ -197,11 +123,7 @@ fn generate_cargo_spec(root: &Path) -> Option<CommandSpec> {
         }
     }
 
-    // Add --bin support if explicit [[bin]] targets exist.
-    if manifest
-        .as_ref()
-        .is_some_and(|manifest| !manifest.bin.is_empty())
-    {
+    if has_bin_targets {
         for sub in &mut subcommands {
             if sub.name == "run" {
                 sub.options.push(OptionSpec {
@@ -214,28 +136,14 @@ fn generate_cargo_spec(root: &Path) -> Option<CommandSpec> {
         }
     }
 
-    Some(CommandSpec {
+    CommandSpec {
         name: "cargo".to_string(),
         subcommands,
         ..Default::default()
-    })
+    }
 }
 
-fn generate_docker_compose_spec(root: &Path) -> Option<CommandSpec> {
-    let compose_path = [
-        "docker-compose.yml",
-        "docker-compose.yaml",
-        "compose.yml",
-        "compose.yaml",
-    ]
-    .iter()
-    .map(|f| root.join(f))
-    .find(|p| p.exists())?;
-
-    let content = std::fs::read_to_string(compose_path).ok()?;
-
-    let services = parse_compose_services(&content);
-
+fn docker_compose_spec(services: Vec<String>) -> CommandSpec {
     let service_args = if services.is_empty() {
         Vec::new()
     } else {
@@ -303,7 +211,7 @@ fn generate_docker_compose_spec(root: &Path) -> Option<CommandSpec> {
         },
     ];
 
-    Some(CommandSpec {
+    CommandSpec {
         name: "docker".to_string(),
         description: Some("Docker Compose (project-local)".into()),
         subcommands: vec![SubcommandSpec {
@@ -312,68 +220,21 @@ fn generate_docker_compose_spec(root: &Path) -> Option<CommandSpec> {
             ..Default::default()
         }],
         ..Default::default()
-    })
+    }
 }
 
-fn generate_justfile_spec(root: &Path) -> Option<CommandSpec> {
-    let path = if root.join("Justfile").exists() {
-        root.join("Justfile")
-    } else if root.join("justfile").exists() {
-        root.join("justfile")
-    } else {
-        return None;
-    };
+fn justfile_spec(recipes: Vec<String>) -> CommandSpec {
+    let subcommands = recipes
+        .into_iter()
+        .map(|name| SubcommandSpec {
+            name,
+            ..Default::default()
+        })
+        .collect();
 
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut subcommands = Vec::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty()
-            && !trimmed.starts_with('#')
-            && !trimmed.starts_with(' ')
-            && !trimmed.starts_with('\t')
-            && !trimmed.starts_with("set ")
-            && !trimmed.starts_with("export ")
-            && !trimmed.starts_with("alias ")
-        {
-            if let Some(name) = trimmed.split(':').next() {
-                let name = name.split_whitespace().next().unwrap_or(name).trim();
-                if !name.is_empty() && !name.contains('=') {
-                    subcommands.push(SubcommandSpec {
-                        name: name.to_string(),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-    }
-
-    if subcommands.is_empty() {
-        return None;
-    }
-
-    Some(CommandSpec {
+    CommandSpec {
         name: "just".to_string(),
         subcommands,
         ..Default::default()
-    })
-}
-
-fn parse_cargo_manifest(path: &Path) -> Option<cargo_toml::Manifest> {
-    let content = std::fs::read_to_string(path).ok()?;
-    cargo_toml::Manifest::from_slice(content.as_bytes()).ok()
-}
-
-#[derive(Debug, Deserialize)]
-struct ComposeFile {
-    #[serde(default)]
-    services: BTreeMap<String, serde_yml::Value>,
-}
-
-fn parse_compose_services(content: &str) -> Vec<String> {
-    serde_yml::from_str::<ComposeFile>(content)
-        .ok()
-        .map(|compose| compose.services.into_keys().collect())
-        .unwrap_or_default()
+    }
 }

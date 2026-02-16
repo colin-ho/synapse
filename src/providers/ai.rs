@@ -9,7 +9,6 @@ use tokio::sync::Semaphore;
 use crate::cache::AiCacheKey;
 use crate::config::AiConfig;
 use crate::protocol::{SuggestionKind, SuggestionSource};
-use crate::providers::context::ContextProvider;
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 use crate::security::Scrubber;
 
@@ -297,8 +296,10 @@ impl SuggestionProvider for AiProvider {
 
         // Determine project context
         let cwd = std::path::Path::new(&request.cwd);
-        let project_type = ContextProvider::project_type_for(cwd);
-        let git_branch = crate::providers::context::read_git_branch_for_path(cwd);
+        let project_root = crate::project::find_project_root(cwd, 3);
+        let root = project_root.as_deref().unwrap_or(cwd);
+        let project_type = crate::project::detect_project_type(root);
+        let git_branch = crate::project::read_git_branch_for_path(root);
 
         // Check cache first
         let key = self.cache_key(request, project_type.clone(), git_branch.clone());
