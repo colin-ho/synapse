@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use crate::config::SpecConfig;
 use crate::protocol::SuggestRequest;
@@ -32,8 +33,17 @@ pub async fn make_provider_request_with_env(
         env_hints,
         ..request
     };
-    let store = SpecStore::new(SpecConfig::default());
-    ProviderRequest::from_suggest_request(&request, &store).await
+    let store = Arc::new(SpecStore::new(SpecConfig::default()));
+    ProviderRequest::from_suggest_request(&request, store).await
+}
+
+pub async fn make_provider_request_with_store(
+    buffer: &str,
+    cwd: &str,
+    store: Arc<SpecStore>,
+) -> ProviderRequest {
+    let request = make_suggest_request(buffer, cwd);
+    ProviderRequest::from_suggest_request(&request, store).await
 }
 
 pub fn limit(n: usize) -> NonZeroUsize {
