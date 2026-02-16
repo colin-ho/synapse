@@ -68,6 +68,7 @@ impl WorkflowPredictor {
 
     /// Predict the next commands based on the previous command.
     /// Returns up to `max` predictions with normalized probabilities.
+    #[allow(dead_code)]
     pub async fn predict(&self, previous: &str, max: usize) -> Vec<(String, f64)> {
         let prev_norm = normalize_command(previous);
         if prev_norm.is_empty() {

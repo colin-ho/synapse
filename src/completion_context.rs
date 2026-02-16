@@ -26,6 +26,7 @@ pub enum Position {
 
 /// What kind of value is expected at the current position.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ExpectedType {
     Any,
     FilePath,
@@ -46,6 +47,7 @@ pub struct CompletionContext {
     /// Tokenized buffer (words only, no operators)
     pub tokens: Vec<String>,
     /// Whether the buffer ends with a space
+    #[allow(dead_code)]
     pub trailing_space: bool,
     /// The partial word being typed (last token if no trailing space, empty if trailing space)
     pub partial: String,
@@ -60,6 +62,7 @@ pub struct CompletionContext {
     /// The subcommand path walked (e.g. ["checkout"] for `git checkout`)
     pub subcommand_path: Vec<String>,
     /// Options already present in the buffer
+    #[allow(dead_code)]
     pub present_options: Vec<String>,
 }
 

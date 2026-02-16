@@ -79,6 +79,7 @@ pub struct OptionSpec {
     #[serde(default)]
     pub arg_generator: Option<GeneratorSpec>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub exclusive_with: Vec<String>,
 }
 
