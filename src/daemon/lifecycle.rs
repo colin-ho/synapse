@@ -6,7 +6,6 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::logging::InteractionLogger;
-use crate::providers::context::ContextProvider;
 use crate::providers::environment::EnvironmentProvider;
 use crate::providers::filesystem::FilesystemProvider;
 use crate::providers::history::HistoryProvider;
@@ -159,8 +158,6 @@ pub(super) async fn start_daemon(
     let history_provider = HistoryProvider::new(config.history.clone());
     history_provider.load_history().await;
 
-    let context_provider = ContextProvider::new(config.context.clone());
-
     // Init spec system
     let spec_store = Arc::new(SpecStore::new(config.spec.clone()));
     let spec_provider = SpecProvider::new(spec_store.clone());
@@ -172,7 +169,6 @@ pub(super) async fn start_daemon(
 
     let providers = vec![
         Provider::History(Arc::new(history_provider)),
-        Provider::Context(Arc::new(context_provider)),
         Provider::Spec(Arc::new(spec_provider)),
         Provider::Filesystem(Arc::new(filesystem_provider)),
         Provider::Environment(Arc::new(environment_provider)),

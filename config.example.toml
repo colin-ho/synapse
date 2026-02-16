@@ -13,8 +13,10 @@ max_entries = 50000
 fuzzy = true                            # enable fuzzy matching when prefix fails
 
 [context]
+# Deprecated: context provider has been merged into the spec provider.
+# This section is kept for backward compatibility and has no effect.
 enabled = true
-scan_depth = 3                          # max levels to walk up (ignored inside git repos)
+scan_depth = 3
 
 [spec]
 enabled = true
@@ -22,12 +24,12 @@ auto_generate = true                   # auto-generate specs from project files
 generator_timeout_ms = 500             # max time for generator commands
 max_list_results = 10                  # max items in dropdown list
 trust_project_generators = false       # allow .synapse/specs/ generators to run shell commands
+scan_depth = 3                         # max levels to walk up for project files (ignored inside git repos)
 
 [weights]
 # Weights are normalized to sum to 1.0
 history = 0.30
-context = 0.15
-spec = 0.35
+spec = 0.50
 recency = 0.20
 
 [security]

@@ -130,7 +130,7 @@ impl SpecStore {
         let mut specs = HashMap::new();
 
         // Resolve project root so specs are found even when cwd is a subdirectory
-        let project_root = crate::project::find_project_root(cwd, 3);
+        let project_root = crate::project::find_project_root(cwd, self.config.scan_depth);
         let scan_root = project_root.as_deref().unwrap_or(cwd);
 
         // Load user-defined project specs from .synapse/specs/*.toml

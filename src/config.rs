@@ -50,13 +50,13 @@ pub struct SpecConfig {
     /// Disabled by default for security: a malicious repo could include specs with
     /// arbitrary shell commands that execute during completion.
     pub trust_project_generators: bool,
+    pub scan_depth: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WeightsConfig {
     pub history: f64,
-    pub context: f64,
     pub spec: f64,
     pub recency: f64,
 }
@@ -116,6 +116,7 @@ impl Default for SpecConfig {
             generator_timeout_ms: 500,
             max_list_results: NonZeroUsize::new(10).unwrap(),
             trust_project_generators: false,
+            scan_depth: 3,
         }
     }
 }
@@ -124,8 +125,7 @@ impl Default for WeightsConfig {
     fn default() -> Self {
         Self {
             history: 0.30,
-            context: 0.15,
-            spec: 0.35,
+            spec: 0.50,
             recency: 0.20,
         }
     }
@@ -240,13 +240,12 @@ impl Config {
 
 impl WeightsConfig {
     pub fn normalized(&self) -> WeightsConfig {
-        let sum = self.history + self.context + self.spec + self.recency;
+        let sum = self.history + self.spec + self.recency;
         if sum == 0.0 {
             return WeightsConfig::default();
         }
         WeightsConfig {
             history: self.history / sum,
-            context: self.context / sum,
             spec: self.spec / sum,
             recency: self.recency / sum,
         }
@@ -267,10 +266,8 @@ mod tests {
         assert_eq!(config.general.max_suggestion_length, 200);
         assert!(config.history.enabled);
         assert_eq!(config.history.max_entries, 50000);
-        assert!(config.context.enabled);
         assert_eq!(config.weights.history, 0.30);
-        assert_eq!(config.weights.context, 0.15);
-        assert_eq!(config.weights.spec, 0.35);
+        assert_eq!(config.weights.spec, 0.50);
         assert_eq!(config.weights.recency, 0.20);
     }
 
@@ -278,14 +275,13 @@ mod tests {
     fn test_weights_normalization() {
         let weights = WeightsConfig {
             history: 1.0,
-            context: 1.0,
             spec: 1.0,
             recency: 1.0,
         };
         let normalized = weights.normalized();
-        let sum = normalized.history + normalized.context + normalized.spec + normalized.recency;
+        let sum = normalized.history + normalized.spec + normalized.recency;
         assert!((sum - 1.0).abs() < 0.001);
-        assert!((normalized.history - 0.25).abs() < 0.001);
+        assert!((normalized.history - 0.333).abs() < 0.01);
     }
 
     #[test]

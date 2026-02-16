@@ -656,4 +656,133 @@ command = "printf '%s\n' alpha beta"
             results.len()
         );
     }
+
+    // --- Autogen: npm scripts ---
+
+    #[tokio::test]
+    async fn test_autogen_npm_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "vite", "build": "tsc && vite build", "test": "vitest"}}"#,
+        )
+        .unwrap();
+
+        let config = SpecConfig::default();
+        let store = Arc::new(SpecStore::new(config));
+        let provider = SpecProvider::new(store);
+
+        let req = make_provider_request("npm run d", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "npm run dev");
+    }
+
+    #[tokio::test]
+    async fn test_autogen_yarn_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"start": "node index.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("yarn.lock"), "").unwrap();
+
+        let config = SpecConfig::default();
+        let store = Arc::new(SpecStore::new(config));
+        let provider = SpecProvider::new(store);
+
+        let req = make_provider_request("yarn s", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "yarn start");
+    }
+
+    // --- Autogen: docker compose ---
+
+    #[tokio::test]
+    async fn test_autogen_docker_compose() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yml"),
+            "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n",
+        )
+        .unwrap();
+
+        let config = SpecConfig::default();
+        let store = Arc::new(SpecStore::new(config));
+        let provider = SpecProvider::new(store);
+
+        let req = make_provider_request("docker compose u", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(5)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "docker compose up");
+    }
+
+    // --- Autogen: justfile ---
+
+    #[tokio::test]
+    async fn test_autogen_justfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("justfile"),
+            "build:\n  cargo build\n\ntest:\n  cargo test\n",
+        )
+        .unwrap();
+
+        let config = SpecConfig::default();
+        let store = Arc::new(SpecStore::new(config));
+        let provider = SpecProvider::new(store);
+
+        let req = make_provider_request("just b", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "just build");
+    }
+
+    // --- Autogen: Python tools ---
+
+    #[tokio::test]
+    async fn test_autogen_poetry_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[tool.poetry]\nname = \"myproject\"\n",
+        )
+        .unwrap();
+
+        let config = SpecConfig::default();
+        let store = Arc::new(SpecStore::new(config));
+        let provider = SpecProvider::new(store);
+
+        let req = make_provider_request("poetry i", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "poetry install");
+    }
+
+    #[tokio::test]
+    async fn test_autogen_pytest_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"test\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join(".venv")).unwrap();
+
+        let config = SpecConfig::default();
+        let store = Arc::new(SpecStore::new(config));
+        let provider = SpecProvider::new(store);
+
+        let req = make_provider_request("pytest -", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(5)).await;
+        assert!(!result.is_empty());
+        let texts: Vec<&str> = result.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("--verbose")),
+            "Expected --verbose in suggestions, got: {:?}",
+            texts
+        );
+    }
 }
