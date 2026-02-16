@@ -25,41 +25,59 @@ pub struct ProviderSuggestion {
 }
 
 /// Unified provider input: request metadata + parsed completion context.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderRequest {
     pub session_id: String,
     pub cwd: String,
     pub recent_commands: Vec<String>,
     pub env_hints: HashMap<String, String>,
     completion: CompletionContext,
+    pub spec_store: Arc<SpecStore>,
+}
+
+impl std::fmt::Debug for ProviderRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderRequest")
+            .field("session_id", &self.session_id)
+            .field("cwd", &self.cwd)
+            .field("recent_commands", &self.recent_commands)
+            .field("env_hints", &self.env_hints)
+            .field("completion", &self.completion)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ProviderRequest {
-    pub async fn from_suggest_request(request: &SuggestRequest, store: &SpecStore) -> Self {
+    pub async fn from_suggest_request(request: &SuggestRequest, store: Arc<SpecStore>) -> Self {
         let completion =
-            CompletionContext::build(&request.buffer, Path::new(&request.cwd), store).await;
+            CompletionContext::build(&request.buffer, Path::new(&request.cwd), &store).await;
         Self {
             session_id: request.session_id.clone(),
             cwd: request.cwd.clone(),
             recent_commands: request.recent_commands.clone(),
             env_hints: request.env_hints.clone(),
             completion,
+            spec_store: store,
         }
     }
 
-    pub async fn from_list_request(request: &ListSuggestionsRequest, store: &SpecStore) -> Self {
+    pub async fn from_list_request(
+        request: &ListSuggestionsRequest,
+        store: Arc<SpecStore>,
+    ) -> Self {
         // Preserve compatibility with protocol fields that are currently unused by providers.
         let _ = request.cursor_pos;
         let _ = request.last_exit_code;
 
         let completion =
-            CompletionContext::build(&request.buffer, Path::new(&request.cwd), store).await;
+            CompletionContext::build(&request.buffer, Path::new(&request.cwd), &store).await;
         Self {
             session_id: request.session_id.clone(),
             cwd: request.cwd.clone(),
             recent_commands: request.recent_commands.clone(),
             env_hints: request.env_hints.clone(),
             completion,
+            spec_store: store,
         }
     }
 

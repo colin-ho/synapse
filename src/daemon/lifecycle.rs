@@ -160,7 +160,7 @@ pub(super) async fn start_daemon(
 
     // Init spec system
     let spec_store = Arc::new(SpecStore::new(config.spec.clone()));
-    let spec_provider = SpecProvider::new(spec_store.clone());
+    let spec_provider = SpecProvider::new();
 
     // Init filesystem and environment providers
     let filesystem_provider = FilesystemProvider::new();

@@ -1,6 +1,5 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -10,18 +9,22 @@ use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 use crate::spec::{ArgSpec, ArgTemplate, OptionSpec, SpecSource};
 use crate::spec_store::SpecStore;
 
-pub struct SpecProvider {
-    store: Arc<SpecStore>,
-}
+#[derive(Default)]
+pub struct SpecProvider;
 
 impl SpecProvider {
-    pub fn new(store: Arc<SpecStore>) -> Self {
-        Self { store }
+    pub fn new() -> Self {
+        Self
     }
 
     /// Generate completions based on spec tree-walk.
     /// Returns multiple suggestions sorted by relevance.
-    async fn complete(&self, buffer: &str, cwd: &Path) -> Vec<ProviderSuggestion> {
+    async fn complete(
+        &self,
+        buffer: &str,
+        cwd: &Path,
+        store: &SpecStore,
+    ) -> Vec<ProviderSuggestion> {
         if buffer.is_empty() {
             return Vec::new();
         }
@@ -35,12 +38,12 @@ impl SpecProvider {
         let command_name = &tokens[0];
 
         // Look up the root spec
-        let spec = match self.store.lookup(command_name, cwd).await {
+        let spec = match store.lookup(command_name, cwd).await {
             Some(s) => s,
             None => {
                 // If partial first token, try to complete the command name itself
                 if tokens.len() == 1 && !trailing_space {
-                    return self.complete_command_name(command_name, cwd).await;
+                    return self.complete_command_name(command_name, cwd, store).await;
                 }
                 return Vec::new();
             }
@@ -50,7 +53,7 @@ impl SpecProvider {
         if tokens.len() == 1 && !trailing_space {
             // Check if it's an exact match — if so, don't suggest the command itself
             if command_name != &spec.name && !spec.aliases.iter().any(|a| a == command_name) {
-                return self.complete_command_name(command_name, cwd).await;
+                return self.complete_command_name(command_name, cwd, store).await;
             }
             return Vec::new();
         }
@@ -200,7 +203,7 @@ impl SpecProvider {
             if let Some(ref opt_name) = last_option_name {
                 if let Some(opt) = find_option(current_options, opt_name) {
                     if let Some(ref gen) = opt.arg_generator {
-                        let gen_results = self.store.run_generator(gen, cwd, spec.source).await;
+                        let gen_results = store.run_generator(gen, cwd, spec.source).await;
                         for item in gen_results {
                             if item.starts_with(partial) {
                                 let similarity = if partial.is_empty() {
@@ -226,7 +229,7 @@ impl SpecProvider {
         if !partial.starts_with('-') && !skip_next {
             for arg in current_args {
                 let mut arg_suggestions = self
-                    .resolve_arg_completions(arg, partial, cwd, spec.source)
+                    .resolve_arg_completions(arg, partial, cwd, spec.source, store)
                     .await;
                 for s in &mut arg_suggestions {
                     s.text = format!("{}{}", prefix, s.text);
@@ -238,8 +241,13 @@ impl SpecProvider {
         suggestions
     }
 
-    async fn complete_command_name(&self, partial: &str, cwd: &Path) -> Vec<ProviderSuggestion> {
-        let all_names = self.store.all_command_names(cwd).await;
+    async fn complete_command_name(
+        &self,
+        partial: &str,
+        cwd: &Path,
+        store: &SpecStore,
+    ) -> Vec<ProviderSuggestion> {
+        let all_names = store.all_command_names(cwd).await;
         all_names
             .into_iter()
             .filter(|name| name.starts_with(partial) && name != partial)
@@ -262,6 +270,7 @@ impl SpecProvider {
         partial: &str,
         cwd: &Path,
         source: SpecSource,
+        store: &SpecStore,
     ) -> Vec<ProviderSuggestion> {
         let mut results = Vec::new();
 
@@ -280,7 +289,7 @@ impl SpecProvider {
 
         // Generator
         if let Some(generator) = &arg.generator {
-            let gen_results = self.store.run_generator(generator, cwd, source).await;
+            let gen_results = store.run_generator(generator, cwd, source).await;
             for item in gen_results {
                 if item.starts_with(partial) {
                     let similarity = if partial.is_empty() {
@@ -337,7 +346,9 @@ impl SuggestionProvider for SpecProvider {
         max: NonZeroUsize,
     ) -> Vec<ProviderSuggestion> {
         let cwd = Path::new(&request.cwd);
-        let mut completions = self.complete(&request.buffer, cwd).await;
+        let mut completions = self
+            .complete(&request.buffer, cwd, &request.spec_store)
+            .await;
 
         // Filter out empty text entries and entries matching the buffer exactly
         completions.retain(|s| !s.text.is_empty() && s.text != request.buffer);
@@ -375,14 +386,12 @@ mod tests {
     use crate::protocol::{SuggestionKind, SuggestionSource};
     use crate::providers::SuggestionProvider;
     use crate::spec_store::SpecStore;
-    use crate::test_helpers::{limit, make_provider_request};
+    use crate::test_helpers::{limit, make_provider_request, make_provider_request_with_store};
 
     use super::SpecProvider;
 
     fn make_spec_provider() -> SpecProvider {
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        SpecProvider::new(store)
+        SpecProvider::new()
     }
 
     // --- Builtin spec loading ---
@@ -537,9 +546,14 @@ command = "printf '%s\n' alpha beta"
             ..SpecConfig::default()
         };
         let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = SpecProvider::new();
 
-        let req = make_provider_request("tool --profile a", dir.path().to_str().unwrap()).await;
+        let req = make_provider_request_with_store(
+            "tool --profile a",
+            dir.path().to_str().unwrap(),
+            store,
+        )
+        .await;
         let results = provider.suggest(&req, limit(10)).await;
         let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
         assert!(
@@ -584,9 +598,7 @@ command = "printf '%s\n' alpha beta"
         )
         .unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("cargo b", dir.path().to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(1)).await;
@@ -603,9 +615,7 @@ command = "printf '%s\n' alpha beta"
         )
         .unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("make d", dir.path().to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(1)).await;
@@ -628,9 +638,7 @@ command = "printf '%s\n' alpha beta"
         let nested = dir.path().join("src").join("providers");
         std::fs::create_dir_all(&nested).unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("cargo b", nested.to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(1)).await;
@@ -668,9 +676,7 @@ command = "printf '%s\n' alpha beta"
         )
         .unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("npm run d", dir.path().to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(1)).await;
@@ -688,9 +694,7 @@ command = "printf '%s\n' alpha beta"
         .unwrap();
         std::fs::write(dir.path().join("yarn.lock"), "").unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("yarn s", dir.path().to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(1)).await;
@@ -709,9 +713,7 @@ command = "printf '%s\n' alpha beta"
         )
         .unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("docker compose u", dir.path().to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(5)).await;
@@ -730,9 +732,7 @@ command = "printf '%s\n' alpha beta"
         )
         .unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("just b", dir.path().to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(1)).await;
@@ -751,9 +751,7 @@ command = "printf '%s\n' alpha beta"
         )
         .unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("poetry i", dir.path().to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(1)).await;
@@ -771,9 +769,7 @@ command = "printf '%s\n' alpha beta"
         .unwrap();
         std::fs::create_dir(dir.path().join(".venv")).unwrap();
 
-        let config = SpecConfig::default();
-        let store = Arc::new(SpecStore::new(config));
-        let provider = SpecProvider::new(store);
+        let provider = make_spec_provider();
 
         let req = make_provider_request("pytest -", dir.path().to_str().unwrap()).await;
         let result = provider.suggest(&req, limit(5)).await;
