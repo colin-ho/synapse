@@ -31,7 +31,7 @@ use crate::providers::environment::EnvironmentProvider;
 use crate::providers::filesystem::FilesystemProvider;
 use crate::providers::history::HistoryProvider;
 use crate::providers::spec::SpecProvider;
-use crate::providers::{ProviderRequest, SuggestionProvider};
+use crate::providers::{Provider, ProviderRequest, SuggestionProvider};
 use crate::ranking::Ranker;
 use crate::security::Scrubber;
 use crate::session::SessionManager;
@@ -428,10 +428,10 @@ async fn start_daemon(
     tracing::info!("Listening on {}", socket_path.display());
 
     // Init components
-    let history_provider = Arc::new(HistoryProvider::new(config.history.clone()));
+    let history_provider = HistoryProvider::new(config.history.clone());
     history_provider.load_history().await;
 
-    let context_provider = Arc::new(ContextProvider::new(config.context.clone()));
+    let context_provider = ContextProvider::new(config.context.clone());
 
     // Set up scrubber for external AI providers
     let scrubber = if config.ai.provider != "ollama" {
@@ -439,16 +439,25 @@ async fn start_daemon(
     } else {
         None
     };
-    let ai_provider = Arc::new(AiProvider::new(config.ai.clone(), scrubber));
+    let ai_provider = AiProvider::new(config.ai.clone(), scrubber);
 
     // Init spec system
     let spec_store = Arc::new(SpecStore::new(config.spec.clone()));
-    let spec_provider = Arc::new(SpecProvider::new(spec_store));
+    let spec_provider = SpecProvider::new(spec_store.clone());
 
     // Init filesystem and environment providers
-    let filesystem_provider = Arc::new(FilesystemProvider::new());
-    let environment_provider = Arc::new(EnvironmentProvider::new());
+    let filesystem_provider = FilesystemProvider::new();
+    let environment_provider = EnvironmentProvider::new();
     environment_provider.scan_path().await;
+
+    let providers = Arc::new(vec![
+        Provider::History(Arc::new(history_provider)),
+        Provider::Context(Arc::new(context_provider)),
+        Provider::Spec(Arc::new(spec_provider)),
+        Provider::Filesystem(Arc::new(filesystem_provider)),
+        Provider::Environment(Arc::new(environment_provider)),
+        Provider::Ai(Arc::new(ai_provider)),
+    ]);
 
     let ranker = Arc::new(Ranker::new(config.weights.clone()));
     let workflow_predictor = Arc::new(WorkflowPredictor::new());
@@ -464,12 +473,8 @@ async fn start_daemon(
     // Main loop
     let result = run_server(
         listener,
-        history_provider,
-        context_provider,
-        ai_provider,
-        spec_provider,
-        filesystem_provider,
-        environment_provider,
+        providers,
+        spec_store,
         ranker,
         workflow_predictor,
         session_manager,
@@ -489,12 +494,8 @@ async fn start_daemon(
 #[allow(clippy::too_many_arguments)]
 async fn run_server(
     listener: UnixListener,
-    history_provider: Arc<HistoryProvider>,
-    context_provider: Arc<ContextProvider>,
-    ai_provider: Arc<AiProvider>,
-    spec_provider: Arc<SpecProvider>,
-    filesystem_provider: Arc<FilesystemProvider>,
-    environment_provider: Arc<EnvironmentProvider>,
+    providers: Arc<Vec<Provider>>,
+    spec_store: Arc<SpecStore>,
     ranker: Arc<Ranker>,
     workflow_predictor: Arc<WorkflowPredictor>,
     session_manager: SessionManager,
@@ -506,19 +507,15 @@ async fn run_server(
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, _addr)) => {
-                        let hp = history_provider.clone();
-                        let cp = context_provider.clone();
-                        let ap = ai_provider.clone();
-                        let sp = spec_provider.clone();
-                        let fp = filesystem_provider.clone();
-                        let ep = environment_provider.clone();
+                        let p = providers.clone();
+                        let ss = spec_store.clone();
                         let rk = ranker.clone();
                         let wp = workflow_predictor.clone();
                         let sm = session_manager.clone();
                         let il = interaction_logger.clone();
                         let cfg = config.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, hp, cp, ap, sp, fp, ep, rk, wp, sm, il, cfg).await {
+                            if let Err(e) = handle_connection(stream, p, ss, rk, wp, sm, il, cfg).await {
                                 tracing::debug!("Connection error: {e}");
                             }
                         });
@@ -541,12 +538,8 @@ async fn run_server(
 #[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     stream: tokio::net::UnixStream,
-    history_provider: Arc<HistoryProvider>,
-    context_provider: Arc<ContextProvider>,
-    ai_provider: Arc<AiProvider>,
-    spec_provider: Arc<SpecProvider>,
-    filesystem_provider: Arc<FilesystemProvider>,
-    environment_provider: Arc<EnvironmentProvider>,
+    providers: Arc<Vec<Provider>>,
+    spec_store: Arc<SpecStore>,
     ranker: Arc<Ranker>,
     workflow_predictor: Arc<WorkflowPredictor>,
     session_manager: SessionManager,
@@ -576,12 +569,8 @@ async fn handle_connection(
             Ok(request) => {
                 handle_request(
                     request,
-                    &history_provider,
-                    &context_provider,
-                    &ai_provider,
-                    &spec_provider,
-                    &filesystem_provider,
-                    &environment_provider,
+                    &providers,
+                    &spec_store,
                     &ranker,
                     &workflow_predictor,
                     &session_manager,
@@ -612,12 +601,8 @@ async fn handle_connection(
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
     request: Request,
-    history_provider: &Arc<HistoryProvider>,
-    context_provider: &Arc<ContextProvider>,
-    ai_provider: &Arc<AiProvider>,
-    spec_provider: &Arc<SpecProvider>,
-    filesystem_provider: &Arc<FilesystemProvider>,
-    environment_provider: &Arc<EnvironmentProvider>,
+    providers: &Arc<Vec<Provider>>,
+    spec_store: &Arc<SpecStore>,
     ranker: &Arc<Ranker>,
     workflow_predictor: &Arc<WorkflowPredictor>,
     session_manager: &SessionManager,
@@ -636,7 +621,20 @@ async fn handle_request(
             session_manager.update_from_request(&req).await;
 
             let provider_request =
-                ProviderRequest::from_suggest_request(&req, spec_provider.store()).await;
+                ProviderRequest::from_suggest_request(&req, spec_store.as_ref()).await;
+            let Some((
+                history_provider,
+                context_provider,
+                spec_provider,
+                filesystem_provider,
+                environment_provider,
+                _ai_provider,
+            )) = ordered_providers(providers)
+            else {
+                return Response::Error {
+                    message: "Provider configuration error".to_string(),
+                };
+            };
 
             // Phase 1: Immediate — query all providers concurrently
             let (history_result, context_result, spec_result, fs_result, env_result) = tokio::join!(
@@ -691,7 +689,7 @@ async fn handle_request(
 
             // Phase 2: Deferred — spawn AI provider with debounce
             if config.ai.enabled {
-                let ap = ai_provider.clone();
+                let providers = providers.clone();
                 let sm = session_manager.clone();
                 let cfg = config.clone();
                 let rk = ranker.clone();
@@ -713,7 +711,10 @@ async fn handle_request(
                     }
 
                     // Call AI provider
-                    let ai_suggestions = ap.suggest(&provider_request, 1).await;
+                    let Some((_, _, _, _, _, ai_provider)) = ordered_providers(&providers) else {
+                        return;
+                    };
+                    let ai_suggestions = ai_provider.suggest(&provider_request, 1).await;
                     let ai_ranked =
                         rk.rank(ai_suggestions, &provider_request.recent_commands, None);
                     if let Some(ai_r) = ai_ranked {
@@ -754,7 +755,20 @@ async fn handle_request(
 
             let max = req.max_results.min(config.spec.max_list_results);
             let provider_request =
-                ProviderRequest::from_list_request(&req, spec_provider.store()).await;
+                ProviderRequest::from_list_request(&req, spec_store.as_ref()).await;
+            let Some((
+                history_provider,
+                context_provider,
+                spec_provider,
+                filesystem_provider,
+                environment_provider,
+                ai_provider,
+            )) = ordered_providers(providers)
+            else {
+                return Response::Error {
+                    message: "Provider configuration error".to_string(),
+                };
+            };
 
             // Query all providers concurrently for multi-results
             // Include AI with a 200ms timeout so it doesn't block the dropdown
@@ -863,5 +877,23 @@ async fn handle_request(
             // TODO: clear caches
             Response::Ack
         }
+    }
+}
+
+fn ordered_providers(
+    providers: &[Provider],
+) -> Option<(
+    &Provider,
+    &Provider,
+    &Provider,
+    &Provider,
+    &Provider,
+    &Provider,
+)> {
+    match providers {
+        [history, context, spec, filesystem, environment, ai] => {
+            Some((history, context, spec, filesystem, environment, ai))
+        }
+        _ => None,
     }
 }
