@@ -1,18 +1,24 @@
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::completion_context::{CompletionContext, Position};
 use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
 pub struct EnvironmentProvider {
-    executables: Arc<RwLock<Vec<String>>>,
-    cache_valid_until: Arc<RwLock<Option<Instant>>>,
+    cache: RwLock<HashMap<String, CacheEntry>>,
+    refresh_lock: Mutex<()>,
+}
+
+#[derive(Clone)]
+struct CacheEntry {
+    executables: Arc<Vec<String>>,
+    valid_until: Instant,
 }
 
 impl Default for EnvironmentProvider {
@@ -24,19 +30,64 @@ impl Default for EnvironmentProvider {
 impl EnvironmentProvider {
     pub fn new() -> Self {
         Self {
-            executables: Arc::new(RwLock::new(Vec::new())),
-            cache_valid_until: Arc::new(RwLock::new(None)),
+            cache: RwLock::new(HashMap::new()),
+            refresh_lock: Mutex::new(()),
         }
     }
 
-    /// Scan all PATH directories and collect executable names.
+    /// Scan PATH directories from the daemon environment and refresh the cache.
     pub async fn scan_path(&self) {
-        let path_var = std::env::var("PATH").unwrap_or_default();
+        let env_hints = HashMap::new();
+        let dirs = Self::collect_search_dirs(&env_hints);
+        let cache_key = Self::cache_key(&dirs);
+        self.refresh_cache(cache_key, dirs).await;
+    }
+
+    fn collect_search_dirs(env_hints: &HashMap<String, String>) -> Vec<PathBuf> {
+        let path_value = env_hints
+            .get("PATH")
+            .cloned()
+            .or_else(|| std::env::var("PATH").ok())
+            .unwrap_or_default();
+
+        let mut dirs = Vec::new();
+        let mut seen_dirs = HashSet::new();
+
+        for dir in std::env::split_paths(&path_value) {
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            if seen_dirs.insert(dir.clone()) {
+                dirs.push(dir);
+            }
+        }
+
+        if let Some(virtual_env) = env_hints
+            .get("VIRTUAL_ENV")
+            .cloned()
+            .or_else(|| std::env::var("VIRTUAL_ENV").ok())
+        {
+            let bin_dir = PathBuf::from(virtual_env).join("bin");
+            if seen_dirs.insert(bin_dir.clone()) {
+                dirs.push(bin_dir);
+            }
+        }
+
+        dirs
+    }
+
+    fn cache_key(dirs: &[PathBuf]) -> String {
+        dirs.iter()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn scan_directories(dirs: &[PathBuf]) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut executables = Vec::new();
 
-        for dir in path_var.split(':') {
-            let dir_path = Path::new(dir);
+        for dir_path in dirs {
             if !dir_path.is_dir() {
                 continue;
             }
@@ -50,10 +101,20 @@ impl EnvironmentProvider {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        if let Ok(meta) = entry.metadata() {
-                            if meta.permissions().mode() & 0o111 == 0 {
-                                continue;
-                            }
+                        let Ok(meta) = entry.metadata() else {
+                            continue;
+                        };
+                        if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+                            continue;
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let Ok(file_type) = entry.file_type() else {
+                            continue;
+                        };
+                        if !file_type.is_file() {
+                            continue;
                         }
                     }
                     if seen.insert(name.clone()) {
@@ -63,22 +124,63 @@ impl EnvironmentProvider {
             }
         }
 
-        executables.sort();
+        executables.sort_unstable();
+        executables
+    }
+
+    async fn refresh_cache(&self, cache_key: String, dirs: Vec<PathBuf>) {
+        let executables = tokio::task::spawn_blocking(move || Self::scan_directories(&dirs))
+            .await
+            .unwrap_or_default();
+
         let count = executables.len();
-        *self.executables.write().await = executables;
-        *self.cache_valid_until.write().await =
-            Some(Instant::now() + std::time::Duration::from_secs(60));
+        let entry = CacheEntry {
+            executables: Arc::new(executables),
+            valid_until: Instant::now() + Duration::from_secs(60),
+        };
+
+        self.cache.write().await.insert(cache_key, entry);
         tracing::info!("Scanned PATH: {count} executables");
     }
 
-    /// Ensure cache is fresh.
-    async fn ensure_cache(&self) {
-        let valid = self.cache_valid_until.read().await;
-        if valid.is_some_and(|t| Instant::now() < t) {
+    async fn ensure_cache(&self, cache_key: &str, dirs: &[PathBuf]) {
+        let valid = self
+            .cache
+            .read()
+            .await
+            .get(cache_key)
+            .is_some_and(|entry| Instant::now() < entry.valid_until);
+
+        if valid {
             return;
         }
-        drop(valid);
-        self.scan_path().await;
+
+        let _guard = self.refresh_lock.lock().await;
+        let valid = self
+            .cache
+            .read()
+            .await
+            .get(cache_key)
+            .is_some_and(|entry| Instant::now() < entry.valid_until);
+        if valid {
+            return;
+        }
+
+        self.refresh_cache(cache_key.to_string(), dirs.to_vec())
+            .await;
+    }
+
+    async fn cached_executables(&self, env_hints: &HashMap<String, String>) -> Arc<Vec<String>> {
+        let dirs = Self::collect_search_dirs(env_hints);
+        let cache_key = Self::cache_key(&dirs);
+        self.ensure_cache(&cache_key, &dirs).await;
+
+        self.cache
+            .read()
+            .await
+            .get(&cache_key)
+            .map(|entry| entry.executables.clone())
+            .unwrap_or_default()
     }
 
     /// Check if this provider should activate for the given context.
@@ -87,9 +189,10 @@ impl EnvironmentProvider {
     }
 
     /// Complete command names from PATH.
-    async fn complete(&self, partial: &str, max: usize) -> Vec<ProviderSuggestion> {
-        self.ensure_cache().await;
-        let execs = self.executables.read().await;
+    async fn complete(&self, request: &ProviderRequest, max: usize) -> Vec<ProviderSuggestion> {
+        let execs = self.cached_executables(&request.env_hints).await;
+        let partial = request.partial.as_str();
+        let prefix = request.prefix.as_str();
 
         // Binary search for prefix start
         let start = execs.partition_point(|e| e.as_str() < partial);
@@ -103,7 +206,7 @@ impl EnvironmentProvider {
             let score = (0.4 + 0.2 * specificity).clamp(0.0, 1.0);
 
             results.push(ProviderSuggestion {
-                text: name.clone(),
+                text: format!("{prefix}{name}"),
                 source: SuggestionSource::Environment,
                 score,
                 description: None,
@@ -121,8 +224,8 @@ impl EnvironmentProvider {
     /// Check if a command name exists in PATH.
     #[allow(dead_code)]
     pub async fn command_exists(&self, name: &str) -> bool {
-        self.ensure_cache().await;
-        let execs = self.executables.read().await;
+        let env_hints = HashMap::new();
+        let execs = self.cached_executables(&env_hints).await;
         execs.binary_search_by(|e| e.as_str().cmp(name)).is_ok()
     }
 }
@@ -138,7 +241,7 @@ impl SuggestionProvider for EnvironmentProvider {
             return Vec::new();
         }
 
-        self.complete(&request.partial, max).await
+        self.complete(request, max).await
     }
 
     fn source(&self) -> SuggestionSource {
