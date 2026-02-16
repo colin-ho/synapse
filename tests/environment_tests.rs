@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -48,7 +49,7 @@ async fn test_environment_suggests_with_prefix_for_pipe_target() {
         common::make_provider_request_with_env("echo hi | synapse_p", "/tmp", env_hints).await;
     assert_eq!(req.position, Position::PipeTarget);
 
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     assert!(
         results
             .iter()
@@ -73,7 +74,7 @@ async fn test_environment_uses_path_from_env_hints() {
     let provider = EnvironmentProvider::new();
     let req = common::make_provider_request_with_env("synapse_only", "/tmp", env_hints).await;
 
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     assert!(
         results
             .iter()
@@ -107,7 +108,7 @@ async fn test_environment_includes_virtual_env_bin() {
     let provider = EnvironmentProvider::new();
     let req = common::make_provider_request_with_env("synapse_from_v", "/tmp", env_hints).await;
 
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     assert!(
         results.iter().any(|r| r.text == "synapse_from_venv"),
         "expected command from VIRTUAL_ENV/bin, got: {:?}",
@@ -131,7 +132,7 @@ async fn test_environment_ignores_non_executable_files() {
     let provider = EnvironmentProvider::new();
     let req = common::make_provider_request_with_env("synapse_exec_", "/tmp", env_hints).await;
 
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     assert!(results.iter().any(|r| r.text == "synapse_exec_ok"));
     assert!(!results.iter().any(|r| r.text == "synapse_exec_no"));
 }

@@ -1,4 +1,5 @@
 use std::fs;
+use std::num::NonZeroUsize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod common;
@@ -15,7 +16,7 @@ async fn test_filesystem_provider_trailing_slash_descends_into_directory() {
     fs::write(dir.path().join("src").join("main.rs"), "fn main() {}\n").unwrap();
 
     let req = common::make_provider_request("cat src/", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|s| s.text.as_str()).collect();
 
     assert!(
@@ -39,7 +40,9 @@ async fn test_filesystem_provider_hides_dotfiles_unless_user_types_dot_prefix() 
     fs::write(dir.path().join("app.toml"), "name = \"app\"\n").unwrap();
 
     let req_default = common::make_provider_request("cat ", dir.path().to_str().unwrap()).await;
-    let default_results = provider.suggest(&req_default, 20).await;
+    let default_results = provider
+        .suggest(&req_default, NonZeroUsize::new(20).unwrap())
+        .await;
     let default_texts: Vec<&str> = default_results.iter().map(|s| s.text.as_str()).collect();
     assert!(
         !default_texts.iter().any(|t| *t == "cat .env"),
@@ -48,7 +51,9 @@ async fn test_filesystem_provider_hides_dotfiles_unless_user_types_dot_prefix() 
     );
 
     let req_dot = common::make_provider_request("cat .", dir.path().to_str().unwrap()).await;
-    let dot_results = provider.suggest(&req_dot, 20).await;
+    let dot_results = provider
+        .suggest(&req_dot, NonZeroUsize::new(20).unwrap())
+        .await;
     let dot_texts: Vec<&str> = dot_results.iter().map(|s| s.text.as_str()).collect();
     assert!(
         dot_texts.iter().any(|t| *t == "cat .env"),
@@ -66,7 +71,7 @@ async fn test_filesystem_provider_directory_mode_filters_out_files() {
     fs::write(dir.path().join("log.txt"), "log\n").unwrap();
 
     let req = common::make_provider_request("cd l", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|s| s.text.as_str()).collect();
 
     assert!(
@@ -89,7 +94,7 @@ async fn test_filesystem_provider_supports_redirect_context() {
     fs::write(dir.path().join("output.txt"), "data\n").unwrap();
 
     let req = common::make_provider_request("echo hi > out", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|s| s.text.as_str()).collect();
 
     assert!(
@@ -110,7 +115,7 @@ async fn test_filesystem_provider_orders_results_deterministically() {
     fs::write(dir.path().join("b.txt"), "b\n").unwrap();
 
     let req = common::make_provider_request("cat ", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
 
     assert!(
         !results.is_empty(),
@@ -130,7 +135,7 @@ async fn test_filesystem_provider_escapes_spaces_for_unquoted_input() {
     fs::write(dir.path().join("My File.txt"), "x\n").unwrap();
 
     let req = common::make_provider_request("cat My", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|s| s.text.as_str()).collect();
 
     assert!(
@@ -148,7 +153,7 @@ async fn test_filesystem_provider_preserves_double_quote_context() {
     fs::write(dir.path().join("My File.txt"), "x\n").unwrap();
 
     let req = common::make_provider_request(r#"cat "My"#, dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|s| s.text.as_str()).collect();
 
     assert!(
@@ -166,7 +171,7 @@ async fn test_filesystem_provider_preserves_escaped_partial_prefix() {
     fs::write(dir.path().join("My File.txt"), "x\n").unwrap();
 
     let req = common::make_provider_request(r"cat My\ F", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|s| s.text.as_str()).collect();
 
     assert!(
@@ -193,7 +198,7 @@ async fn test_filesystem_provider_expands_tilde_paths() {
     let expected = format!("cat ~/{test_dir_name}/file.txt");
 
     let req = common::make_provider_request(&request_buffer, "/tmp").await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|s| s.text.as_str()).collect();
 
     let _ = fs::remove_dir_all(&test_dir);

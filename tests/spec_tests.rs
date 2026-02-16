@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 mod common;
@@ -49,7 +50,7 @@ async fn test_git_subcommand_completion() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = common::make_provider_request("git co", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
     assert!(!result.is_empty());
     let suggestion = &result[0];
     // Should suggest "git commit" or "git config" (starts with "co")
@@ -68,7 +69,7 @@ async fn test_git_multi_suggestions() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = common::make_provider_request("git ", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     assert!(
         results.len() > 1,
         "Expected multiple suggestions for 'git '"
@@ -87,7 +88,7 @@ async fn test_git_checkout_alias() {
 
     // "git ch" should match both "checkout" and "cherry-pick" etc.
     let req = common::make_provider_request("git ch", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
         texts
@@ -106,7 +107,7 @@ async fn test_cargo_subcommand_completion() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = common::make_provider_request("cargo b", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "cargo build");
 }
@@ -117,7 +118,7 @@ async fn test_cargo_test_completion() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = common::make_provider_request("cargo t", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "cargo test");
 }
@@ -130,7 +131,7 @@ async fn test_git_commit_option_completion() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = common::make_provider_request("git commit --m", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
         texts.iter().any(|t| t.contains("--message")),
@@ -169,7 +170,7 @@ command = "printf '%s\n' alpha beta"
     let provider = SpecProvider::new(store);
 
     let req = common::make_provider_request("tool --profile a", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 10).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(10).unwrap()).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
         texts.iter().any(|t| *t == "tool --profile alpha"),
@@ -186,7 +187,7 @@ async fn test_empty_buffer_returns_none() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = common::make_provider_request("", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
     assert!(result.is_empty());
 }
 
@@ -198,7 +199,7 @@ async fn test_unknown_command_returns_empty() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = common::make_provider_request("nonexistent_cmd ", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
     assert!(result.is_empty());
 }
 
@@ -218,7 +219,7 @@ async fn test_autogen_cargo_spec() {
     let provider = SpecProvider::new(store);
 
     let req = common::make_provider_request("cargo b", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "cargo build");
 }
@@ -237,7 +238,7 @@ async fn test_autogen_makefile_spec() {
     let provider = SpecProvider::new(store);
 
     let req = common::make_provider_request("make d", dir.path().to_str().unwrap()).await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
     assert!(!result.is_empty());
     assert_eq!(result[0].text, "make deploy");
 }
@@ -262,7 +263,7 @@ async fn test_autogen_spec_from_subdirectory() {
     let provider = SpecProvider::new(store);
 
     let req = common::make_provider_request("cargo b", nested.to_str().unwrap()).await;
-    let result = provider.suggest(&req, 1).await;
+    let result = provider.suggest(&req, NonZeroUsize::new(1).unwrap()).await;
     assert!(
         !result.is_empty(),
         "Spec autogen should find Cargo.toml from subdirectory via project root walking"
@@ -278,7 +279,7 @@ async fn test_suggest_truncates_to_max() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = common::make_provider_request("git ", dir.path().to_str().unwrap()).await;
-    let results = provider.suggest(&req, 3).await;
+    let results = provider.suggest(&req, NonZeroUsize::new(3).unwrap()).await;
     assert!(
         results.len() <= 3,
         "Expected at most 3 results, got {}",
