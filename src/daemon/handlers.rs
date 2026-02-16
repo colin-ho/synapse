@@ -1,5 +1,9 @@
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
+use futures_util::SinkExt;
+
+use crate::completion_context::Position;
 use crate::protocol::{
     CommandExecutedReport, InteractionAction, InteractionReport, ListSuggestionsRequest, Request,
     Response, SuggestRequest, SuggestionListResponse, SuggestionResponse, SuggestionSource,
@@ -11,10 +15,10 @@ use super::state::{RuntimeState, SharedWriter};
 pub(super) async fn handle_request(
     request: Request,
     state: &RuntimeState,
-    _writer: SharedWriter,
+    writer: SharedWriter,
 ) -> Response {
     match request {
-        Request::Suggest(req) => handle_suggest(req, state).await,
+        Request::Suggest(req) => handle_suggest(req, state, writer).await,
         Request::ListSuggestions(req) => handle_list_suggestions(req, state).await,
         Request::Interaction(report) => handle_interaction(report, state).await,
         Request::CommandExecuted(report) => handle_command_executed(report, state).await,
@@ -44,7 +48,11 @@ pub(super) async fn handle_request(
     }
 }
 
-async fn handle_suggest(req: SuggestRequest, state: &RuntimeState) -> Response {
+async fn handle_suggest(
+    req: SuggestRequest,
+    state: &RuntimeState,
+    writer: SharedWriter,
+) -> Response {
     tracing::debug!(
         session = %req.session_id,
         buffer = %req.buffer,
@@ -70,6 +78,60 @@ async fn handle_suggest(req: SuggestRequest, state: &RuntimeState) -> Response {
         &provider_request.recent_commands,
         Some(provider_request.completion()),
     );
+
+    // Phase 2: Async LLM workflow prediction (if applicable).
+    // Spawn in background — the LLM rate limiter ensures this won't write
+    // before the Phase 1 response (LLM calls take 200ms+ minimum).
+    if matches!(
+        provider_request.completion().position,
+        Position::CommandName
+    ) && provider_request.buffer.len() <= 4
+        && state.config.llm.workflow_prediction
+        && !provider_request.recent_commands.is_empty()
+    {
+        if let Some(wp) = find_workflow_provider(&state.providers) {
+            let session_id = req.session_id.clone();
+            let should_spawn = {
+                let mut inflight = state.workflow_llm_inflight.lock().await;
+                inflight.insert(session_id.clone())
+            };
+
+            if should_spawn {
+                let wp = wp.clone();
+                let request = provider_request.clone();
+                let max_len = state.config.general.max_suggestion_length;
+                let session_manager = state.session_manager.clone();
+                let inflight = state.workflow_llm_inflight.clone();
+                tokio::spawn(async move {
+                    if let Some(llm_suggestion) = wp.predict_with_llm(&request).await {
+                        let is_latest_buffer = session_manager
+                            .get_last_buffer(&request.session_id)
+                            .await
+                            .as_deref()
+                            == Some(request.buffer.as_str());
+
+                        if is_latest_buffer {
+                            let mut text = llm_suggestion.text;
+                            if text.len() > max_len {
+                                text.truncate(max_len);
+                            }
+                            let update = Response::Update(SuggestionResponse {
+                                text,
+                                source: SuggestionSource::Workflow,
+                                confidence: llm_suggestion.score.min(1.0),
+                            });
+                            let line = update.to_tsv();
+                            let mut w = writer.lock().await;
+                            let _ = w.send(line).await;
+                        }
+                    }
+
+                    let mut guard = inflight.lock().await;
+                    guard.remove(&session_id);
+                });
+            }
+        }
+    }
 
     match ranked {
         Some(r) => {
@@ -138,9 +200,29 @@ async fn handle_interaction(report: InteractionReport, state: &RuntimeState) -> 
             .get_last_accepted(&report.session_id)
             .await
         {
+            // Get exit code and project type for richer workflow recording.
+            let exit_code = state
+                .session_manager
+                .get_last_exit_code(&report.session_id)
+                .await;
+            let project_type = state
+                .session_manager
+                .get_cwd(&report.session_id)
+                .await
+                .and_then(|cwd| {
+                    let path = std::path::Path::new(&cwd);
+                    let root = crate::project::find_project_root(path, 3)?;
+                    crate::project::detect_project_type(&root)
+                });
+
             state
                 .workflow_predictor
-                .record(&prev, &report.suggestion)
+                .record_with_context(
+                    &prev,
+                    &report.suggestion,
+                    exit_code,
+                    project_type.as_deref(),
+                )
                 .await;
         }
         state
@@ -187,6 +269,18 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
     }
 
     Response::Ack
+}
+
+/// Extract the WorkflowProvider from the provider list.
+fn find_workflow_provider(
+    providers: &[Provider],
+) -> Option<&Arc<crate::providers::workflow::WorkflowProvider>> {
+    for provider in providers {
+        if let Provider::Workflow(wp) = provider {
+            return Some(wp);
+        }
+    }
+    None
 }
 
 async fn collect_provider_suggestions(

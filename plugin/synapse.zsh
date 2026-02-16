@@ -171,8 +171,12 @@ _synapse_disconnect() {
 # Send a JSON request and read the response
 _synapse_request() {
     local json="$1"
+    local expected_type="${2:-}"
     [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return 1
     [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return 1
+
+    # Temporarily disable async fd handler while waiting for this request's response.
+    zle -F "$_SYNAPSE_SOCKET_FD" 2>/dev/null
 
     # Write request
     print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || {
@@ -180,18 +184,37 @@ _synapse_request() {
         return 1
     }
 
-    # Read response with timeout (50ms)
-    local response=""
-    if read -t 0.05 -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
-        _SYNAPSE_REQUEST_FAILURES=0
-        echo "$response"
-        return 0
-    fi
+    # Read response with timeout (50ms total), skipping async update frames.
+    local response="" i
+    for i in 1 2 3 4 5; do
+        if read -t 0.01 -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
+            local -a _tsv_fields
+            IFS=$'\t' read -rA _tsv_fields <<< "$response"
+            local frame_type="${_tsv_fields[1]}"
+
+            if [[ "$frame_type" == "update" ]]; then
+                _synapse_handle_update "$response"
+                continue
+            fi
+
+            if [[ -n "$expected_type" ]] && [[ "$frame_type" != "$expected_type" ]]; then
+                # Ignore unrelated frames and continue waiting for the request response.
+                continue
+            fi
+
+            _SYNAPSE_REQUEST_FAILURES=0
+            zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler 2>/dev/null
+            echo "$response"
+            return 0
+        fi
+    done
 
     # Track consecutive failures to detect dead connections
     (( _SYNAPSE_REQUEST_FAILURES++ ))
     if (( _SYNAPSE_REQUEST_FAILURES >= 3 )); then
         _synapse_disconnect
+    else
+        zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler 2>/dev/null
     fi
 
     return 1
@@ -461,6 +484,10 @@ _synapse_parse_suggestion_list() {
 
     local -a _tsv_fields
     IFS=$'\t' read -rA _tsv_fields <<< "$response"
+    if [[ "${_tsv_fields[1]}" != "list" ]]; then
+        _SYNAPSE_DROPDOWN_COUNT=0
+        return
+    fi
 
     # _tsv_fields[1]=list, _tsv_fields[2]=count, then 4 fields per item
     local count="${_tsv_fields[2]}"
@@ -498,11 +525,12 @@ _synapse_suggest() {
     json="$(_synapse_build_suggest_request "$buffer" "$cursor" "$PWD")"
 
     local response
-    response="$(_synapse_request "$json")" || return
+    response="$(_synapse_request "$json" "suggest")" || return
 
     # TSV: suggest\ttext\tsource
     local -a _tsv_fields
     IFS=$'\t' read -rA _tsv_fields <<< "$response"
+    [[ "${_tsv_fields[1]}" == "suggest" ]] || return
     _SYNAPSE_CURRENT_SOURCE="${_tsv_fields[3]}"
 
     _synapse_show_suggestion "${_tsv_fields[2]}"
@@ -522,23 +550,29 @@ _synapse_async_handler() {
 
     local response=""
     if read -u "$fd" response 2>/dev/null; then
-        # TSV: update\ttext\tsource
-        local -a _tsv_fields
-        IFS=$'\t' read -rA _tsv_fields <<< "$response"
-
-        if [[ "${_tsv_fields[1]}" == "update" ]]; then
-            # Skip async updates while dropdown is open
-            if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]]; then
-                return
-            fi
-            _SYNAPSE_CURRENT_SOURCE="${_tsv_fields[3]}"
-            _synapse_show_suggestion "${_tsv_fields[2]}"
-            zle -R  # Redraw
-        fi
+        _synapse_handle_update "$response"
     else
         # EOF or read error — daemon connection lost
         _synapse_disconnect
     fi
+}
+
+_synapse_handle_update() {
+    local response="$1"
+    local -a _tsv_fields
+    IFS=$'\t' read -rA _tsv_fields <<< "$response"
+
+    [[ "${_tsv_fields[1]}" == "update" ]] || return 1
+
+    # Skip async updates while dropdown is open
+    if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]]; then
+        return 0
+    fi
+
+    _SYNAPSE_CURRENT_SOURCE="${_tsv_fields[3]}"
+    _synapse_show_suggestion "${_tsv_fields[2]}"
+    zle -R 2>/dev/null  # Redraw when inside zle
+    return 0
 }
 
 # --- Interaction Reporting ---
@@ -685,7 +719,7 @@ _synapse_dropdown_open() {
     json="$(_synapse_build_list_request "$BUFFER" "$CURSOR" "$PWD" 10)"
 
     local response
-    response="$(_synapse_request "$json")" || { zle .down-line-or-history; return; }
+    response="$(_synapse_request "$json" "list")" || { zle .down-line-or-history; return; }
 
     # Parse response
     _synapse_parse_suggestion_list "$response"

@@ -13,6 +13,7 @@ pub struct SessionState {
     pub last_suggestion: Option<SuggestionResponse>,
     pub recent_commands: Vec<String>,
     pub last_accepted: Option<String>,
+    pub last_exit_code: i32,
     #[allow(dead_code)]
     pub connected_at: std::time::Instant,
     pub last_activity: std::time::Instant,
@@ -28,6 +29,7 @@ impl SessionState {
             last_suggestion: None,
             recent_commands: Vec::new(),
             last_accepted: None,
+            last_exit_code: 0,
             connected_at: now,
             last_activity: now,
         }
@@ -70,6 +72,7 @@ impl SessionManager {
         session.cwd = request.cwd.clone();
         session.last_buffer = request.buffer.clone();
         session.recent_commands = request.recent_commands.clone();
+        session.last_exit_code = request.last_exit_code;
         session.last_activity = std::time::Instant::now();
     }
 
@@ -98,6 +101,14 @@ impl SessionManager {
         sessions
             .get(session_id)
             .and_then(|s| s.last_accepted.clone())
+    }
+
+    pub async fn get_last_exit_code(&self, session_id: &str) -> i32 {
+        let sessions = self.sessions.read().await;
+        sessions
+            .get(session_id)
+            .map(|s| s.last_exit_code)
+            .unwrap_or(0)
     }
 
     pub async fn record_accepted(&self, session_id: &str, command: String) {
