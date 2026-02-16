@@ -24,14 +24,16 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::logging::InteractionLogger;
-use crate::protocol::{Request, Response, SuggestionListResponse, SuggestionResponse};
+use crate::protocol::{
+    Request, Response, SuggestionListResponse, SuggestionResponse, SuggestionSource,
+};
 use crate::providers::ai::AiProvider;
 use crate::providers::context::ContextProvider;
 use crate::providers::environment::EnvironmentProvider;
 use crate::providers::filesystem::FilesystemProvider;
 use crate::providers::history::HistoryProvider;
 use crate::providers::spec::SpecProvider;
-use crate::providers::{Provider, ProviderRequest, SuggestionProvider};
+use crate::providers::{Provider, ProviderRequest, ProviderSuggestion, SuggestionProvider};
 use crate::ranking::Ranker;
 use crate::security::Scrubber;
 use crate::session::SessionManager;
@@ -622,35 +624,10 @@ async fn handle_request(
 
             let provider_request =
                 ProviderRequest::from_suggest_request(&req, spec_store.as_ref()).await;
-            let Some((
-                history_provider,
-                context_provider,
-                spec_provider,
-                filesystem_provider,
-                environment_provider,
-                _ai_provider,
-            )) = ordered_providers(providers)
-            else {
-                return Response::Error {
-                    message: "Provider configuration error".to_string(),
-                };
-            };
 
             // Phase 1: Immediate — query all providers concurrently
-            let (history_result, context_result, spec_result, fs_result, env_result) = tokio::join!(
-                history_provider.suggest(&provider_request, 1),
-                context_provider.suggest(&provider_request, 1),
-                spec_provider.suggest(&provider_request, 1),
-                filesystem_provider.suggest(&provider_request, 1),
-                environment_provider.suggest(&provider_request, 1),
-            );
-
-            let mut suggestions = Vec::new();
-            suggestions.extend(history_result);
-            suggestions.extend(context_result);
-            suggestions.extend(spec_result);
-            suggestions.extend(fs_result);
-            suggestions.extend(env_result);
+            let suggestions =
+                collect_provider_suggestions(providers, &provider_request, 1, false, None).await;
 
             // Rank immediate results
             let ranked = ranker.rank(
@@ -689,7 +666,10 @@ async fn handle_request(
 
             // Phase 2: Deferred — spawn AI provider with debounce
             if config.ai.enabled {
-                let providers = providers.clone();
+                let ai_provider = providers
+                    .iter()
+                    .find(|provider| provider.source() == SuggestionSource::Ai)
+                    .cloned();
                 let sm = session_manager.clone();
                 let cfg = config.clone();
                 let rk = ranker.clone();
@@ -697,49 +677,50 @@ async fn handle_request(
                 let buffer_snapshot = provider_request.buffer.clone();
                 let session_id = provider_request.session_id.clone();
 
-                tokio::spawn(async move {
-                    // Debounce: wait before calling AI
-                    tokio::time::sleep(std::time::Duration::from_millis(cfg.general.debounce_ms))
+                if let Some(ai_provider) = ai_provider {
+                    tokio::spawn(async move {
+                        // Debounce: wait before calling AI
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            cfg.general.debounce_ms,
+                        ))
                         .await;
 
-                    // Check if buffer has changed since we started
-                    if let Some(current_buffer) = sm.get_last_buffer(&session_id).await {
-                        if current_buffer != buffer_snapshot {
-                            tracing::debug!("Buffer changed, skipping AI suggestion");
-                            return;
-                        }
-                    }
-
-                    // Call AI provider
-                    let Some((_, _, _, _, _, ai_provider)) = ordered_providers(&providers) else {
-                        return;
-                    };
-                    let ai_suggestions = ai_provider.suggest(&provider_request, 1).await;
-                    let ai_ranked =
-                        rk.rank(ai_suggestions, &provider_request.recent_commands, None);
-                    if let Some(ai_r) = ai_ranked {
-                        // Only push update if AI score beats current best
-                        if ai_r.score > current_score {
-                            let mut text = ai_r.text;
-                            if text.len() > cfg.general.max_suggestion_length {
-                                text.truncate(cfg.general.max_suggestion_length);
-                            }
-
-                            let update = Response::Update(SuggestionResponse {
-                                text,
-                                source: ai_r.source,
-                                confidence: ai_r.score.min(1.0),
-                            });
-
-                            if let Ok(mut json) = serde_json::to_string(&update) {
-                                json.push('\n');
-                                let mut w = writer.lock().await;
-                                let _ = w.write_all(json.as_bytes()).await;
-                                let _ = w.flush().await;
+                        // Check if buffer has changed since we started
+                        if let Some(current_buffer) = sm.get_last_buffer(&session_id).await {
+                            if current_buffer != buffer_snapshot {
+                                tracing::debug!("Buffer changed, skipping AI suggestion");
+                                return;
                             }
                         }
-                    }
-                });
+
+                        // Call AI provider
+                        let ai_suggestions = ai_provider.suggest(&provider_request, 1).await;
+                        let ai_ranked =
+                            rk.rank(ai_suggestions, &provider_request.recent_commands, None);
+                        if let Some(ai_r) = ai_ranked {
+                            // Only push update if AI score beats current best
+                            if ai_r.score > current_score {
+                                let mut text = ai_r.text;
+                                if text.len() > cfg.general.max_suggestion_length {
+                                    text.truncate(cfg.general.max_suggestion_length);
+                                }
+
+                                let update = Response::Update(SuggestionResponse {
+                                    text,
+                                    source: ai_r.source,
+                                    confidence: ai_r.score.min(1.0),
+                                });
+
+                                if let Ok(mut json) = serde_json::to_string(&update) {
+                                    json.push('\n');
+                                    let mut w = writer.lock().await;
+                                    let _ = w.write_all(json.as_bytes()).await;
+                                    let _ = w.flush().await;
+                                }
+                            }
+                        }
+                    });
+                }
             }
 
             response
@@ -756,58 +737,14 @@ async fn handle_request(
             let max = req.max_results.min(config.spec.max_list_results);
             let provider_request =
                 ProviderRequest::from_list_request(&req, spec_store.as_ref()).await;
-            let Some((
-                history_provider,
-                context_provider,
-                spec_provider,
-                filesystem_provider,
-                environment_provider,
-                ai_provider,
-            )) = ordered_providers(providers)
-            else {
-                return Response::Error {
-                    message: "Provider configuration error".to_string(),
-                };
-            };
-
-            // Query all providers concurrently for multi-results
-            // Include AI with a 200ms timeout so it doesn't block the dropdown
-            let ai_future = async {
-                if config.ai.enabled {
-                    tokio::time::timeout(
-                        std::time::Duration::from_millis(200),
-                        ai_provider.suggest(&provider_request, max),
-                    )
-                    .await
-                    .unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            };
-
-            let (
-                history_results,
-                context_results,
-                spec_results,
-                fs_results,
-                env_results,
-                ai_results,
-            ) = tokio::join!(
-                history_provider.suggest(&provider_request, max),
-                context_provider.suggest(&provider_request, max),
-                spec_provider.suggest(&provider_request, max),
-                filesystem_provider.suggest(&provider_request, max),
-                environment_provider.suggest(&provider_request, max),
-                ai_future,
-            );
-
-            let mut all_suggestions = Vec::new();
-            all_suggestions.extend(history_results);
-            all_suggestions.extend(context_results);
-            all_suggestions.extend(spec_results);
-            all_suggestions.extend(fs_results);
-            all_suggestions.extend(env_results);
-            all_suggestions.extend(ai_results);
+            let all_suggestions = collect_provider_suggestions(
+                providers,
+                &provider_request,
+                max,
+                config.ai.enabled,
+                Some(200),
+            )
+            .await;
 
             let ranked = ranker.rank_multi(
                 all_suggestions,
@@ -880,20 +817,48 @@ async fn handle_request(
     }
 }
 
-fn ordered_providers(
+async fn collect_provider_suggestions(
     providers: &[Provider],
-) -> Option<(
-    &Provider,
-    &Provider,
-    &Provider,
-    &Provider,
-    &Provider,
-    &Provider,
-)> {
-    match providers {
-        [history, context, spec, filesystem, environment, ai] => {
-            Some((history, context, spec, filesystem, environment, ai))
+    request: &ProviderRequest,
+    max: usize,
+    include_ai: bool,
+    ai_timeout_ms: Option<u64>,
+) -> Vec<ProviderSuggestion> {
+    let mut task_set = tokio::task::JoinSet::new();
+
+    for provider in providers {
+        let source = provider.source();
+        if !include_ai && source == SuggestionSource::Ai {
+            continue;
         }
-        _ => None,
+
+        let provider = provider.clone();
+        let request = request.clone();
+        task_set.spawn(async move {
+            if source == SuggestionSource::Ai {
+                if let Some(timeout_ms) = ai_timeout_ms {
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(timeout_ms),
+                        provider.suggest(&request, max),
+                    )
+                    .await
+                    .unwrap_or_default()
+                } else {
+                    provider.suggest(&request, max).await
+                }
+            } else {
+                provider.suggest(&request, max).await
+            }
+        });
     }
+
+    let mut all_suggestions = Vec::new();
+    while let Some(result) = task_set.join_next().await {
+        match result {
+            Ok(mut suggestions) => all_suggestions.append(&mut suggestions),
+            Err(error) => tracing::debug!("Provider task failed: {error}"),
+        }
+    }
+
+    all_suggestions
 }
