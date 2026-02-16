@@ -210,58 +210,74 @@ _synapse_json_get() {
     fi
 }
 
+# Escape a string for safe JSON inclusion.
+_synapse_json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\t'/\\t}"
+    echo "$value"
+}
+
+# Build recent_commands JSON array.
+_synapse_build_recent_commands_json() {
+    local items=()
+    local cmd
+    for cmd in "${_SYNAPSE_RECENT_COMMANDS[@]}"; do
+        items+=("\"$(_synapse_json_escape "$cmd")\"")
+    done
+
+    if (( ${#items[@]} == 0 )); then
+        echo "[]"
+    else
+        echo "[${(j:,:)items}]"
+    fi
+}
+
+# Build env_hints JSON object for daemon requests.
+_synapse_build_env_hints_json() {
+    local hints=()
+    local key val
+    for key in PATH VIRTUAL_ENV; do
+        val="${(P)key}"
+        [[ -n "$val" ]] || continue
+        hints+=("\"${key}\":\"$(_synapse_json_escape "$val")\"")
+    done
+
+    if (( ${#hints[@]} == 0 )); then
+        echo "{}"
+    else
+        echo "{${(j:,:)hints}}"
+    fi
+}
+
 # Build a suggest request JSON
 _synapse_build_suggest_request() {
     local buffer="$1" cursor_pos="$2" cwd="$3"
 
-    # Escape special chars in buffer for JSON
-    local escaped_buffer="${buffer//\\/\\\\}"
-    escaped_buffer="${escaped_buffer//\"/\\\"}"
-    escaped_buffer="${escaped_buffer//$'\n'/\\n}"
-    escaped_buffer="${escaped_buffer//$'\t'/\\t}"
+    local escaped_buffer escaped_cwd recent_json
+    escaped_buffer="$(_synapse_json_escape "$buffer")"
+    escaped_cwd="$(_synapse_json_escape "$cwd")"
+    recent_json="$(_synapse_build_recent_commands_json)"
+    local env_hints_json
+    env_hints_json="$(_synapse_build_env_hints_json)"
 
-    local escaped_cwd="${cwd//\\/\\\\}"
-    escaped_cwd="${escaped_cwd//\"/\\\"}"
-
-    # Build recent commands array
-    local recent_json="["
-    local first=1
-    local cmd
-    for cmd in "${_SYNAPSE_RECENT_COMMANDS[@]}"; do
-        local escaped_cmd="${cmd//\\/\\\\}"
-        escaped_cmd="${escaped_cmd//\"/\\\"}"
-        [[ $first -eq 1 ]] && first=0 || recent_json+=","
-        recent_json+="\"${escaped_cmd}\""
-    done
-    recent_json+="]"
-
-    echo "{\"type\":\"suggest\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${escaped_cwd}\",\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${recent_json}}"
+    echo "{\"type\":\"suggest\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${escaped_cwd}\",\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
 }
 
 # Build a list_suggestions request JSON
 _synapse_build_list_request() {
     local buffer="$1" cursor_pos="$2" cwd="$3" max_results="${4:-10}"
 
-    local escaped_buffer="${buffer//\\/\\\\}"
-    escaped_buffer="${escaped_buffer//\"/\\\"}"
-    escaped_buffer="${escaped_buffer//$'\n'/\\n}"
-    escaped_buffer="${escaped_buffer//$'\t'/\\t}"
+    local escaped_buffer escaped_cwd recent_json
+    escaped_buffer="$(_synapse_json_escape "$buffer")"
+    escaped_cwd="$(_synapse_json_escape "$cwd")"
+    recent_json="$(_synapse_build_recent_commands_json)"
+    local env_hints_json
+    env_hints_json="$(_synapse_build_env_hints_json)"
 
-    local escaped_cwd="${cwd//\\/\\\\}"
-    escaped_cwd="${escaped_cwd//\"/\\\"}"
-
-    local recent_json="["
-    local first=1
-    local cmd
-    for cmd in "${_SYNAPSE_RECENT_COMMANDS[@]}"; do
-        local escaped_cmd="${cmd//\\/\\\\}"
-        escaped_cmd="${escaped_cmd//\"/\\\"}"
-        [[ $first -eq 1 ]] && first=0 || recent_json+=","
-        recent_json+="\"${escaped_cmd}\""
-    done
-    recent_json+="]"
-
-    echo "{\"type\":\"list_suggestions\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${escaped_cwd}\",\"max_results\":${max_results},\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${recent_json}}"
+    echo "{\"type\":\"list_suggestions\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${escaped_cwd}\",\"max_results\":${max_results},\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
 }
 
 # --- Ghost Text Rendering ---

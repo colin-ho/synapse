@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use enum_dispatch::enum_dispatch;
+use std::collections::HashMap;
 
 use crate::completion_context::CompletionContext;
 use crate::protocol::{ListSuggestionsRequest, SuggestRequest, SuggestionKind, SuggestionSource};
@@ -30,6 +31,7 @@ pub struct ProviderRequest {
     pub session_id: String,
     pub cwd: String,
     pub recent_commands: Vec<String>,
+    pub env_hints: HashMap<String, String>,
     completion: CompletionContext,
 }
 
@@ -41,6 +43,7 @@ impl ProviderRequest {
             session_id: request.session_id.clone(),
             cwd: request.cwd.clone(),
             recent_commands: request.recent_commands.clone(),
+            env_hints: request.env_hints.clone(),
             completion,
         }
     }
@@ -49,7 +52,6 @@ impl ProviderRequest {
         // Preserve compatibility with protocol fields that are currently unused by providers.
         let _ = request.cursor_pos;
         let _ = request.last_exit_code;
-        let _ = &request.env_hints;
 
         let completion =
             CompletionContext::build(&request.buffer, Path::new(&request.cwd), store).await;
@@ -57,6 +59,7 @@ impl ProviderRequest {
             session_id: request.session_id.clone(),
             cwd: request.cwd.clone(),
             recent_commands: request.recent_commands.clone(),
+            env_hints: request.env_hints.clone(),
             completion,
         }
     }
