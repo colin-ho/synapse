@@ -152,7 +152,7 @@ impl FilesystemProvider {
     }
 
     fn should_escape_unquoted_char(ch: char) -> bool {
-        let manual_escape = ch.is_ascii_whitespace()
+        ch.is_ascii_whitespace()
             || matches!(
                 ch,
                 '\\' | '"'
@@ -174,15 +174,7 @@ impl FilesystemProvider {
                     | '?'
                     | '!'
                     | '#'
-            );
-        if manual_escape {
-            return true;
-        }
-
-        let char_str = ch.to_string();
-        shlex::try_quote(&char_str)
-            .map(|quoted| quoted.as_ref() != char_str)
-            .unwrap_or(false)
+            )
     }
 
     fn escape_suffix(suffix: &str, mode: QuoteMode) -> String {
@@ -219,7 +211,7 @@ impl FilesystemProvider {
         out
     }
 
-    fn render_suggestion_text(
+    fn build_suggestion_text(
         buffer: &str,
         logical_partial: &str,
         logical_completed: &str,
@@ -233,11 +225,20 @@ impl FilesystemProvider {
             return buffer.to_string();
         };
         if !suffix.is_empty() {
-            let rendered_suffix = Self::escape_suffix(suffix, Self::quote_mode_for_buffer(buffer));
-            return format!("{buffer}{rendered_suffix}");
+            let escaped_suffix = Self::escape_suffix(suffix, Self::quote_mode_for_buffer(buffer));
+            return format!("{buffer}{escaped_suffix}");
         }
 
         buffer.to_string()
+    }
+
+    fn prefix_matches(name: &str, prefix: &str) -> bool {
+        if cfg!(target_os = "macos") {
+            name.len() >= prefix.len()
+                && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+        } else {
+            name.starts_with(prefix)
+        }
     }
 
     fn read_dir_entries(dir: &Path) -> Vec<DirEntry> {
@@ -246,7 +247,7 @@ impl FilesystemProvider {
                 .filter_map(|e| e.ok())
                 .map(|e| {
                     let name = e.file_name().to_string_lossy().to_string();
-                    let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                    let is_dir = e.path().is_dir();
                     DirEntry { name, is_dir }
                 })
                 .collect::<Vec<_>>(),
@@ -266,25 +267,17 @@ impl FilesystemProvider {
     /// List directory entries, using cache.
     async fn list_dir(&self, dir: &Path) -> Vec<DirEntry> {
         let key = dir.to_path_buf();
-        if let Some(cached) = self.dir_cache.get(&key).await {
-            return cached;
-        }
-
-        let read_path = key.clone();
-        let entries =
-            match tokio::task::spawn_blocking(move || Self::read_dir_entries(&read_path)).await {
-                Ok(entries) => entries,
-                Err(err) => {
-                    tracing::debug!(
-                        path = %key.display(),
-                        "FilesystemProvider: directory task failed: {err}"
-                    );
-                    Vec::new()
+        self.dir_cache
+            .get_with(key.clone(), async {
+                match tokio::task::spawn_blocking(move || Self::read_dir_entries(&key)).await {
+                    Ok(entries) => entries,
+                    Err(err) => {
+                        tracing::debug!("FilesystemProvider: directory task failed: {err}");
+                        Vec::new()
+                    }
                 }
-            };
-
-        self.dir_cache.insert(key, entries.clone()).await;
-        entries
+            })
+            .await
     }
 
     /// Complete file/directory paths given the partial and cwd.
@@ -303,7 +296,7 @@ impl FilesystemProvider {
                 continue;
             }
             if !path_query.file_prefix.is_empty()
-                && !entry.name.starts_with(&path_query.file_prefix)
+                && !Self::prefix_matches(&entry.name, &path_query.file_prefix)
             {
                 continue;
             }
@@ -312,7 +305,7 @@ impl FilesystemProvider {
             let logical_completed =
                 format!("{}{}{}", path_query.typed_dir_part, entry.name, suffix);
             let completed =
-                Self::render_suggestion_text(&ctx.buffer, &ctx.partial, &logical_completed);
+                Self::build_suggestion_text(&ctx.buffer, &ctx.partial, &logical_completed);
 
             let specificity = if path_query.file_prefix.is_empty() {
                 0.0
