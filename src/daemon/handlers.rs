@@ -1,8 +1,8 @@
 use std::num::NonZeroUsize;
 
 use crate::protocol::{
-    InteractionAction, InteractionReport, ListSuggestionsRequest, Request, Response,
-    SuggestRequest, SuggestionListResponse, SuggestionResponse, SuggestionSource,
+    CommandExecutedReport, InteractionAction, InteractionReport, ListSuggestionsRequest, Request,
+    Response, SuggestRequest, SuggestionListResponse, SuggestionResponse, SuggestionSource,
 };
 use crate::providers::{Provider, ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
@@ -17,6 +17,7 @@ pub(super) async fn handle_request(
         Request::Suggest(req) => handle_suggest(req, state).await,
         Request::ListSuggestions(req) => handle_list_suggestions(req, state).await,
         Request::Interaction(report) => handle_interaction(report, state).await,
+        Request::CommandExecuted(report) => handle_command_executed(report, state).await,
         Request::Ping => {
             tracing::trace!("Ping");
             Response::Pong
@@ -156,6 +157,23 @@ async fn handle_interaction(report: InteractionReport, state: &RuntimeState) -> 
         0.0,
         "",
     );
+
+    Response::Ack
+}
+
+async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeState) -> Response {
+    tracing::debug!(
+        session = %report.session_id,
+        command = %report.command,
+        "Command executed"
+    );
+
+    for provider in &state.providers {
+        if let Provider::History(hp) = provider {
+            hp.record_command(&report.command).await;
+            break;
+        }
+    }
 
     Response::Ack
 }

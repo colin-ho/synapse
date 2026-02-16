@@ -812,6 +812,13 @@ _synapse_preexec() {
     # Track recent commands
     _SYNAPSE_RECENT_COMMANDS=("$cmd" "${_SYNAPSE_RECENT_COMMANDS[@]:0:$(( _SYNAPSE_RECENT_CMD_MAX - 1 ))}")
 
+    # Notify daemon so history provider stays up to date
+    if [[ $_SYNAPSE_CONNECTED -eq 1 ]] && [[ -n "$cmd" ]]; then
+        local escaped_cmd="${cmd//\\/\\\\}"
+        escaped_cmd="${escaped_cmd//\"/\\\"}"
+        print -u "$_SYNAPSE_SOCKET_FD" "{\"type\":\"command_executed\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"command\":\"${escaped_cmd}\"}" 2>/dev/null
+    fi
+
     # Clear ghost text and dropdown
     _synapse_clear_dropdown
     _synapse_clear_suggestion
