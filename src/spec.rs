@@ -161,3 +161,97 @@ impl SubcommandSpec {
             .find(|s| s.name == name || s.aliases.iter().any(|a| a == name))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ArgTemplate, CommandSpec, SubcommandSpec};
+
+    #[test]
+    fn test_spec_toml_parsing() {
+        let toml_str = r#"
+name = "myapp"
+description = "A test app"
+
+[[subcommands]]
+name = "serve"
+description = "Start the server"
+
+[[subcommands.options]]
+long = "--port"
+short = "-p"
+takes_arg = true
+description = "Port number"
+
+[[subcommands]]
+name = "build"
+description = "Build the project"
+"#;
+
+        let spec: CommandSpec = toml::from_str(toml_str).unwrap();
+        assert_eq!(spec.name, "myapp");
+        assert_eq!(spec.subcommands.len(), 2);
+        assert_eq!(spec.subcommands[0].name, "serve");
+        assert_eq!(spec.subcommands[0].options.len(), 1);
+        assert_eq!(
+            spec.subcommands[0].options[0].long.as_deref(),
+            Some("--port")
+        );
+        assert!(spec.subcommands[0].options[0].takes_arg);
+        assert_eq!(spec.subcommands[1].name, "build");
+    }
+
+    #[test]
+    fn test_spec_with_aliases() {
+        let toml_str = r#"
+name = "test"
+aliases = ["t", "tst"]
+
+[[subcommands]]
+name = "run"
+aliases = ["r"]
+"#;
+
+        let spec: CommandSpec = toml::from_str(toml_str).unwrap();
+        assert_eq!(spec.aliases, vec!["t", "tst"]);
+        assert_eq!(spec.subcommands[0].aliases, vec!["r"]);
+    }
+
+    #[test]
+    fn test_spec_with_arg_template() {
+        let toml_str = r#"
+name = "cat"
+
+[[args]]
+name = "file"
+template = "file_paths"
+"#;
+
+        let spec: CommandSpec = toml::from_str(toml_str).unwrap();
+        assert_eq!(spec.args.len(), 1);
+        assert_eq!(spec.args[0].template, Some(ArgTemplate::FilePaths));
+    }
+
+    #[test]
+    fn test_spec_find_subcommand() {
+        let spec = CommandSpec {
+            name: "test".into(),
+            subcommands: vec![
+                SubcommandSpec {
+                    name: "run".into(),
+                    aliases: vec!["r".into()],
+                    ..Default::default()
+                },
+                SubcommandSpec {
+                    name: "build".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert!(spec.find_subcommand("run").is_some());
+        assert!(spec.find_subcommand("r").is_some());
+        assert!(spec.find_subcommand("build").is_some());
+        assert!(spec.find_subcommand("nonexistent").is_none());
+    }
+}

@@ -154,3 +154,135 @@ impl std::fmt::Display for SuggestionSource {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Request, Response, SuggestionItem, SuggestionKind, SuggestionListResponse,
+        SuggestionResponse, SuggestionSource,
+    };
+
+    #[test]
+    fn test_protocol_serialization() {
+        // Test that ping request parses correctly
+        let req: Request = serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
+        assert!(matches!(req, Request::Ping));
+
+        // Test suggest request
+        let req: Request = serde_json::from_str(
+            r#"{"type":"suggest","session_id":"abc","buffer":"git","cursor_pos":3,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}"#,
+        )
+        .unwrap();
+        assert!(matches!(req, Request::Suggest(_)));
+
+        // Test interaction report
+        let req: Request = serde_json::from_str(
+            r#"{"type":"interaction","session_id":"abc","action":"accept","suggestion":"git status","source":"history","buffer_at_action":"git"}"#,
+        )
+        .unwrap();
+        assert!(matches!(req, Request::Interaction(_)));
+    }
+
+    #[test]
+    fn test_response_serialization() {
+        let resp = Response::Pong;
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(json, r#"{"type":"pong"}"#);
+
+        let resp = Response::Suggestion(SuggestionResponse {
+            text: "git status".into(),
+            source: SuggestionSource::History,
+            confidence: 0.92,
+        });
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("suggestion"));
+        assert!(json.contains("git status"));
+        assert!(json.contains("history"));
+    }
+
+    #[test]
+    fn test_list_suggestions_response_serialization() {
+        let response = Response::SuggestionList(SuggestionListResponse {
+            suggestions: vec![
+                SuggestionItem {
+                    text: "git commit".into(),
+                    source: SuggestionSource::Spec,
+                    confidence: 0.9,
+                    description: Some("Record changes to the repository".into()),
+                    kind: SuggestionKind::Subcommand,
+                },
+                SuggestionItem {
+                    text: "git checkout".into(),
+                    source: SuggestionSource::Spec,
+                    confidence: 0.85,
+                    description: Some("Switch branches".into()),
+                    kind: SuggestionKind::Subcommand,
+                },
+            ],
+        });
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("suggestion_list"));
+        assert!(json.contains("git commit"));
+        assert!(json.contains("git checkout"));
+        assert!(json.contains("\"kind\":\"subcommand\""));
+        assert!(json.contains("\"source\":\"spec\""));
+    }
+
+    #[test]
+    fn test_list_suggestions_request_deserialization() {
+        let json = r#"{"type":"list_suggestions","session_id":"abc123","buffer":"git co","cursor_pos":6,"cwd":"/tmp","max_results":5}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+
+        match req {
+            Request::ListSuggestions(ls) => {
+                assert_eq!(ls.session_id, "abc123");
+                assert_eq!(ls.buffer, "git co");
+                assert_eq!(ls.cursor_pos, 6);
+                assert_eq!(ls.max_results, 5);
+            }
+            _ => panic!("Expected ListSuggestions request"),
+        }
+    }
+
+    #[test]
+    fn test_list_suggestions_default_max_results() {
+        let json = r#"{"type":"list_suggestions","session_id":"abc","buffer":"git ","cursor_pos":4,"cwd":"/tmp"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+
+        match req {
+            Request::ListSuggestions(ls) => {
+                assert_eq!(ls.max_results, 10);
+            }
+            _ => panic!("Expected ListSuggestions request"),
+        }
+    }
+
+    #[test]
+    fn test_suggestion_kind_serialization() {
+        assert_eq!(
+            serde_json::to_string(&SuggestionKind::Command).unwrap(),
+            "\"command\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SuggestionKind::Subcommand).unwrap(),
+            "\"subcommand\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SuggestionKind::Option).unwrap(),
+            "\"option\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SuggestionKind::Argument).unwrap(),
+            "\"argument\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SuggestionKind::File).unwrap(),
+            "\"file\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SuggestionKind::History).unwrap(),
+            "\"history\""
+        );
+    }
+}
