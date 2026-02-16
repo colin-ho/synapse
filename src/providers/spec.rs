@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use crate::completion_context::tokenize;
 use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
-use crate::spec::{ArgSpec, ArgTemplate, OptionSpec, SpecSource};
+use crate::spec::{find_option, ArgSpec, ArgTemplate, SpecSource};
 use crate::spec_store::SpecStore;
 
 #[derive(Default)]
@@ -148,25 +148,23 @@ impl SpecProvider {
                 } else {
                     0.7 + 0.3 * (partial.len() as f64 / sub.name.len() as f64)
                 };
-                suggestions.push(ProviderSuggestion {
+                suggestions.push(spec_suggestion(
                     text,
-                    source: SuggestionSource::Spec,
-                    score: similarity,
-                    description: sub.description.clone(),
-                    kind: SuggestionKind::Subcommand,
-                });
+                    similarity,
+                    sub.description.clone(),
+                    SuggestionKind::Subcommand,
+                ));
             }
             // Also check aliases
             for alias in &sub.aliases {
                 if alias.starts_with(partial) && alias != &sub.name {
                     let text = format!("{}{}", prefix, alias);
-                    suggestions.push(ProviderSuggestion {
+                    suggestions.push(spec_suggestion(
                         text,
-                        source: SuggestionSource::Spec,
-                        score: 0.65,
-                        description: sub.description.clone(),
-                        kind: SuggestionKind::Subcommand,
-                    });
+                        0.65,
+                        sub.description.clone(),
+                        SuggestionKind::Subcommand,
+                    ));
                 }
             }
         }
@@ -182,25 +180,23 @@ impl SpecProvider {
                         } else {
                             0.5 + 0.3 * (partial.len() as f64 / long.len() as f64)
                         };
-                        suggestions.push(ProviderSuggestion {
+                        suggestions.push(spec_suggestion(
                             text,
-                            source: SuggestionSource::Spec,
-                            score: similarity,
-                            description: opt.description.clone(),
-                            kind: SuggestionKind::Option,
-                        });
+                            similarity,
+                            opt.description.clone(),
+                            SuggestionKind::Option,
+                        ));
                     }
                 }
                 if let Some(short) = &opt.short {
                     if short.starts_with(partial) && partial.len() <= 2 {
                         let text = format!("{}{}", prefix, short);
-                        suggestions.push(ProviderSuggestion {
+                        suggestions.push(spec_suggestion(
                             text,
-                            source: SuggestionSource::Spec,
-                            score: 0.55,
-                            description: opt.description.clone(),
-                            kind: SuggestionKind::Option,
-                        });
+                            0.55,
+                            opt.description.clone(),
+                            SuggestionKind::Option,
+                        ));
                     }
                 }
             }
@@ -219,13 +215,12 @@ impl SpecProvider {
                                 } else {
                                     0.65 + 0.25 * (partial.len() as f64 / item.len().max(1) as f64)
                                 };
-                                suggestions.push(ProviderSuggestion {
-                                    text: format!("{}{}", prefix, item),
-                                    source: SuggestionSource::Spec,
-                                    score: similarity,
-                                    description: opt.description.clone(),
-                                    kind: SuggestionKind::Argument,
-                                });
+                                suggestions.push(spec_suggestion(
+                                    format!("{}{}", prefix, item),
+                                    similarity,
+                                    opt.description.clone(),
+                                    SuggestionKind::Argument,
+                                ));
                             }
                         }
                     }
@@ -261,13 +256,7 @@ impl SpecProvider {
             .filter(|name| name.starts_with(partial) && name != partial)
             .map(|name| {
                 let similarity = partial.len() as f64 / name.len() as f64;
-                ProviderSuggestion {
-                    text: name,
-                    source: SuggestionSource::Spec,
-                    score: 0.6 + 0.3 * similarity,
-                    description: None,
-                    kind: SuggestionKind::Command,
-                }
+                spec_suggestion(name, 0.6 + 0.3 * similarity, None, SuggestionKind::Command)
             })
             .collect()
     }
@@ -285,13 +274,12 @@ impl SpecProvider {
         // Static suggestions
         for suggestion in &arg.suggestions {
             if suggestion.starts_with(partial) {
-                results.push(ProviderSuggestion {
-                    text: suggestion.clone(),
-                    source: SuggestionSource::Spec,
-                    score: 0.7,
-                    description: arg.description.clone(),
-                    kind: SuggestionKind::Argument,
-                });
+                results.push(spec_suggestion(
+                    suggestion.clone(),
+                    0.7,
+                    arg.description.clone(),
+                    SuggestionKind::Argument,
+                ));
             }
         }
 
@@ -305,13 +293,12 @@ impl SpecProvider {
                     } else {
                         0.65 + 0.25 * (partial.len() as f64 / item.len().max(1) as f64)
                     };
-                    results.push(ProviderSuggestion {
-                        text: item,
-                        source: SuggestionSource::Spec,
-                        score: similarity,
-                        description: arg.description.clone(),
-                        kind: SuggestionKind::Argument,
-                    });
+                    results.push(spec_suggestion(
+                        item,
+                        similarity,
+                        arg.description.clone(),
+                        SuggestionKind::Argument,
+                    ));
                 }
             }
         }
@@ -323,17 +310,16 @@ impl SpecProvider {
                     // File/dir completion is better handled by the shell itself
                     // Just add the template kind info
                     if results.is_empty() && partial.is_empty() {
-                        results.push(ProviderSuggestion {
-                            text: String::new(),
-                            source: SuggestionSource::Spec,
-                            score: 0.3,
-                            description: Some(match template {
+                        results.push(spec_suggestion(
+                            String::new(),
+                            0.3,
+                            Some(match template {
                                 ArgTemplate::FilePaths => "file path".into(),
                                 ArgTemplate::Directories => "directory".into(),
                                 _ => unreachable!(),
                             }),
-                            kind: SuggestionKind::File,
-                        });
+                            SuggestionKind::File,
+                        ));
                     }
                 }
                 ArgTemplate::EnvVars | ArgTemplate::History => {
@@ -379,10 +365,19 @@ impl SuggestionProvider for SpecProvider {
     }
 }
 
-fn find_option<'a>(options: &'a [OptionSpec], token: &str) -> Option<&'a OptionSpec> {
-    options
-        .iter()
-        .find(|opt| opt.long.as_deref() == Some(token) || opt.short.as_deref() == Some(token))
+fn spec_suggestion(
+    text: String,
+    score: f64,
+    description: Option<String>,
+    kind: SuggestionKind,
+) -> ProviderSuggestion {
+    ProviderSuggestion {
+        text,
+        source: SuggestionSource::Spec,
+        score,
+        description,
+        kind,
+    }
 }
 
 #[cfg(test)]

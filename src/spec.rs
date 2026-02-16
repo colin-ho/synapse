@@ -188,6 +188,12 @@ impl SubcommandSpec {
     }
 }
 
+pub fn find_option<'a>(options: &'a [OptionSpec], token: &str) -> Option<&'a OptionSpec> {
+    options
+        .iter()
+        .find(|opt| opt.long.as_deref() == Some(token) || opt.short.as_deref() == Some(token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ArgTemplate, CommandSpec, SubcommandSpec};

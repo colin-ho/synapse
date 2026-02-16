@@ -11,6 +11,9 @@ use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 use crate::workflow::WorkflowPredictor;
 
+const COMMAND_NAME_BUFFER_MAX: usize = 4;
+const PREDICTED_NEXT_COMMAND_DESC: &str = "predicted next command";
+
 pub struct WorkflowProvider {
     predictor: Arc<WorkflowPredictor>,
     config: WorkflowConfig,
@@ -40,6 +43,33 @@ impl WorkflowProvider {
         crate::project::detect_project_type(&root)
     }
 
+    fn is_command_name_request(request: &ProviderRequest) -> bool {
+        matches!(request.completion().position, Position::CommandName)
+            && request.buffer.len() <= COMMAND_NAME_BUFFER_MAX
+    }
+
+    fn prefixed_text(prefix: &str, value: String) -> String {
+        if prefix.is_empty() {
+            value
+        } else {
+            format!("{prefix}{value}")
+        }
+    }
+
+    fn command_suggestion(
+        text: String,
+        score: f64,
+        description: &'static str,
+    ) -> ProviderSuggestion {
+        ProviderSuggestion {
+            text,
+            source: SuggestionSource::Workflow,
+            score,
+            description: Some(description.into()),
+            kind: SuggestionKind::Command,
+        }
+    }
+
     /// LLM-powered workflow prediction for async Phase 2.
     /// Returns a prediction when bigram data is weak and LLM is available.
     pub async fn predict_with_llm(&self, request: &ProviderRequest) -> Option<ProviderSuggestion> {
@@ -50,9 +80,7 @@ impl WorkflowProvider {
         let llm = self.llm_client.as_ref()?;
 
         // Only activate at command-name position with short/empty buffer
-        if !matches!(request.completion().position, Position::CommandName)
-            || request.buffer.len() > 4
-        {
+        if !Self::is_command_name_request(request) {
             return None;
         }
 
@@ -95,18 +123,11 @@ impl WorkflowProvider {
                 {
                     return None;
                 }
-                let text = if request.prefix.is_empty() {
-                    cmd
-                } else {
-                    format!("{}{}", request.prefix, cmd)
-                };
-                Some(ProviderSuggestion {
-                    text,
-                    source: SuggestionSource::Workflow,
-                    score: 0.7,
-                    description: Some("predicted next command".into()),
-                    kind: SuggestionKind::Command,
-                })
+                Some(Self::command_suggestion(
+                    Self::prefixed_text(&request.prefix, cmd),
+                    0.7,
+                    PREDICTED_NEXT_COMMAND_DESC,
+                ))
             }
             Err(e) => {
                 tracing::debug!("LLM workflow prediction failed: {e}");
@@ -134,13 +155,7 @@ impl WorkflowProvider {
                     let msg = msg.trim().trim_matches('"').to_string();
                     if !msg.is_empty() {
                         let text = format!("git commit -m \"{}\"", msg);
-                        return Some(ProviderSuggestion {
-                            text,
-                            source: SuggestionSource::Workflow,
-                            score: 0.85,
-                            description: Some("predicted commit".into()),
-                            kind: SuggestionKind::Command,
-                        });
+                        return Some(Self::command_suggestion(text, 0.85, "predicted commit"));
                     }
                 }
             }
@@ -156,13 +171,11 @@ impl WorkflowProvider {
                 if enriched.is_empty() || enriched == predicted_cmd {
                     return None;
                 }
-                Some(ProviderSuggestion {
-                    text: enriched,
-                    source: SuggestionSource::Workflow,
-                    score: 0.8,
-                    description: Some("predicted next command".into()),
-                    kind: SuggestionKind::Command,
-                })
+                Some(Self::command_suggestion(
+                    enriched,
+                    0.8,
+                    PREDICTED_NEXT_COMMAND_DESC,
+                ))
             }
             Err(e) => {
                 tracing::debug!("LLM argument enrichment failed: {e}");
@@ -184,9 +197,7 @@ impl SuggestionProvider for WorkflowProvider {
         }
 
         // Only activate at command-name position with short/empty buffer
-        if !matches!(request.completion().position, Position::CommandName)
-            || request.buffer.len() > 4
-        {
+        if !Self::is_command_name_request(request) {
             return Vec::new();
         }
 
@@ -213,18 +224,11 @@ impl SuggestionProvider for WorkflowProvider {
                     && (request.partial.is_empty() || cmd.starts_with(&request.partial))
             })
             .map(|(cmd, prob)| {
-                let text = if request.prefix.is_empty() {
-                    cmd
-                } else {
-                    format!("{}{}", request.prefix, cmd)
-                };
-                ProviderSuggestion {
-                    text,
-                    source: SuggestionSource::Workflow,
-                    score: prob,
-                    description: Some("predicted next command".into()),
-                    kind: SuggestionKind::Command,
-                }
+                Self::command_suggestion(
+                    Self::prefixed_text(&request.prefix, cmd),
+                    prob,
+                    PREDICTED_NEXT_COMMAND_DESC,
+                )
             })
             .collect()
     }
