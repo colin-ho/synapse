@@ -77,7 +77,6 @@ pub struct OptionSpec {
     #[serde(default)]
     pub takes_arg: bool,
     #[serde(default)]
-    #[allow(dead_code)]
     pub arg_generator: Option<GeneratorSpec>,
     #[serde(default)]
     #[allow(dead_code)]

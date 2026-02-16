@@ -12,6 +12,7 @@ pub struct SessionState {
     pub last_buffer: String,
     pub last_suggestion: Option<SuggestionResponse>,
     pub recent_commands: Vec<String>,
+    pub last_accepted: Option<String>,
     #[allow(dead_code)]
     pub connected_at: std::time::Instant,
     pub last_activity: std::time::Instant,
@@ -26,6 +27,7 @@ impl SessionState {
             last_buffer: String::new(),
             last_suggestion: None,
             recent_commands: Vec::new(),
+            last_accepted: None,
             connected_at: now,
             last_activity: now,
         }
@@ -81,6 +83,20 @@ impl SessionManager {
     pub async fn get_last_buffer(&self, session_id: &str) -> Option<String> {
         let sessions = self.sessions.read().await;
         sessions.get(session_id).map(|s| s.last_buffer.clone())
+    }
+
+    pub async fn get_last_accepted(&self, session_id: &str) -> Option<String> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .get(session_id)
+            .and_then(|s| s.last_accepted.clone())
+    }
+
+    pub async fn record_accepted(&self, session_id: &str, command: String) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.last_accepted = Some(command);
+        }
     }
 
     #[allow(dead_code)]

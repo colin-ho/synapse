@@ -6,6 +6,7 @@ use moka::future::Cache;
 use tokio::sync::Semaphore;
 
 use crate::cache::AiCacheKey;
+use crate::completion_context::CompletionContext;
 use crate::config::AiConfig;
 use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
 use crate::providers::context::ContextProvider;
@@ -88,6 +89,7 @@ impl AiProvider {
         request: &SuggestRequest,
         project_type: Option<&str>,
         git_branch: Option<&str>,
+        ctx: Option<&CompletionContext>,
     ) -> String {
         let (cwd, recent, buffer) = if let Some(ref scrubber) = self.scrubber {
             let cwd = scrubber.scrub_path(&request.cwd);
@@ -128,6 +130,38 @@ impl AiProvider {
         if !recent_str.is_empty() {
             prompt.push_str(&format!("Recent commands: {recent_str}\n"));
         }
+
+        // Include CompletionContext info when available
+        if let Some(ctx) = ctx {
+            let pos = match &ctx.position {
+                crate::completion_context::Position::CommandName => "command name",
+                crate::completion_context::Position::Subcommand => "subcommand",
+                crate::completion_context::Position::OptionFlag => "option/flag",
+                crate::completion_context::Position::OptionValue { option } => {
+                    prompt.push_str(&format!("Completing value for option: {option}\n"));
+                    "option value"
+                }
+                crate::completion_context::Position::Argument { index } => {
+                    prompt.push_str(&format!("Argument position: {index}\n"));
+                    "argument"
+                }
+                crate::completion_context::Position::PipeTarget => "command after pipe",
+                crate::completion_context::Position::Redirect => "file path after redirect",
+                crate::completion_context::Position::Unknown => "unknown",
+            };
+            prompt.push_str(&format!("Completion position: {pos}\n"));
+
+            if let Some(ref cmd) = ctx.command {
+                prompt.push_str(&format!("Command: {cmd}\n"));
+            }
+            if !ctx.subcommand_path.is_empty() {
+                prompt.push_str(&format!(
+                    "Subcommand path: {}\n",
+                    ctx.subcommand_path.join(" ")
+                ));
+            }
+        }
+
         prompt.push_str(&format!("Current input: \"{buffer}\"\n"));
 
         prompt
@@ -295,7 +329,11 @@ impl AiProvider {
 
 #[async_trait]
 impl SuggestionProvider for AiProvider {
-    async fn suggest(&self, request: &SuggestRequest) -> Option<ProviderSuggestion> {
+    async fn suggest(
+        &self,
+        request: &SuggestRequest,
+        ctx: Option<&CompletionContext>,
+    ) -> Option<ProviderSuggestion> {
         if !self.config.enabled || request.buffer.is_empty() {
             return None;
         }
@@ -328,7 +366,8 @@ impl SuggestionProvider for AiProvider {
         // Concurrency limit
         let _permit = self.concurrency.try_acquire().ok()?;
 
-        let prompt = self.build_prompt(request, project_type.as_deref(), git_branch.as_deref());
+        let prompt =
+            self.build_prompt(request, project_type.as_deref(), git_branch.as_deref(), ctx);
         if prompt.is_empty() {
             tracing::debug!("Buffer matched security blocklist, skipping AI");
             return None;

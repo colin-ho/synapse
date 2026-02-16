@@ -92,6 +92,8 @@ pub enum SuggestionSource {
     Context,
     Ai,
     Spec,
+    Filesystem,
+    Environment,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -147,6 +149,8 @@ impl std::fmt::Display for SuggestionSource {
             SuggestionSource::Context => write!(f, "context"),
             SuggestionSource::Ai => write!(f, "ai"),
             SuggestionSource::Spec => write!(f, "spec"),
+            SuggestionSource::Filesystem => write!(f, "filesystem"),
+            SuggestionSource::Environment => write!(f, "environment"),
         }
     }
 }

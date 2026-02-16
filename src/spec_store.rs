@@ -32,6 +32,13 @@ impl SpecStore {
             ("cargo", include_str!("../specs/builtin/cargo.toml")),
             ("npm", include_str!("../specs/builtin/npm.toml")),
             ("docker", include_str!("../specs/builtin/docker.toml")),
+            ("ls", include_str!("../specs/builtin/ls.toml")),
+            ("grep", include_str!("../specs/builtin/grep.toml")),
+            ("find", include_str!("../specs/builtin/find.toml")),
+            ("curl", include_str!("../specs/builtin/curl.toml")),
+            ("ssh", include_str!("../specs/builtin/ssh.toml")),
+            ("python", include_str!("../specs/builtin/python.toml")),
+            ("pip", include_str!("../specs/builtin/pip.toml")),
         ];
 
         for (name, toml_str) in specs_raw {

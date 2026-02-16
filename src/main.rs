@@ -1,4 +1,5 @@
 mod cache;
+mod completion_context;
 mod config;
 mod logging;
 mod protocol;
@@ -9,6 +10,7 @@ mod session;
 mod spec;
 mod spec_autogen;
 mod spec_store;
+mod workflow;
 
 use std::io::IsTerminal;
 use std::io::Write as _;
@@ -25,6 +27,8 @@ use crate::logging::InteractionLogger;
 use crate::protocol::{Request, Response, SuggestionListResponse, SuggestionResponse};
 use crate::providers::ai::AiProvider;
 use crate::providers::context::ContextProvider;
+use crate::providers::environment::EnvironmentProvider;
+use crate::providers::filesystem::FilesystemProvider;
 use crate::providers::history::HistoryProvider;
 use crate::providers::spec::SpecProvider;
 use crate::providers::SuggestionProvider;
@@ -32,6 +36,7 @@ use crate::ranking::Ranker;
 use crate::security::Scrubber;
 use crate::session::SessionManager;
 use crate::spec_store::SpecStore;
+use crate::workflow::WorkflowPredictor;
 
 #[derive(Parser)]
 #[command(name = "synapse", about = "Intelligent Zsh command suggestions")]
@@ -440,7 +445,13 @@ async fn start_daemon(
     let spec_store = Arc::new(SpecStore::new(config.spec.clone()));
     let spec_provider = Arc::new(SpecProvider::new(spec_store));
 
+    // Init filesystem and environment providers
+    let filesystem_provider = Arc::new(FilesystemProvider::new());
+    let environment_provider = Arc::new(EnvironmentProvider::new());
+    environment_provider.scan_path().await;
+
     let ranker = Arc::new(Ranker::new(config.weights.clone()));
+    let workflow_predictor = Arc::new(WorkflowPredictor::new());
 
     let session_manager = SessionManager::new();
     let interaction_logger = Arc::new(InteractionLogger::new(
@@ -457,7 +468,10 @@ async fn start_daemon(
         context_provider,
         ai_provider,
         spec_provider,
+        filesystem_provider,
+        environment_provider,
         ranker,
+        workflow_predictor,
         session_manager,
         interaction_logger,
         config.clone(),
@@ -479,7 +493,10 @@ async fn run_server(
     context_provider: Arc<ContextProvider>,
     ai_provider: Arc<AiProvider>,
     spec_provider: Arc<SpecProvider>,
+    filesystem_provider: Arc<FilesystemProvider>,
+    environment_provider: Arc<EnvironmentProvider>,
     ranker: Arc<Ranker>,
+    workflow_predictor: Arc<WorkflowPredictor>,
     session_manager: SessionManager,
     interaction_logger: Arc<InteractionLogger>,
     config: Arc<Config>,
@@ -493,12 +510,15 @@ async fn run_server(
                         let cp = context_provider.clone();
                         let ap = ai_provider.clone();
                         let sp = spec_provider.clone();
+                        let fp = filesystem_provider.clone();
+                        let ep = environment_provider.clone();
                         let rk = ranker.clone();
+                        let wp = workflow_predictor.clone();
                         let sm = session_manager.clone();
                         let il = interaction_logger.clone();
                         let cfg = config.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, hp, cp, ap, sp, rk, sm, il, cfg).await {
+                            if let Err(e) = handle_connection(stream, hp, cp, ap, sp, fp, ep, rk, wp, sm, il, cfg).await {
                                 tracing::debug!("Connection error: {e}");
                             }
                         });
@@ -525,7 +545,10 @@ async fn handle_connection(
     context_provider: Arc<ContextProvider>,
     ai_provider: Arc<AiProvider>,
     spec_provider: Arc<SpecProvider>,
+    filesystem_provider: Arc<FilesystemProvider>,
+    environment_provider: Arc<EnvironmentProvider>,
     ranker: Arc<Ranker>,
+    workflow_predictor: Arc<WorkflowPredictor>,
     session_manager: SessionManager,
     interaction_logger: Arc<InteractionLogger>,
     config: Arc<Config>,
@@ -557,7 +580,10 @@ async fn handle_connection(
                     &context_provider,
                     &ai_provider,
                     &spec_provider,
+                    &filesystem_provider,
+                    &environment_provider,
                     &ranker,
+                    &workflow_predictor,
                     &session_manager,
                     &interaction_logger,
                     &config,
@@ -590,7 +616,10 @@ async fn handle_request(
     context_provider: &Arc<ContextProvider>,
     ai_provider: &Arc<AiProvider>,
     spec_provider: &Arc<SpecProvider>,
+    filesystem_provider: &Arc<FilesystemProvider>,
+    environment_provider: &Arc<EnvironmentProvider>,
     ranker: &Arc<Ranker>,
+    workflow_predictor: &Arc<WorkflowPredictor>,
     session_manager: &SessionManager,
     interaction_logger: &Arc<InteractionLogger>,
     config: &Arc<Config>,
@@ -606,11 +635,22 @@ async fn handle_request(
 
             session_manager.update_from_request(&req).await;
 
-            // Phase 1: Immediate — query history + context + spec concurrently
-            let (history_result, context_result, spec_result) = tokio::join!(
-                history_provider.suggest(&req),
-                context_provider.suggest(&req),
-                spec_provider.suggest(&req),
+            // Build CompletionContext
+            let cwd = std::path::Path::new(&req.cwd);
+            let completion_ctx = crate::completion_context::CompletionContext::build(
+                &req.buffer,
+                cwd,
+                spec_provider.store(),
+            )
+            .await;
+
+            // Phase 1: Immediate — query all providers concurrently
+            let (history_result, context_result, spec_result, fs_result, env_result) = tokio::join!(
+                history_provider.suggest(&req, Some(&completion_ctx)),
+                context_provider.suggest(&req, Some(&completion_ctx)),
+                spec_provider.suggest(&req, Some(&completion_ctx)),
+                filesystem_provider.suggest(&req, Some(&completion_ctx)),
+                environment_provider.suggest(&req, Some(&completion_ctx)),
             );
 
             let mut suggestions = Vec::new();
@@ -623,9 +663,15 @@ async fn handle_request(
             if let Some(s) = spec_result {
                 suggestions.push(s);
             }
+            if let Some(s) = fs_result {
+                suggestions.push(s);
+            }
+            if let Some(s) = env_result {
+                suggestions.push(s);
+            }
 
             // Rank immediate results
-            let ranked = ranker.rank(suggestions, &req.recent_commands);
+            let ranked = ranker.rank(suggestions, &req.recent_commands, Some(&completion_ctx));
 
             let current_score = ranked.as_ref().map(|r| r.score).unwrap_or(0.0);
 
@@ -678,8 +724,8 @@ async fn handle_request(
                     }
 
                     // Call AI provider
-                    if let Some(ai_suggestion) = ap.suggest(&req).await {
-                        let ai_ranked = rk.rank(vec![ai_suggestion], &req.recent_commands);
+                    if let Some(ai_suggestion) = ap.suggest(&req, None).await {
+                        let ai_ranked = rk.rank(vec![ai_suggestion], &req.recent_commands, None);
                         if let Some(ai_r) = ai_ranked {
                             // Only push update if AI score beats current best
                             if ai_r.score > current_score {
@@ -720,19 +766,60 @@ async fn handle_request(
             let suggest_req = req.as_suggest_request();
             let max = req.max_results.min(config.spec.max_list_results);
 
+            // Build CompletionContext for list suggestions
+            let cwd = std::path::Path::new(&req.cwd);
+            let completion_ctx = crate::completion_context::CompletionContext::build(
+                &req.buffer,
+                cwd,
+                spec_provider.store(),
+            )
+            .await;
+
             // Query all providers concurrently for multi-results
-            let (history_results, context_results, spec_results) = tokio::join!(
-                history_provider.suggest_multi(&suggest_req, max),
-                context_provider.suggest_multi(&suggest_req, max),
-                spec_provider.suggest_multi(&suggest_req, max),
+            // Include AI with a 200ms timeout so it doesn't block the dropdown
+            let ai_future = async {
+                if config.ai.enabled {
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(200),
+                        ai_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
+                    )
+                    .await
+                    .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            };
+
+            let (
+                history_results,
+                context_results,
+                spec_results,
+                fs_results,
+                env_results,
+                ai_results,
+            ) = tokio::join!(
+                history_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
+                context_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
+                spec_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
+                filesystem_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
+                environment_provider.suggest_multi(&suggest_req, max, Some(&completion_ctx)),
+                ai_future,
             );
 
             let mut all_suggestions = Vec::new();
             all_suggestions.extend(history_results);
             all_suggestions.extend(context_results);
             all_suggestions.extend(spec_results);
+            all_suggestions.extend(fs_results);
+            all_suggestions.extend(env_results);
+            all_suggestions.extend(ai_results);
 
-            let ranked = ranker.rank_multi(all_suggestions, &req.recent_commands, max);
+            let ranked = ranker.rank_multi(
+                all_suggestions,
+                &req.recent_commands,
+                max,
+                Some(&completion_ctx),
+            );
 
             let items = ranked.iter().map(|r| r.to_suggestion_item()).collect();
 
@@ -745,6 +832,16 @@ async fn handle_request(
                 action = ?report.action,
                 "Interaction report"
             );
+
+            // Record workflow transition on Accept
+            if report.action == crate::protocol::InteractionAction::Accept {
+                if let Some(prev) = session_manager.get_last_accepted(&report.session_id).await {
+                    workflow_predictor.record(&prev, &report.suggestion).await;
+                }
+                session_manager
+                    .record_accepted(&report.session_id, report.suggestion.clone())
+                    .await;
+            }
 
             interaction_logger.log_interaction(
                 &report.session_id,

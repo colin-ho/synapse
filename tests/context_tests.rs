@@ -1,10 +1,13 @@
 use std::collections::HashMap;
-use std::io::Write;
+use std::sync::Arc;
 
+use synapse::completion_context::CompletionContext;
 use synapse::config::ContextConfig;
+use synapse::config::SpecConfig;
 use synapse::protocol::SuggestRequest;
 use synapse::providers::context::ContextProvider;
 use synapse::providers::SuggestionProvider;
+use synapse::spec_store::SpecStore;
 
 fn make_request(buffer: &str, cwd: &str) -> SuggestRequest {
     SuggestRequest {
@@ -33,7 +36,7 @@ async fn test_cargo_context() {
     });
 
     let req = make_request("cargo b", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "cargo build");
 }
@@ -53,7 +56,29 @@ async fn test_package_json_scripts() {
     });
 
     let req = make_request("npm run d", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().text, "npm run dev");
+}
+
+#[tokio::test]
+async fn test_package_json_scripts_with_completion_context() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts": {"dev": "vite", "build": "tsc && vite build"}}"#,
+    )
+    .unwrap();
+
+    let provider = ContextProvider::new(ContextConfig {
+        enabled: true,
+        scan_depth: 3,
+    });
+    let store = Arc::new(SpecStore::new(SpecConfig::default()));
+
+    let req = make_request("npm run d", dir.path().to_str().unwrap());
+    let ctx = CompletionContext::build(&req.buffer, dir.path(), &store).await;
+    let result = provider.suggest(&req, Some(&ctx)).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "npm run dev");
 }
@@ -73,7 +98,7 @@ async fn test_makefile_targets() {
     });
 
     let req = make_request("make b", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "make build");
 }
@@ -105,7 +130,7 @@ async fn test_yarn_detection() {
     });
 
     let req = make_request("yarn s", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "yarn start");
 }
@@ -125,6 +150,6 @@ async fn test_empty_buffer_returns_none() {
     });
 
     let req = make_request("", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_none());
 }

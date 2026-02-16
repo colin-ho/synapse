@@ -1,0 +1,96 @@
+name = "pip"
+aliases = ["pip3"]
+description = "Python package installer"
+
+[[subcommands]]
+name = "install"
+description = "Install packages"
+
+  [[subcommands.options]]
+  short = "-r"
+  long = "--requirement"
+  takes_arg = true
+  description = "Install from requirements file"
+
+  [[subcommands.options]]
+  short = "-U"
+  long = "--upgrade"
+  description = "Upgrade packages to newest"
+
+  [[subcommands.options]]
+  short = "-e"
+  long = "--editable"
+  takes_arg = true
+  description = "Install editable project"
+
+  [[subcommands.options]]
+  long = "--no-deps"
+  description = "Don't install dependencies"
+
+  [[subcommands.options]]
+  long = "--pre"
+  description = "Include pre-release versions"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "uninstall"
+description = "Uninstall packages"
+
+  [[subcommands.options]]
+  short = "-y"
+  long = "--yes"
+  description = "Don't ask for confirmation"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "freeze"
+description = "Output installed packages in requirements format"
+
+[[subcommands]]
+name = "list"
+description = "List installed packages"
+
+  [[subcommands.options]]
+  short = "-o"
+  long = "--outdated"
+  description = "List outdated packages"
+
+  [[subcommands.options]]
+  short = "-u"
+  long = "--uptodate"
+  description = "List up-to-date packages"
+
+[[subcommands]]
+name = "show"
+description = "Show information about packages"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "search"
+description = "Search PyPI for packages"
+
+  [[subcommands.args]]
+  name = "query"
+
+[[subcommands]]
+name = "download"
+description = "Download packages"
+
+  [[subcommands.options]]
+  short = "-d"
+  long = "--dest"
+  takes_arg = true
+  description = "Download directory"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true

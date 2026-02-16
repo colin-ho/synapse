@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 
+use synapse::completion_context::{CompletionContext, Position};
 use synapse::config::HistoryConfig;
+use synapse::config::SpecConfig;
 use synapse::protocol::SuggestRequest;
 use synapse::providers::history::HistoryProvider;
 use synapse::providers::SuggestionProvider;
+use synapse::spec_store::SpecStore;
 
 // Serialize tests that mutate the HISTFILE env var
 static HISTFILE_LOCK: Mutex<()> = Mutex::new(());
@@ -52,7 +55,7 @@ async fn test_simple_prefix_match() {
     provider.load_history().await;
 
     let req = make_request("git s");
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "git status");
 }
@@ -75,7 +78,7 @@ async fn test_extended_history_format() {
     provider.load_history().await;
 
     let req = make_request("docker c");
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     let text = result.unwrap().text;
     assert!(text.starts_with("docker compose"));
@@ -95,7 +98,7 @@ async fn test_frequency_ranking() {
     provider.load_history().await;
 
     let req = make_request("git st");
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     // "git status" has frequency 3 vs "git stash" with 1
     assert_eq!(result.unwrap().text, "git status");
@@ -116,7 +119,7 @@ async fn test_fuzzy_match() {
 
     // "git chekout" is misspelled — fuzzy should match "git checkout main"
     let req = make_request("git chekout");
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert!(result.unwrap().text.starts_with("git checkout"));
 }
@@ -135,7 +138,7 @@ async fn test_empty_buffer_returns_none() {
     provider.load_history().await;
 
     let req = make_request("");
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_none());
 }
 
@@ -153,8 +156,34 @@ async fn test_no_match_returns_none() {
     provider.load_history().await;
 
     let req = make_request("zzz_no_match");
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn test_suggest_multi_pipe_target_uses_context() {
+    let _lock = HISTFILE_LOCK.lock().unwrap();
+    let file = write_history_file(&["git status", "git switch main", "ls -la"]);
+    std::env::set_var("HISTFILE", file.path().to_str().unwrap());
+
+    let provider = HistoryProvider::new(HistoryConfig {
+        enabled: true,
+        max_entries: 50000,
+        fuzzy: false,
+    });
+    provider.load_history().await;
+
+    let req = make_request("echo hi | gi");
+    let store = SpecStore::new(SpecConfig::default());
+    let ctx = CompletionContext::build(&req.buffer, std::path::Path::new("/tmp"), &store).await;
+    assert_eq!(ctx.position, Position::PipeTarget);
+
+    let results = provider.suggest_multi(&req, 5, Some(&ctx)).await;
+    assert!(
+        results.iter().any(|r| r.text.starts_with("git ")),
+        "expected git command suggestion for pipe target, got: {:?}",
+        results.iter().map(|r| r.text.clone()).collect::<Vec<_>>()
+    );
 }
 
 #[test]

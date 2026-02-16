@@ -61,7 +61,7 @@ async fn test_git_subcommand_completion() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = make_request("git co", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     let suggestion = result.unwrap();
     // Should suggest "git commit" or "git config" (starts with "co")
@@ -80,7 +80,7 @@ async fn test_git_multi_suggestions() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = make_request("git ", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 10).await;
+    let results = provider.suggest_multi(&req, 10, None).await;
     assert!(
         results.len() > 1,
         "Expected multiple suggestions for 'git '"
@@ -99,7 +99,7 @@ async fn test_git_checkout_alias() {
 
     // "git ch" should match both "checkout" and "cherry-pick" etc.
     let req = make_request("git ch", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 10).await;
+    let results = provider.suggest_multi(&req, 10, None).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
         texts
@@ -118,7 +118,7 @@ async fn test_cargo_subcommand_completion() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = make_request("cargo b", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "cargo build");
 }
@@ -129,7 +129,7 @@ async fn test_cargo_test_completion() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = make_request("cargo t", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "cargo test");
 }
@@ -142,11 +142,50 @@ async fn test_git_commit_option_completion() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = make_request("git commit --m", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 10).await;
+    let results = provider.suggest_multi(&req, 10, None).await;
     let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
     assert!(
         texts.iter().any(|t| t.contains("--message")),
         "Expected --message in suggestions, got: {:?}",
+        texts
+    );
+}
+
+#[tokio::test]
+async fn test_option_arg_generator_while_typing_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec_dir = dir.path().join(".synapse").join("specs");
+    std::fs::create_dir_all(&spec_dir).unwrap();
+    std::fs::write(
+        spec_dir.join("tool.toml"),
+        r#"
+name = "tool"
+
+[[options]]
+long = "--profile"
+takes_arg = true
+description = "Profile name"
+
+[options.arg_generator]
+command = "printf '%s\n' alpha beta"
+"#,
+    )
+    .unwrap();
+
+    let config = SpecConfig {
+        auto_generate: false,
+        trust_project_generators: true,
+        ..SpecConfig::default()
+    };
+    let store = Arc::new(SpecStore::new(config));
+    let provider = SpecProvider::new(store);
+
+    let req = make_request("tool --profile a", dir.path().to_str().unwrap());
+    let results = provider.suggest_multi(&req, 10, None).await;
+    let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+    assert!(
+        texts.iter().any(|t| *t == "tool --profile alpha"),
+        "Expected option arg generator suggestion, got: {:?}",
         texts
     );
 }
@@ -159,7 +198,7 @@ async fn test_empty_buffer_returns_none() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = make_request("", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_none());
 }
 
@@ -171,7 +210,7 @@ async fn test_unknown_command_returns_empty() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = make_request("nonexistent_cmd ", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_none());
 }
 
@@ -282,7 +321,7 @@ async fn test_autogen_cargo_spec() {
     let provider = SpecProvider::new(store);
 
     let req = make_request("cargo b", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "cargo build");
 }
@@ -301,7 +340,7 @@ async fn test_autogen_makefile_spec() {
     let provider = SpecProvider::new(store);
 
     let req = make_request("make d", dir.path().to_str().unwrap());
-    let result = provider.suggest(&req).await;
+    let result = provider.suggest(&req, None).await;
     assert!(result.is_some());
     assert_eq!(result.unwrap().text, "make deploy");
 }
@@ -314,7 +353,7 @@ async fn test_suggest_multi_truncates() {
     let dir = tempfile::tempdir().unwrap();
 
     let req = make_request("git ", dir.path().to_str().unwrap());
-    let results = provider.suggest_multi(&req, 3).await;
+    let results = provider.suggest_multi(&req, 3, None).await;
     assert!(
         results.len() <= 3,
         "Expected at most 3 results, got {}",

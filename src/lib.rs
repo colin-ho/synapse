@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod completion_context;
 pub mod config;
 pub mod logging;
 pub mod protocol;
@@ -9,3 +10,4 @@ pub mod session;
 pub mod spec;
 pub mod spec_autogen;
 pub mod spec_store;
+pub mod workflow;

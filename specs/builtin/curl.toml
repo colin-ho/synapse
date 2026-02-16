@@ -1,0 +1,78 @@
+name = "curl"
+description = "Transfer data from or to a server"
+
+[[options]]
+short = "-X"
+long = "--request"
+takes_arg = true
+description = "Specify request method"
+
+[[options]]
+short = "-H"
+long = "--header"
+takes_arg = true
+description = "Pass custom header to server"
+
+[[options]]
+short = "-d"
+long = "--data"
+takes_arg = true
+description = "HTTP POST data"
+
+[[options]]
+short = "-o"
+long = "--output"
+takes_arg = true
+description = "Write output to file"
+
+[[options]]
+short = "-O"
+long = "--remote-name"
+description = "Write output to file named like remote file"
+
+[[options]]
+short = "-s"
+long = "--silent"
+description = "Silent mode"
+
+[[options]]
+short = "-v"
+long = "--verbose"
+description = "Make the operation more talkative"
+
+[[options]]
+short = "-L"
+long = "--location"
+description = "Follow redirects"
+
+[[options]]
+short = "-I"
+long = "--head"
+description = "Fetch headers only"
+
+[[options]]
+short = "-k"
+long = "--insecure"
+description = "Allow insecure server connections"
+
+[[options]]
+long = "--compressed"
+description = "Request compressed response"
+
+[[options]]
+short = "-f"
+long = "--fail"
+description = "Fail silently on HTTP errors"
+
+[[options]]
+long = "--data-raw"
+takes_arg = true
+description = "HTTP POST data without processing"
+
+[[options]]
+long = "--json"
+takes_arg = true
+description = "Shortcut for JSON content type and data"
+
+[[args]]
+name = "url"

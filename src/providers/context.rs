@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use moka::future::Cache;
 use tokio::sync::RwLock;
 
+use crate::completion_context::CompletionContext;
 use crate::config::ContextConfig;
 use crate::protocol::{SuggestRequest, SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderSuggestion, SuggestionProvider};
@@ -121,6 +122,103 @@ impl ContextProvider {
         ctx
     }
 
+    /// Word-level matching: match ctx.command against trigger_prefix,
+    /// then filter ctx.partial against the subcommand/target portion.
+    fn word_level_suggest(
+        &self,
+        dir_ctx: &DirectoryContext,
+        command: &str,
+        partial: &str,
+        prefix: &str,
+    ) -> Option<ProviderSuggestion> {
+        let mut best: Option<ProviderSuggestion> = None;
+
+        for cmd in &dir_ctx.commands {
+            if let Some(suggestion) = self.word_level_match(cmd, command, partial, prefix) {
+                if best.as_ref().is_none_or(|b| suggestion.score > b.score) {
+                    best = Some(suggestion);
+                }
+            }
+        }
+
+        best
+    }
+
+    fn word_level_suggest_multi(
+        &self,
+        dir_ctx: &DirectoryContext,
+        command: &str,
+        partial: &str,
+        prefix: &str,
+    ) -> Vec<ProviderSuggestion> {
+        dir_ctx
+            .commands
+            .iter()
+            .filter_map(|cmd| self.word_level_match(cmd, command, partial, prefix))
+            .collect()
+    }
+
+    /// Match a context command at the word level.
+    /// If the command's trigger_prefix matches `command`, extract the target portion
+    /// and filter by `partial`.
+    fn word_level_match(
+        &self,
+        ctx_cmd: &ContextCommand,
+        command: &str,
+        partial: &str,
+        prefix: &str,
+    ) -> Option<ProviderSuggestion> {
+        // Primary path: when CompletionContext provides a concrete typed prefix,
+        // strip from the full stored command to avoid duplicated segments.
+        let target = if !prefix.is_empty() {
+            ctx_cmd.command.strip_prefix(prefix)?
+        } else {
+            // Fallback path for callers without a typed prefix.
+            if ctx_cmd.trigger_prefix != command {
+                return None;
+            }
+            ctx_cmd
+                .command
+                .strip_prefix(&ctx_cmd.trigger_prefix)
+                .and_then(|s| s.strip_prefix(' '))
+                .unwrap_or("")
+        };
+
+        // The typed partial corresponds to the beginning of the remaining target.
+        if !partial.is_empty() && !target.starts_with(partial) {
+            return None;
+        }
+
+        if target.is_empty() {
+            return None;
+        }
+
+        let text = if !prefix.is_empty() {
+            format!("{prefix}{target}")
+        } else {
+            ctx_cmd.command.clone()
+        };
+
+        // Don't suggest if it would be identical to what's already typed
+        if text.trim() == prefix.trim() {
+            return None;
+        }
+
+        let specificity = if !partial.is_empty() {
+            partial.len() as f64 / target.len().max(1) as f64
+        } else {
+            0.0
+        };
+
+        Some(ProviderSuggestion {
+            text,
+            source: SuggestionSource::Context,
+            score: ctx_cmd.relevance * (0.7 + 0.3 * specificity),
+            description: None,
+            kind: SuggestionKind::Command,
+        })
+    }
+
     #[allow(dead_code)]
     pub async fn invalidate(&self, path: &Path) {
         // Invalidate cache entries whose project root is a prefix of the changed path
@@ -136,19 +234,31 @@ impl ContextProvider {
 
 #[async_trait]
 impl SuggestionProvider for ContextProvider {
-    async fn suggest(&self, request: &SuggestRequest) -> Option<ProviderSuggestion> {
+    async fn suggest(
+        &self,
+        request: &SuggestRequest,
+        completion_ctx: Option<&CompletionContext>,
+    ) -> Option<ProviderSuggestion> {
         if request.buffer.is_empty() {
             return None;
         }
 
         let cwd = Path::new(&request.cwd);
-        let ctx = self.get_context(cwd).await;
+        let dir_ctx = self.get_context(cwd).await;
         let buffer = &request.buffer;
 
-        // Find best matching context command
+        // Word-level matching when CompletionContext is available
+        if let Some(cc) = completion_ctx {
+            if !cc.prefix.is_empty() {
+                let command = cc.command.as_deref().unwrap_or_default();
+                return self.word_level_suggest(&dir_ctx, command, &cc.partial, &cc.prefix);
+            }
+        }
+
+        // Fallback: full-buffer prefix matching
         let mut best: Option<(f64, &ContextCommand)> = None;
 
-        for cmd in &ctx.commands {
+        for cmd in &dir_ctx.commands {
             if cmd.command.starts_with(buffer) && cmd.command.len() > buffer.len() {
                 let score = cmd.relevance;
                 if best.as_ref().is_none_or(|(s, _)| score > *s) {
@@ -174,16 +284,38 @@ impl SuggestionProvider for ContextProvider {
         self.config.enabled
     }
 
-    async fn suggest_multi(&self, request: &SuggestRequest, max: usize) -> Vec<ProviderSuggestion> {
+    async fn suggest_multi(
+        &self,
+        request: &SuggestRequest,
+        max: usize,
+        completion_ctx: Option<&CompletionContext>,
+    ) -> Vec<ProviderSuggestion> {
         if request.buffer.is_empty() {
             return Vec::new();
         }
 
         let cwd = Path::new(&request.cwd);
-        let ctx = self.get_context(cwd).await;
+        let dir_ctx = self.get_context(cwd).await;
         let buffer = &request.buffer;
 
-        let mut results: Vec<ProviderSuggestion> = ctx
+        // Word-level matching when CompletionContext is available
+        if let Some(cc) = completion_ctx {
+            if !cc.prefix.is_empty() {
+                let command = cc.command.as_deref().unwrap_or_default();
+                let mut results =
+                    self.word_level_suggest_multi(&dir_ctx, command, &cc.partial, &cc.prefix);
+                results.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                results.truncate(max);
+                return results;
+            }
+        }
+
+        // Fallback: full-buffer prefix matching
+        let mut results: Vec<ProviderSuggestion> = dir_ctx
             .commands
             .iter()
             .filter(|cmd| cmd.command.starts_with(buffer) && cmd.command.len() > buffer.len())
