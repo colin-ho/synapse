@@ -508,7 +508,9 @@ mod tests {
         let recipes = parse_justfile_recipes(dir.path());
         assert!(recipes.contains(&"build".to_string()));
         assert!(recipes.contains(&"test".to_string()));
-        assert!(!recipes.iter().any(|n| n.contains("set") || n.contains("alias")));
+        assert!(!recipes
+            .iter()
+            .any(|n| n.contains("set") || n.contains("alias")));
     }
 
     #[test]

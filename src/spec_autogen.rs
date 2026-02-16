@@ -65,10 +65,7 @@ fn make_spec(targets: Vec<String>) -> CommandSpec {
     }
 }
 
-fn package_json_spec(
-    manager: &str,
-    scripts: Vec<(String, Option<String>)>,
-) -> CommandSpec {
+fn package_json_spec(manager: &str, scripts: Vec<(String, Option<String>)>) -> CommandSpec {
     let script_subcmds: Vec<SubcommandSpec> = scripts
         .into_iter()
         .map(|(name, description)| SubcommandSpec {
