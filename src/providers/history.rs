@@ -1,36 +1,40 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use async_trait::async_trait;
 
-use crate::completion_context::{CompletionContext, Position};
+use crate::completion_context::Position;
 use crate::config::HistoryConfig;
 use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
 #[derive(Debug, Clone)]
 struct HistoryEntry {
-    command: String,
     frequency: u32,
     last_used: u64, // epoch seconds
 }
 
+struct HistoryData {
+    entries: BTreeMap<String, HistoryEntry>,
+    max_epoch: u64,
+    max_freq: u32,
+}
+
 pub struct HistoryProvider {
-    entries: Arc<RwLock<BTreeMap<String, HistoryEntry>>>,
+    data: RwLock<HistoryData>,
     config: HistoryConfig,
-    max_epoch: Arc<RwLock<u64>>,
-    max_freq: Arc<RwLock<u32>>,
 }
 
 impl HistoryProvider {
     pub fn new(config: HistoryConfig) -> Self {
         Self {
-            entries: Arc::new(RwLock::new(BTreeMap::new())),
+            data: RwLock::new(HistoryData {
+                entries: BTreeMap::new(),
+                max_epoch: 0,
+                max_freq: 1,
+            }),
             config,
-            max_epoch: Arc::new(RwLock::new(0)),
-            max_freq: Arc::new(RwLock::new(1)),
         }
     }
 
@@ -100,8 +104,7 @@ impl HistoryProvider {
                 max_epoch = ts;
             }
 
-            let entry = entries.entry(cmd.clone()).or_insert_with(|| HistoryEntry {
-                command: cmd,
+            let entry = entries.entry(cmd).or_insert(HistoryEntry {
                 frequency: 0,
                 last_used: 0,
             });
@@ -128,246 +131,97 @@ impl HistoryProvider {
             .max(1);
 
         let count = entries.len();
-        *self.entries.write().await = entries;
-        *self.max_epoch.write().await = max_epoch;
-        *self.max_freq.write().await = max_freq;
+        *self.data.write().await = HistoryData {
+            entries,
+            max_epoch,
+            max_freq,
+        };
         tracing::info!("Loaded {count} history entries (max_freq={max_freq})");
     }
+}
 
-    async fn prefix_search(&self, prefix: &str) -> Option<ProviderSuggestion> {
-        if prefix.is_empty() {
-            return None;
-        }
-
-        let entries = self.entries.read().await;
-        let max_epoch = *self.max_epoch.read().await;
-        let max_freq = *self.max_freq.read().await;
-
-        // BTreeMap range query for prefix matching
-        let end = increment_last_char(prefix);
-        let range = match &end {
-            Some(e) => entries.range(prefix.to_string()..e.clone()),
-            None => entries.range(prefix.to_string()..),
-        };
-
-        let mut best: Option<(f64, &HistoryEntry)> = None;
-
-        for (_key, entry) in range {
-            if !entry.command.starts_with(prefix) {
-                break;
-            }
-            let score = compute_score(entry, max_epoch, max_freq);
-            if best.as_ref().is_none_or(|(s, _)| score > *s) {
-                best = Some((score, entry));
-            }
-        }
-
-        best.map(|(score, entry)| ProviderSuggestion {
-            text: entry.command.clone(),
-            source: SuggestionSource::History,
-            score,
-            description: None,
-            kind: SuggestionKind::History,
-        })
+fn make_suggestion(command: &str, score: f64) -> ProviderSuggestion {
+    ProviderSuggestion {
+        text: command.to_string(),
+        source: SuggestionSource::History,
+        score,
+        description: None,
+        kind: SuggestionKind::History,
     }
+}
 
-    /// Search history by argument: use ctx.prefix as a BTreeMap range key,
-    /// then filter the argument portion by ctx.partial.
-    async fn argument_search(&self, ctx: &CompletionContext) -> Option<ProviderSuggestion> {
-        if ctx.prefix.is_empty() {
-            return None;
-        }
-
-        let entries = self.entries.read().await;
-        let max_epoch = *self.max_epoch.read().await;
-        let max_freq = *self.max_freq.read().await;
-
-        let end = increment_last_char(&ctx.prefix);
-        let range = match &end {
-            Some(e) => entries.range(ctx.prefix.clone()..e.clone()),
-            None => entries.range(ctx.prefix.clone()..),
-        };
-
-        let mut best: Option<(f64, &HistoryEntry)> = None;
-
-        for (_key, entry) in range {
-            if !entry.command.starts_with(&ctx.prefix) {
-                break;
-            }
-
-            // Extract the argument portion after the prefix
-            let arg_part = entry.command[ctx.prefix.len()..].trim_start();
-            if ctx.partial.is_empty() || arg_part.starts_with(&ctx.partial) {
-                let score = compute_score(entry, max_epoch, max_freq);
-                if best.as_ref().is_none_or(|(s, _)| score > *s) {
-                    best = Some((score, entry));
-                }
-            }
-        }
-
-        best.map(|(score, entry)| ProviderSuggestion {
-            text: entry.command.clone(),
-            source: SuggestionSource::History,
-            score,
-            description: None,
-            kind: SuggestionKind::History,
-        })
+/// Collect entries matching `prefix`, optionally filtering the argument portion
+/// after `prefix` by `partial`. Returns raw scored tuples for further composition.
+fn collect_prefix_matches<'a>(
+    data: &'a HistoryData,
+    prefix: &str,
+    partial: &str,
+) -> Vec<(f64, &'a str)> {
+    if prefix.is_empty() {
+        return Vec::new();
     }
-
-    /// Search history by first token: for CommandName/PipeTarget positions,
-    /// match the partial against the first word of each history entry.
-    async fn first_token_search(&self, partial: &str) -> Option<ProviderSuggestion> {
-        if partial.is_empty() {
-            return None;
+    let mut results = Vec::new();
+    for (cmd, entry) in data.entries.range(prefix.to_string()..) {
+        if !cmd.starts_with(prefix) {
+            break;
         }
-
-        let entries = self.entries.read().await;
-        let max_epoch = *self.max_epoch.read().await;
-        let max_freq = *self.max_freq.read().await;
-
-        let mut best: Option<(f64, &HistoryEntry)> = None;
-
-        for (_key, entry) in entries.iter() {
-            let first_word = entry.command.split_whitespace().next().unwrap_or("");
-            if first_word.starts_with(partial) {
-                let score = compute_score(entry, max_epoch, max_freq);
-                if best.as_ref().is_none_or(|(s, _)| score > *s) {
-                    best = Some((score, entry));
-                }
-            }
-        }
-
-        best.map(|(score, entry)| ProviderSuggestion {
-            text: entry.command.clone(),
-            source: SuggestionSource::History,
-            score,
-            description: None,
-            kind: SuggestionKind::History,
-        })
-    }
-
-    async fn argument_search_multi(
-        &self,
-        ctx: &CompletionContext,
-        max: usize,
-    ) -> Vec<ProviderSuggestion> {
-        if ctx.prefix.is_empty() {
-            return Vec::new();
-        }
-
-        let entries = self.entries.read().await;
-        let max_epoch = *self.max_epoch.read().await;
-        let max_freq = *self.max_freq.read().await;
-
-        let end = increment_last_char(&ctx.prefix);
-        let range = match &end {
-            Some(e) => entries.range(ctx.prefix.clone()..e.clone()),
-            None => entries.range(ctx.prefix.clone()..),
-        };
-
-        let mut results: Vec<(f64, &HistoryEntry)> = Vec::new();
-        for (_key, entry) in range {
-            if !entry.command.starts_with(&ctx.prefix) {
-                break;
-            }
-
-            let arg_part = entry.command[ctx.prefix.len()..].trim_start();
-            if ctx.partial.is_empty() || arg_part.starts_with(&ctx.partial) {
-                let score = compute_score(entry, max_epoch, max_freq);
-                results.push((score, entry));
-            }
-        }
-
-        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(max);
-        results
-            .into_iter()
-            .map(|(score, entry)| ProviderSuggestion {
-                text: entry.command.clone(),
-                source: SuggestionSource::History,
-                score,
-                description: None,
-                kind: SuggestionKind::History,
-            })
-            .collect()
-    }
-
-    async fn first_token_search_multi(&self, partial: &str, max: usize) -> Vec<ProviderSuggestion> {
-        if partial.is_empty() {
-            return Vec::new();
-        }
-
-        let entries = self.entries.read().await;
-        let max_epoch = *self.max_epoch.read().await;
-        let max_freq = *self.max_freq.read().await;
-
-        let mut results: Vec<(f64, &HistoryEntry)> = Vec::new();
-        for (_key, entry) in entries.iter() {
-            let first_word = entry.command.split_whitespace().next().unwrap_or("");
-            if first_word.starts_with(partial) {
-                let score = compute_score(entry, max_epoch, max_freq);
-                results.push((score, entry));
-            }
-        }
-
-        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(max);
-        results
-            .into_iter()
-            .map(|(score, entry)| ProviderSuggestion {
-                text: entry.command.clone(),
-                source: SuggestionSource::History,
-                score,
-                description: None,
-                kind: SuggestionKind::History,
-            })
-            .collect()
-    }
-
-    pub async fn fuzzy_search(&self, query: &str) -> Option<ProviderSuggestion> {
-        if query.is_empty() || query.len() < 2 {
-            return None;
-        }
-
-        let entries = self.entries.read().await;
-        let max_epoch = *self.max_epoch.read().await;
-        let max_freq = *self.max_freq.read().await;
-        let first_char = query.chars().next()?;
-
-        let mut best: Option<(f64, &HistoryEntry)> = None;
-
-        for (_key, entry) in entries.iter() {
-            // Only consider commands starting with the same first character
-            if !entry.command.starts_with(first_char) {
+        if !partial.is_empty() {
+            let arg_part = cmd[prefix.len()..].trim_start();
+            if !arg_part.starts_with(partial) {
                 continue;
             }
-
-            let distance = levenshtein(
-                query,
-                &entry.command[..query.len().min(entry.command.len())],
-            );
-            let max_distance = (query.len() as f64 * 0.3).ceil() as usize; // 30% threshold
-
-            if distance <= max_distance && entry.command.len() > query.len() {
-                let base_score = compute_score(entry, max_epoch, max_freq);
-                // Penalize by edit distance
-                let fuzzy_penalty = 1.0 - (distance as f64 / query.len() as f64);
-                let score = (base_score * fuzzy_penalty * 0.8).clamp(0.0, 1.0);
-
-                if best.as_ref().is_none_or(|(s, _)| score > *s) {
-                    best = Some((score, entry));
-                }
-            }
         }
-
-        best.map(|(score, entry)| ProviderSuggestion {
-            text: entry.command.clone(),
-            source: SuggestionSource::History,
-            score,
-            description: None,
-            kind: SuggestionKind::History,
-        })
+        results.push((
+            compute_score(entry, data.max_epoch, data.max_freq),
+            cmd.as_str(),
+        ));
     }
+    results
+}
+
+/// Sort scored tuples by score descending, truncate, and convert to suggestions.
+fn to_suggestions(mut results: Vec<(f64, &str)>, max: usize) -> Vec<ProviderSuggestion> {
+    results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    results.truncate(max);
+    results
+        .into_iter()
+        .map(|(score, cmd)| make_suggestion(cmd, score))
+        .collect()
+}
+
+/// Collect fuzzy matches (Levenshtein distance within 30% threshold),
+/// excluding entries already in `seen`.
+fn fuzzy_matches<'a>(
+    data: &'a HistoryData,
+    query: &str,
+    seen: &HashSet<&str>,
+) -> Vec<(f64, &'a str)> {
+    if query.len() < 2 {
+        return Vec::new();
+    }
+    let first_char = match query.chars().next() {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    for (cmd, entry) in data.entries.range(first_char.to_string()..) {
+        if !cmd.starts_with(first_char) {
+            break;
+        }
+        if seen.contains(cmd.as_str()) {
+            continue;
+        }
+        let distance = levenshtein(query, &cmd[..query.len().min(cmd.len())]);
+        let max_distance = (query.len() as f64 * 0.3).ceil() as usize;
+        if distance <= max_distance && distance > 0 && cmd.len() > query.len() {
+            let base_score = compute_score(entry, data.max_epoch, data.max_freq);
+            let fuzzy_penalty = 1.0 - (distance as f64 / query.len() as f64);
+            let score = (base_score * fuzzy_penalty * 0.8).clamp(0.0, 1.0);
+            results.push((score, cmd.as_str()));
+        }
+    }
+    results
 }
 
 #[async_trait]
@@ -382,114 +236,31 @@ impl SuggestionProvider for HistoryProvider {
             return Vec::new();
         }
 
-        if max == 1 {
-            // Preserve single-suggestion behavior for inline ghost text mode.
-            match &request.position {
-                Position::Argument { .. } | Position::Subcommand | Position::OptionValue { .. } => {
-                    if let Some(s) = self.argument_search(request).await {
-                        return vec![s];
-                    }
-                }
-                Position::CommandName | Position::PipeTarget => {
-                    if let Some(s) = self.first_token_search(&request.partial).await {
-                        return vec![s];
-                    }
-                }
-                _ => {}
-            }
+        let data = self.data.read().await;
 
-            // Fallback: full prefix match
-            if let Some(suggestion) = self.prefix_search(buffer).await {
-                return vec![suggestion];
-            }
-
-            // Fall back to fuzzy if enabled
-            if self.config.fuzzy {
-                return self.fuzzy_search(buffer).await.into_iter().collect();
-            }
-
-            return Vec::new();
-        }
-
+        // Position-based contextual search
         let contextual = match &request.position {
             Position::Argument { .. } | Position::Subcommand | Position::OptionValue { .. } => {
-                self.argument_search_multi(request, max).await
+                collect_prefix_matches(&data, &request.prefix, &request.partial)
             }
             Position::CommandName | Position::PipeTarget => {
-                self.first_token_search_multi(&request.partial, max).await
+                collect_prefix_matches(&data, &request.partial, "")
             }
             _ => Vec::new(),
         };
         if !contextual.is_empty() {
-            return contextual;
+            return to_suggestions(contextual, max);
         }
 
-        let entries = self.entries.read().await;
-        let max_epoch = *self.max_epoch.read().await;
-        let max_freq = *self.max_freq.read().await;
+        // Fallback: prefix match + optional fuzzy
+        let mut results = collect_prefix_matches(&data, buffer, "");
 
-        // Prefix range query — collect all matches
-        let end = increment_last_char(buffer);
-        let range = match &end {
-            Some(e) => entries.range(buffer.to_string()..e.clone()),
-            None => entries.range(buffer.to_string()..),
-        };
-
-        let mut results: Vec<(f64, &HistoryEntry)> = Vec::new();
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-
-        for (_key, entry) in range {
-            if !entry.command.starts_with(buffer) {
-                break;
-            }
-            let score = compute_score(entry, max_epoch, max_freq);
-            results.push((score, entry));
-            seen.insert(&entry.command);
+        if self.config.fuzzy {
+            let seen: HashSet<&str> = results.iter().map(|&(_, cmd)| cmd).collect();
+            results.extend(fuzzy_matches(&data, buffer, &seen));
         }
 
-        // Also include fuzzy matches if enabled
-        if self.config.fuzzy && buffer.len() >= 2 {
-            let first_char = buffer.chars().next();
-            if let Some(fc) = first_char {
-                for (_key, entry) in entries.iter() {
-                    if seen.contains(entry.command.as_str()) {
-                        continue;
-                    }
-                    if !entry.command.starts_with(fc) {
-                        continue;
-                    }
-                    let distance = levenshtein(
-                        buffer,
-                        &entry.command[..buffer.len().min(entry.command.len())],
-                    );
-                    let max_distance = (buffer.len() as f64 * 0.3).ceil() as usize;
-                    if distance <= max_distance
-                        && distance > 0
-                        && entry.command.len() > buffer.len()
-                    {
-                        let base_score = compute_score(entry, max_epoch, max_freq);
-                        let fuzzy_penalty = 1.0 - (distance as f64 / buffer.len() as f64);
-                        let score = (base_score * fuzzy_penalty * 0.8).clamp(0.0, 1.0);
-                        results.push((score, entry));
-                    }
-                }
-            }
-        }
-
-        // Sort by score descending
-        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(max);
-
-        results
-            .into_iter()
-            .map(|(score, entry)| ProviderSuggestion {
-                text: entry.command.clone(),
-                source: SuggestionSource::History,
-                score,
-                description: None,
-                kind: SuggestionKind::History,
-            })
-            .collect()
+        to_suggestions(results, max)
     }
 
     fn source(&self) -> SuggestionSource {
@@ -524,10 +295,10 @@ fn parse_history_line(line: &str) -> (String, Option<u64>) {
 }
 
 /// Compute a normalized score in [0, 1] based on frequency and recency.
-/// Formula: 0.6 * (ln(freq) / ln(max_freq)) + 0.4 * recency_decay
+/// Formula: 0.6 * (ln(1+freq) / ln(1+max_freq)) + 0.4 * recency_decay
 fn compute_score(entry: &HistoryEntry, max_epoch: u64, max_freq: u32) -> f64 {
     let freq_score = if max_freq > 1 {
-        (entry.frequency as f64).ln() / (max_freq as f64).ln()
+        (1.0 + entry.frequency as f64).ln() / (1.0 + max_freq as f64).ln()
     } else {
         // All entries have frequency 1 — treat as equal
         1.0
@@ -543,48 +314,22 @@ fn compute_score(entry: &HistoryEntry, max_epoch: u64, max_freq: u32) -> f64 {
     (0.6 * freq_score + 0.4 * recency_score).clamp(0.0, 1.0)
 }
 
-/// Increment the last character to create an exclusive upper bound for range queries
-fn increment_last_char(s: &str) -> Option<String> {
-    let mut chars: Vec<char> = s.chars().collect();
-    if let Some(last) = chars.last_mut() {
-        *last = char::from_u32(*last as u32 + 1)?;
-        Some(chars.into_iter().collect())
-    } else {
-        None
-    }
-}
-
-/// Simple Levenshtein distance
-#[allow(clippy::needless_range_loop)]
+/// Simple Levenshtein distance (single-row DP)
 fn levenshtein(a: &str, b: &str) -> usize {
-    let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
-    let m = a_chars.len();
     let n = b_chars.len();
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0; n + 1];
 
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
-
-    for i in 0..=m {
-        dp[i][0] = i;
-    }
-    for j in 0..=n {
-        dp[0][j] = j;
-    }
-
-    for i in 1..=m {
-        for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] {
-                0
-            } else {
-                1
-            };
-            dp[i][j] = (dp[i - 1][j] + 1)
-                .min(dp[i][j - 1] + 1)
-                .min(dp[i - 1][j - 1] + cost);
+    for (i, a_char) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, &b_char) in b_chars.iter().enumerate() {
+            let cost = usize::from(a_char != b_char);
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
         }
+        std::mem::swap(&mut prev, &mut curr);
     }
-
-    dp[m][n]
+    prev[n]
 }
 
 #[cfg(test)]
@@ -611,5 +356,88 @@ mod tests {
         let (command, timestamp) = parse_history_line("cargo test");
         assert_eq!(command, "cargo test");
         assert_eq!(timestamp, None);
+    }
+
+    #[test]
+    fn test_parse_history_line_with_semicolons_in_command() {
+        let (command, timestamp) = parse_history_line(": 1700000000:0;echo 'a;b;c'");
+        assert_eq!(command, "echo 'a;b;c'");
+        assert_eq!(timestamp, Some(1_700_000_000));
+    }
+
+    #[test]
+    fn test_score_freq_one_is_positive() {
+        let entry = HistoryEntry {
+            frequency: 1,
+            last_used: 1000,
+        };
+        let score = compute_score(&entry, 1000, 10);
+        assert!(
+            score > 0.0,
+            "freq=1 entry must have positive score, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_score_all_freq_one_equal() {
+        let e1 = HistoryEntry {
+            frequency: 1,
+            last_used: 100,
+        };
+        let e2 = HistoryEntry {
+            frequency: 1,
+            last_used: 100,
+        };
+        let s1 = compute_score(&e1, 100, 1);
+        let s2 = compute_score(&e2, 100, 1);
+        assert!((s1 - s2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_score_in_unit_range() {
+        for freq in [1, 5, 100] {
+            for max_freq in [1, 100, 50000] {
+                if freq > max_freq {
+                    continue;
+                }
+                for age in [0u64, 86400, 864000] {
+                    let entry = HistoryEntry {
+                        frequency: freq,
+                        last_used: 1000u64.saturating_sub(age),
+                    };
+                    let score = compute_score(&entry, 1000, max_freq);
+                    assert!(
+                        (0.0..=1.0).contains(&score),
+                        "score={score} out of range for freq={freq}, max_freq={max_freq}, age={age}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_score_recency_ordering() {
+        let recent = HistoryEntry {
+            frequency: 3,
+            last_used: 1000,
+        };
+        let old = HistoryEntry {
+            frequency: 3,
+            last_used: 100,
+        };
+        assert!(compute_score(&recent, 1000, 10) > compute_score(&old, 1000, 10));
+    }
+
+    #[test]
+    fn test_score_frequency_ordering() {
+        let high = HistoryEntry {
+            frequency: 50,
+            last_used: 1000,
+        };
+        let low = HistoryEntry {
+            frequency: 2,
+            last_used: 1000,
+        };
+        assert!(compute_score(&high, 1000, 50) > compute_score(&low, 1000, 50));
     }
 }
