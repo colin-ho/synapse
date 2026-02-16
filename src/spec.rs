@@ -28,6 +28,9 @@ pub struct CommandSpec {
     pub options: Vec<OptionSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<ArgSpec>,
+    /// Command takes another command as its first argument (e.g. sudo, env).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recursive: bool,
     /// Set at load time, not from TOML
     #[serde(skip)]
     pub source: SpecSource,
@@ -43,6 +46,7 @@ impl Default for CommandSpec {
             subcommands: Vec::new(),
             options: Vec::new(),
             args: Vec::new(),
+            recursive: false,
             source: SpecSource::Builtin,
         }
     }
