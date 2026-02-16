@@ -205,22 +205,12 @@ impl SpecStore {
         let timeout = Duration::from_millis(self.config.discover_timeout_ms);
         let args: Vec<String> = Vec::new();
 
-        // Try --help first, then -h
-        let help_text = match self
-            .run_help_command(command, &args, "--help", timeout, cwd)
-            .await
-        {
-            Some(text) if !text.trim().is_empty() => text,
-            _ => match self
-                .run_help_command(command, &args, "-h", timeout, cwd)
-                .await
-            {
-                Some(text) if !text.trim().is_empty() => text,
-                _ => {
-                    tracing::debug!("No help output for {command}");
-                    return;
-                }
-            },
+        let help_text = match self.fetch_help_output(command, &args, timeout, cwd).await {
+            Some(text) => text,
+            None => {
+                tracing::debug!("No help output for {command}");
+                return;
+            }
         };
 
         let llm_budget = AtomicUsize::new(
@@ -325,6 +315,26 @@ impl SpecStore {
         }
     }
 
+    async fn fetch_help_output(
+        &self,
+        command: &str,
+        args: &[String],
+        timeout: Duration,
+        cwd: Option<&Path>,
+    ) -> Option<String> {
+        for help_flag in ["--help", "-h"] {
+            if let Some(text) = self
+                .run_help_command(command, args, help_flag, timeout, cwd)
+                .await
+            {
+                if !text.trim().is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        None
+    }
+
     /// Recursively discover subcommand specs by running `command ...subcommand --help`.
     async fn discover_subcommands(
         &self,
@@ -362,19 +372,10 @@ impl SpecStore {
         let mut args = parent_path.to_vec();
         args.push(subcommand.name.clone());
 
-        let help_text = match self
-            .run_help_command(base_command, &args, "--help", timeout, cwd)
+        let help_text = self
+            .fetch_help_output(base_command, &args, timeout, cwd)
             .await
-        {
-            Some(text) if !text.trim().is_empty() => text,
-            _ => match self
-                .run_help_command(base_command, &args, "-h", timeout, cwd)
-                .await
-            {
-                Some(text) if !text.trim().is_empty() => text,
-                _ => String::new(),
-            },
-        };
+            .unwrap_or_default();
 
         if !help_text.trim().is_empty() {
             let sub_spec = self
