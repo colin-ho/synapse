@@ -117,8 +117,8 @@ impl LlmClient {
         let prompt = build_prompt(command_name, &help_text);
 
         let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt).await,
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 4096).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 4096).await,
         };
 
         match result {
@@ -156,8 +156,8 @@ impl LlmClient {
         let prompt = build_nl_prompt(ctx, &cwd);
 
         let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt).await,
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 512).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 512).await,
         };
 
         match result {
@@ -186,8 +186,8 @@ impl LlmClient {
 
         let prompt = build_explain_prompt(command);
         let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(&prompt).await,
-            LlmProvider::OpenAI => self.call_openai(&prompt).await,
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 512).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 512).await,
         };
 
         match result {
@@ -199,7 +199,168 @@ impl LlmClient {
                 Ok(explanation)
             }
             Err(e) => {
-                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500) {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Predict the next command based on recent command history and context.
+    pub async fn predict_workflow(
+        &self,
+        cwd: &str,
+        project_type: Option<&str>,
+        recent_commands: &[String],
+        last_exit_code: i32,
+    ) -> Result<String, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let cwd_display = if self.scrub_paths {
+            scrub_home_paths(cwd)
+        } else {
+            cwd.to_string()
+        };
+
+        let prompt =
+            build_workflow_prompt(&cwd_display, project_type, recent_commands, last_exit_code);
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 256).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 256).await,
+        };
+
+        match result {
+            Ok(text) => {
+                let text = text.trim();
+                let text = if text.starts_with('`') && text.ends_with('`') {
+                    text.trim_matches('`').trim()
+                } else {
+                    text
+                };
+                Ok(text.lines().next().unwrap_or("").to_string())
+            }
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Generate a commit message from staged diff content.
+    pub async fn generate_commit_message(&self, staged_diff: &str) -> Result<String, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let diff = if self.scrub_paths {
+            scrub_home_paths(staged_diff)
+        } else {
+            staged_diff.to_string()
+        };
+
+        let prompt = format!(
+            "Generate a concise git commit message (one line, max 72 chars) for this diff. \
+             Respond with ONLY the commit message, no quotes or explanation.\n\n{diff}"
+        );
+
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 512).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 512).await,
+        };
+
+        match result {
+            Ok(text) => Ok(text.trim().lines().next().unwrap_or("").to_string()),
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Enrich a predicted command with contextual arguments.
+    pub async fn enrich_command_args(
+        &self,
+        command: &str,
+        recent_commands: &[String],
+        cwd: &str,
+    ) -> Result<String, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let cwd_display = if self.scrub_paths {
+            scrub_home_paths(cwd)
+        } else {
+            cwd.to_string()
+        };
+
+        let recent = recent_commands
+            .iter()
+            .take(3)
+            .enumerate()
+            .map(|(i, cmd)| format!("{}. {}", i + 1, cmd))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!(
+            "Complete this command with contextually appropriate arguments based on the recent commands.\n\n\
+             Working directory: {cwd_display}\n\
+             Recent commands:\n{recent}\n\n\
+             Command to complete: {command}\n\n\
+             Respond with ONLY the complete command (no explanation)."
+        );
+
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(&prompt, 256).await,
+            LlmProvider::OpenAI => self.call_openai(&prompt, 256).await,
+        };
+
+        match result {
+            Ok(text) => {
+                let text = text.trim();
+                let text = if text.starts_with('`') && text.ends_with('`') {
+                    text.trim_matches('`').trim()
+                } else {
+                    text
+                };
+                Ok(text.lines().next().unwrap_or("").to_string())
+            }
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
+                    self.activate_backoff().await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Ask the LLM for argument value suggestions and parse up to `max_values` lines.
+    pub async fn suggest_argument_values(
+        &self,
+        prompt: &str,
+        max_values: usize,
+    ) -> Result<Vec<String>, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let result = match self.provider {
+            LlmProvider::Anthropic => self.call_anthropic(prompt, 256).await,
+            LlmProvider::OpenAI => self.call_openai(prompt, 256).await,
+        };
+
+        match result {
+            Ok(response_text) => Ok(parse_argument_values(&response_text, max_values)),
+            Err(e) => {
+                if matches!(&e, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+                {
                     self.activate_backoff().await;
                 }
                 Err(e)
@@ -238,10 +399,10 @@ impl LlmClient {
         self.backoff_active.store(true, Ordering::Relaxed);
     }
 
-    async fn call_anthropic(&self, prompt: &str) -> Result<String, LlmError> {
+    async fn call_anthropic(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         let body = AnthropicRequest {
             model: self.model.clone(),
-            max_tokens: 4096,
+            max_tokens,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
                 content: prompt.to_string(),
@@ -272,14 +433,14 @@ impl LlmClient {
             .unwrap_or_default())
     }
 
-    async fn call_openai(&self, prompt: &str) -> Result<String, LlmError> {
+    async fn call_openai(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         let body = OpenAIRequest {
             model: self.model.clone(),
             messages: vec![OpenAIMessage {
                 role: "user".to_string(),
                 content: prompt.to_string(),
             }],
-            max_tokens: 4096,
+            max_tokens,
         };
 
         let resp = self
@@ -407,36 +568,30 @@ Rules:
     )
 }
 
-/// Extract TOML from an LLM response that may contain markdown fences.
-pub(crate) fn extract_toml(response: &str) -> &str {
-    // Try ```toml ... ``` first
-    if let Some(start) = response.find("```toml") {
-        let content_start = start + "```toml".len();
-        if let Some(end) = response[content_start..].find("```") {
-            return response[content_start..content_start + end].trim();
-        }
-    }
-    // Try generic ``` ... ```
-    if let Some(start) = response.find("```") {
-        let content_start = start + "```".len();
-        let content_start = if let Some(nl) = response[content_start..].find('\n') {
-            content_start + nl + 1
-        } else {
-            content_start
-        };
-        if let Some(end) = response[content_start..].find("```") {
-            return response[content_start..content_start + end].trim();
-        }
-    }
-    response.trim()
-}
+fn build_workflow_prompt(
+    cwd: &str,
+    project_type: Option<&str>,
+    recent_commands: &[String],
+    last_exit_code: i32,
+) -> String {
+    let pt = project_type.unwrap_or("unknown");
+    let recent = recent_commands
+        .iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, cmd)| format!("{}. {}", i + 1, cmd))
+        .collect::<Vec<_>>()
+        .join("\n");
 
-fn scrub_home_paths(text: &str) -> String {
-    if let Some(home) = dirs::home_dir() {
-        text.replace(&home.to_string_lossy().to_string(), "~")
-    } else {
-        text.to_string()
-    }
+    format!(
+        "You are a terminal workflow predictor. Given the user's recent commands and context, \
+         predict the single most likely next command they will type.\n\n\
+         Working directory: {cwd}\n\
+         Project type: {pt}\n\
+         Recent commands (most recent first):\n{recent}\n\
+         Last exit code: {last_exit_code}\n\n\
+         Respond with ONLY the complete command (no explanation)."
+    )
 }
 
 fn build_nl_prompt(ctx: &NlTranslationContext, cwd: &str) -> String {
@@ -508,10 +663,8 @@ Rules:
 fn extract_command(response: &str) -> String {
     let trimmed = response.trim();
 
-    // Try ```bash ... ``` or ```sh ... ``` or ``` ... ```
     if let Some(start) = trimmed.find("```") {
         let content_start = start + 3;
-        // Skip language identifier on same line
         let content_start = if let Some(nl) = trimmed[content_start..].find('\n') {
             content_start + nl + 1
         } else {
@@ -524,7 +677,6 @@ fn extract_command(response: &str) -> String {
         }
     }
 
-    // If multi-line, take only the first non-empty, non-comment line
     for line in trimmed.lines() {
         let line = line.trim();
         if !line.is_empty() && !line.starts_with('#') && !line.starts_with("//") {
@@ -558,6 +710,91 @@ fn detect_destructive_command(command: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Extract TOML from an LLM response that may contain markdown fences.
+pub(crate) fn extract_toml(response: &str) -> &str {
+    // Try ```toml ... ``` first
+    if let Some(start) = response.find("```toml") {
+        let content_start = start + "```toml".len();
+        if let Some(end) = response[content_start..].find("```") {
+            return response[content_start..content_start + end].trim();
+        }
+    }
+    // Try generic ``` ... ```
+    if let Some(start) = response.find("```") {
+        let content_start = start + "```".len();
+        let content_start = if let Some(nl) = response[content_start..].find('\n') {
+            content_start + nl + 1
+        } else {
+            content_start
+        };
+        if let Some(end) = response[content_start..].find("```") {
+            return response[content_start..content_start + end].trim();
+        }
+    }
+    response.trim()
+}
+
+pub(crate) fn scrub_home_paths(text: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        text.replace(&home.to_string_lossy().to_string(), "~")
+    } else {
+        text.to_string()
+    }
+}
+
+fn parse_argument_values(response: &str, max_values: usize) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut in_fence = false;
+
+    for raw_line in response.lines() {
+        let mut line = raw_line.trim();
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || line.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("- ") {
+            line = rest.trim();
+        } else if let Some((num, rest)) = line.split_once(". ") {
+            if num.parse::<usize>().is_ok() {
+                line = rest.trim();
+            }
+        }
+
+        line = line.trim_matches('`').trim();
+        line = strip_wrapping_quotes(line);
+
+        if line.is_empty() {
+            continue;
+        }
+
+        let candidate = line.to_string();
+        if !values.contains(&candidate) {
+            values.push(candidate);
+            if values.len() >= max_values {
+                break;
+            }
+        }
+    }
+
+    values
+}
+
+fn strip_wrapping_quotes(value: &str) -> &str {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
 }
 
 #[cfg(test)]
@@ -603,6 +840,27 @@ mod tests {
     fn test_from_config_disabled() {
         let config = LlmConfig::default();
         assert!(LlmClient::from_config(&config, false).is_none());
+    }
+
+    #[test]
+    fn test_parse_argument_values_dedupes_and_strips_markers() {
+        let response = r#"
+1. "feat: add login endpoint"
+2. feat: add login endpoint
+- `fix: handle empty response`
+```toml
+ignored = true
+```
+"#;
+
+        let values = parse_argument_values(response, 5);
+        assert_eq!(
+            values,
+            vec![
+                "feat: add login endpoint".to_string(),
+                "fix: handle empty response".to_string()
+            ]
+        );
     }
 
     #[test]

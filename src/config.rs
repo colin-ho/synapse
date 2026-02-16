@@ -12,6 +12,7 @@ pub struct Config {
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
     pub llm: LlmConfig,
+    pub workflow: WorkflowConfig,
     #[serde(skip)]
     cli_socket_override: Option<String>,
 }
@@ -101,6 +102,18 @@ pub struct LlmConfig {
     pub max_calls_per_discovery: usize,
     pub natural_language: bool,
     pub nl_min_query_length: usize,
+    pub workflow_prediction: bool,
+    pub workflow_max_diff_tokens: usize,
+    pub contextual_args: bool,
+    pub arg_context_timeout_ms: u64,
+    pub arg_max_context_tokens: usize,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct WorkflowConfig {
+    pub enabled: bool,
+    pub min_probability: f64,
 }
 
 // --- Defaults ---
@@ -204,6 +217,20 @@ impl Default for LlmConfig {
             max_calls_per_discovery: 20,
             natural_language: true,
             nl_min_query_length: 5,
+            workflow_prediction: false,
+            workflow_max_diff_tokens: 2000,
+            contextual_args: true,
+            arg_context_timeout_ms: 2_000,
+            arg_max_context_tokens: 3_000,
+        }
+    }
+}
+
+impl Default for WorkflowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_probability: 0.15,
         }
     }
 }
@@ -317,6 +344,9 @@ mod tests {
         assert_eq!(config.weights.history, 0.30);
         assert_eq!(config.weights.spec, 0.50);
         assert_eq!(config.weights.recency, 0.20);
+        assert!(config.llm.contextual_args);
+        assert_eq!(config.llm.arg_context_timeout_ms, 2_000);
+        assert_eq!(config.llm.arg_max_context_tokens, 3_000);
     }
 
     #[test]

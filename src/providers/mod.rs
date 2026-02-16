@@ -1,7 +1,9 @@
 pub mod environment;
 pub mod filesystem;
 pub mod history;
+pub mod llm_argument;
 pub mod spec;
+pub mod workflow;
 
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -30,6 +32,7 @@ pub struct ProviderRequest {
     pub session_id: String,
     pub cwd: String,
     pub recent_commands: Vec<String>,
+    pub last_exit_code: i32,
     pub env_hints: HashMap<String, String>,
     completion: CompletionContext,
     pub spec_store: Arc<SpecStore>,
@@ -55,6 +58,7 @@ impl ProviderRequest {
             session_id: request.session_id.clone(),
             cwd: request.cwd.clone(),
             recent_commands: request.recent_commands.clone(),
+            last_exit_code: request.last_exit_code,
             env_hints: request.env_hints.clone(),
             completion,
             spec_store: store,
@@ -67,7 +71,6 @@ impl ProviderRequest {
     ) -> Self {
         // Preserve compatibility with protocol fields that are currently unused by providers.
         let _ = request.cursor_pos;
-        let _ = request.last_exit_code;
 
         let completion =
             CompletionContext::build(&request.buffer, Path::new(&request.cwd), &store).await;
@@ -75,6 +78,7 @@ impl ProviderRequest {
             session_id: request.session_id.clone(),
             cwd: request.cwd.clone(),
             recent_commands: request.recent_commands.clone(),
+            last_exit_code: request.last_exit_code,
             env_hints: request.env_hints.clone(),
             completion,
             spec_store: store,
@@ -138,4 +142,6 @@ pub enum Provider {
     Spec(Arc<spec::SpecProvider>),
     Filesystem(Arc<filesystem::FilesystemProvider>),
     Environment(Arc<environment::EnvironmentProvider>),
+    Workflow(Arc<workflow::WorkflowProvider>),
+    LlmArgument(Arc<llm_argument::LlmArgumentProvider>),
 }
