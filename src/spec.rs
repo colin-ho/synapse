@@ -1,31 +1,32 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Source priority for specs (higher priority shadows lower)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SpecSource {
+    Discovered,
     Builtin,
     ProjectUser,
     ProjectAuto,
 }
 
 /// Root command specification
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CommandSpec {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[allow(dead_code)]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[allow(dead_code)]
     pub version_command: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subcommands: Vec<SubcommandSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<OptionSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<ArgSpec>,
     /// Set at load time, not from TOML
     #[serde(skip)]
@@ -48,75 +49,84 @@ impl Default for CommandSpec {
 }
 
 /// Recursive subcommand definition
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct SubcommandSpec {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subcommands: Vec<SubcommandSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<OptionSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<ArgSpec>,
 }
 
 /// Option/flag definition
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct OptionSpec {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub long: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub takes_arg: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arg_generator: Option<GeneratorSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[allow(dead_code)]
     pub exclusive_with: Vec<String>,
 }
 
 /// Argument position definition
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct ArgSpec {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     #[allow(dead_code)]
     pub required: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     #[allow(dead_code)]
     pub variadic: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator: Option<GeneratorSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<ArgTemplate>,
 }
 
 /// Dynamic value generator
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct GeneratorSpec {
     pub command: String,
-    #[serde(default = "default_split_on")]
+    #[serde(
+        default = "default_split_on",
+        skip_serializing_if = "is_default_split_on"
+    )]
     pub split_on: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strip_prefix: Option<String>,
-    #[serde(default = "default_cache_ttl")]
+    #[serde(
+        default = "default_cache_ttl",
+        skip_serializing_if = "is_default_cache_ttl"
+    )]
     #[allow(dead_code)]
     pub cache_ttl_secs: u64,
-    #[serde(default = "default_generator_timeout")]
+    #[serde(
+        default = "default_generator_timeout",
+        skip_serializing_if = "is_default_generator_timeout"
+    )]
     pub timeout_ms: u64,
 }
 
@@ -132,8 +142,24 @@ fn default_generator_timeout() -> u64 {
     500
 }
 
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
+fn is_default_split_on(v: &str) -> bool {
+    v == "\n"
+}
+
+fn is_default_cache_ttl(v: &u64) -> bool {
+    *v == 10
+}
+
+fn is_default_generator_timeout(v: &u64) -> bool {
+    *v == 500
+}
+
 /// Template for common argument types
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArgTemplate {
     FilePaths,

@@ -298,11 +298,9 @@ What subcommand are they most likely to type? Respond with just the complete com
 
 More valuable than simple bigram prediction because the LLM understands the semantic flow (staging files → commit).
 
-#### 3. Spec auto-generation (future work)
+#### 3. Spec auto-generation (implemented)
 
-When encountering an unknown command on PATH, run `command --help` in the background and use the LLM to generate a TOML spec. Cache permanently. This bootstraps spec coverage for the user's entire toolset without manual curation.
-
-Deferred because it requires running arbitrary commands, TOML validation, and a separate cache tier.
+When encountering an unknown command, Synapse runs `command --help` (then `-h` fallback) in the background and parses the output into a structured `CommandSpec` using a regex-based parser (`src/help_parser.rs`) that handles common help formats (clap, cobra, argparse, click, POSIX). The resulting spec is cached to `~/synapse/specs/{name}.toml` and loaded into memory for subsequent completions. Discovery is triggered on command execution and when unknown commands are typed. A safety blocklist prevents running `--help` on dangerous commands (rm, dd, sudo, etc.). Recursive subcommand discovery is supported with configurable depth. Specs are re-discovered after a configurable staleness period (default 7 days).
 
 ---
 

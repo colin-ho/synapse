@@ -51,6 +51,18 @@ pub struct SpecConfig {
     /// arbitrary shell commands that execute during completion.
     pub trust_project_generators: bool,
     pub scan_depth: usize,
+    /// Discover specs by running `command --help` for unknown commands
+    pub discover_from_help: bool,
+    /// Maximum recursion depth for subcommand discovery (0 = no recursion)
+    pub discover_max_depth: usize,
+    /// Timeout in ms for each `--help` invocation during discovery
+    pub discover_timeout_ms: u64,
+    /// Maximum age in seconds before re-discovering a command (default: 7 days)
+    pub discover_max_age_secs: u64,
+    /// Auto-discover specs for CLI tools built by the current project
+    pub discover_project_cli: bool,
+    /// Commands to never run --help on
+    pub discover_blocklist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -117,6 +129,12 @@ impl Default for SpecConfig {
             max_list_results: NonZeroUsize::new(10).unwrap(),
             trust_project_generators: false,
             scan_depth: 3,
+            discover_from_help: true,
+            discover_max_depth: 1,
+            discover_timeout_ms: 2000,
+            discover_max_age_secs: 604800,
+            discover_project_cli: true,
+            discover_blocklist: Vec::new(),
         }
     }
 }

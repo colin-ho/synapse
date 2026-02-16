@@ -80,6 +80,14 @@ impl SessionManager {
         }
     }
 
+    pub async fn get_cwd(&self, session_id: &str) -> Option<String> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .get(session_id)
+            .map(|s| s.cwd.clone())
+            .filter(|cwd| !cwd.is_empty())
+    }
+
     pub async fn get_last_buffer(&self, session_id: &str) -> Option<String> {
         let sessions = self.sessions.read().await;
         sessions.get(session_id).map(|s| s.last_buffer.clone())

@@ -25,6 +25,12 @@ generator_timeout_ms = 500             # max time for generator commands
 max_list_results = 10                  # max items in dropdown list
 trust_project_generators = false       # allow .synapse/specs/ generators to run shell commands
 scan_depth = 3                         # max levels to walk up for project files (ignored inside git repos)
+discover_from_help = true              # auto-discover specs by running --help on unknown commands
+discover_max_depth = 1                 # recurse into subcommands (0 = top-level only)
+discover_timeout_ms = 2000             # timeout per --help invocation
+discover_max_age_secs = 604800         # re-discover after 7 days (604800 = 1 week)
+discover_project_cli = true            # discover specs for CLI tools built in current project
+discover_blocklist = []                # commands to never auto-discover
 
 [weights]
 # Weights are normalized to sum to 1.0

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,10 +10,22 @@ use tokio::sync::RwLock;
 use crate::config::SpecConfig;
 use crate::spec::{CommandSpec, GeneratorSpec, SpecSource};
 use crate::spec_autogen;
+use crate::{help_parser, spec_cache};
+
+/// Commands that must never be run with --help for safety reasons.
+const DISCOVERY_BLOCKLIST: &[&str] = &[
+    "rm", "dd", "mkfs", "fdisk", "shutdown", "reboot", "halt", "poweroff", "sudo", "su", "doas",
+    "login", "passwd", "format", "diskutil",
+];
+
+/// Maximum bytes to read from --help stdout.
+const MAX_HELP_OUTPUT_BYTES: usize = 256 * 1024;
 
 /// Manages loading, caching, and resolution of command specs.
 pub struct SpecStore {
     builtin: HashMap<String, CommandSpec>,
+    discovered: RwLock<HashMap<String, CommandSpec>>,
+    discovering: RwLock<HashSet<String>>,
     project_cache: Cache<PathBuf, Arc<HashMap<String, CommandSpec>>>,
     generator_cache: Cache<(String, PathBuf), Vec<String>>,
     config: SpecConfig,
@@ -59,6 +71,12 @@ impl SpecStore {
 
         tracing::info!("Loaded {} builtin specs", builtin.len());
 
+        // Load discovered specs from disk
+        let discovered = spec_cache::load_all_discovered();
+        if !discovered.is_empty() {
+            tracing::info!("Loaded {} discovered specs from disk", discovered.len());
+        }
+
         let project_cache = Cache::builder()
             .max_capacity(50)
             .time_to_live(Duration::from_secs(300))
@@ -71,6 +89,8 @@ impl SpecStore {
 
         Self {
             builtin,
+            discovered: RwLock::new(discovered),
+            discovering: RwLock::new(HashSet::new()),
             project_cache,
             generator_cache,
             config,
@@ -98,6 +118,12 @@ impl SpecStore {
                 return Some(spec.clone());
             }
         }
+        drop(alias_map);
+
+        // Check discovered specs (lowest priority)
+        if let Some(spec) = self.discovered.read().await.get(command) {
+            return Some(spec.clone());
+        }
 
         None
     }
@@ -105,6 +131,13 @@ impl SpecStore {
     /// Get all available command names for a given cwd.
     pub async fn all_command_names(&self, cwd: &Path) -> Vec<String> {
         let mut names: Vec<String> = self.builtin.keys().cloned().collect();
+
+        // Add discovered command names
+        for key in self.discovered.read().await.keys() {
+            if !names.contains(key) {
+                names.push(key.clone());
+            }
+        }
 
         let project_specs = self.get_project_specs(cwd).await;
         for key in project_specs.keys() {
@@ -114,6 +147,234 @@ impl SpecStore {
         }
 
         names
+    }
+
+    /// Trigger background discovery for an unknown command.
+    /// Returns immediately — the spec will be available on subsequent lookups.
+    pub async fn trigger_discovery(self: &Arc<Self>, command: &str) {
+        if !self.config.discover_from_help {
+            return;
+        }
+
+        let command = command.to_string();
+
+        // Skip if we already have a spec or are already discovering
+        if self.builtin.contains_key(&command) {
+            return;
+        }
+        if self.discovered.read().await.contains_key(&command) {
+            return;
+        }
+
+        // Check blocklist
+        if DISCOVERY_BLOCKLIST.contains(&command.as_str()) {
+            return;
+        }
+        if self.config.discover_blocklist.contains(&command) {
+            return;
+        }
+
+        // Check if already discovering
+        {
+            let mut discovering = self.discovering.write().await;
+            if !discovering.insert(command.clone()) {
+                return; // Already in progress
+            }
+        }
+
+        let store = Arc::clone(self);
+        tokio::spawn(async move {
+            store.discover_command_impl(&command).await;
+            store.discovering.write().await.remove(&command);
+        });
+    }
+
+    /// Run the actual discovery process for a command.
+    async fn discover_command_impl(&self, command: &str) {
+        let timeout = Duration::from_millis(self.config.discover_timeout_ms);
+
+        // Try --help first, then -h
+        let help_text = match self.run_help_command(command, "--help", timeout).await {
+            Some(text) if !text.trim().is_empty() => text,
+            _ => match self.run_help_command(command, "-h", timeout).await {
+                Some(text) if !text.trim().is_empty() => text,
+                _ => {
+                    tracing::debug!("No help output for {command}");
+                    return;
+                }
+            },
+        };
+
+        let mut spec = help_parser::parse_help_output(command, &help_text);
+        spec.source = SpecSource::Discovered;
+
+        // Skip if we got nothing useful
+        if spec.subcommands.is_empty() && spec.options.is_empty() {
+            tracing::debug!("No useful spec data from --help for {command}");
+            return;
+        }
+
+        // Recurse into subcommands if configured
+        if self.config.discover_max_depth > 0 && !spec.subcommands.is_empty() {
+            self.discover_subcommands(command, &mut spec, 1).await;
+        }
+
+        // Resolve command path for staleness tracking
+        let command_path = self.resolve_command_path(command).await;
+
+        // Save to disk
+        let discovered = spec_cache::DiscoveredSpec {
+            discovered_at: Some(chrono::Utc::now().to_rfc3339()),
+            command_path,
+            version_output: None,
+            spec: spec.clone(),
+        };
+
+        if let Err(e) = spec_cache::save_discovered(&discovered) {
+            tracing::warn!("Failed to save discovered spec for {command}: {e}");
+        }
+
+        // Insert into in-memory cache
+        self.discovered
+            .write()
+            .await
+            .insert(command.to_string(), spec);
+        tracing::info!("Discovered spec for {command}");
+    }
+
+    /// Run `command help_flag` and return the stdout (or stderr as fallback).
+    async fn run_help_command(
+        &self,
+        command: &str,
+        help_flag: &str,
+        timeout: Duration,
+    ) -> Option<String> {
+        let result = tokio::time::timeout(timeout, async {
+            Command::new(command)
+                .arg(help_flag)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(output)) => {
+                let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                stdout.truncate(MAX_HELP_OUTPUT_BYTES);
+
+                // Some tools print help to stderr
+                if stdout.trim().is_empty() {
+                    let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    stderr.truncate(MAX_HELP_OUTPUT_BYTES);
+                    let lower = stderr.to_lowercase();
+                    if lower.contains("usage") || lower.contains("options") {
+                        return Some(stderr);
+                    }
+                }
+
+                if !stdout.trim().is_empty() {
+                    Some(stdout)
+                } else {
+                    None
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::debug!("Failed to run {command} {help_flag}: {e}");
+                None
+            }
+            Err(_) => {
+                tracing::debug!("{command} {help_flag} timed out");
+                None
+            }
+        }
+    }
+
+    /// Recursively discover subcommand specs by running `command subcommand --help`.
+    async fn discover_subcommands(&self, base_command: &str, spec: &mut CommandSpec, depth: usize) {
+        if depth > self.config.discover_max_depth {
+            return;
+        }
+
+        let timeout = Duration::from_millis(self.config.discover_timeout_ms);
+
+        // Limit concurrency: only process up to 30 subcommands
+        let subcmd_names: Vec<String> = spec
+            .subcommands
+            .iter()
+            .take(30)
+            .map(|s| s.name.clone())
+            .collect();
+
+        for subcmd_name in &subcmd_names {
+            // Skip "help" subcommand — not useful for completions
+            if subcmd_name == "help" {
+                continue;
+            }
+
+            let result = tokio::time::timeout(timeout, async {
+                Command::new(base_command)
+                    .arg(subcmd_name)
+                    .arg("--help")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .await
+            })
+            .await;
+
+            if let Ok(Ok(output)) = result {
+                let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                stdout.truncate(MAX_HELP_OUTPUT_BYTES);
+
+                if stdout.trim().is_empty() {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let lower = stderr.to_lowercase();
+                    if lower.contains("usage") || lower.contains("options") {
+                        stdout = stderr;
+                        stdout.truncate(MAX_HELP_OUTPUT_BYTES);
+                    }
+                }
+
+                if !stdout.trim().is_empty() {
+                    let sub_spec = help_parser::parse_help_output(subcmd_name, &stdout);
+
+                    // Merge parsed data into the existing subcommand entry
+                    if let Some(existing) =
+                        spec.subcommands.iter_mut().find(|s| s.name == *subcmd_name)
+                    {
+                        if existing.options.is_empty() {
+                            existing.options = sub_spec.options;
+                        }
+                        if existing.subcommands.is_empty() {
+                            existing.subcommands = sub_spec.subcommands;
+                        }
+                        if existing.args.is_empty() {
+                            existing.args = sub_spec.args;
+                        }
+                        if existing.description.is_none() {
+                            existing.description = sub_spec.description;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolve a command name to its full path via `which`.
+    async fn resolve_command_path(&self, command: &str) -> Option<String> {
+        let output = Command::new("which").arg(command).output().await.ok()?;
+
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+        None
     }
 
     /// Get project-specific specs (user-defined + auto-generated), cached.
@@ -164,6 +425,21 @@ impl SpecStore {
             let auto_specs = spec_autogen::generate_specs(scan_root);
             for mut spec in auto_specs {
                 // Don't override user-defined specs
+                if !specs.contains_key(&spec.name) {
+                    spec.source = SpecSource::ProjectAuto;
+                    specs.insert(spec.name.clone(), spec);
+                }
+            }
+        }
+
+        // Discover specs for CLI tools built by the current project
+        if self.config.discover_project_cli {
+            let cli_specs = spec_autogen::discover_project_cli_specs(
+                scan_root,
+                self.config.discover_timeout_ms,
+            )
+            .await;
+            for mut spec in cli_specs {
                 if !specs.contains_key(&spec.name) {
                     spec.source = SpecSource::ProjectAuto;
                     specs.insert(spec.name.clone(), spec);

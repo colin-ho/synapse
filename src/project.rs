@@ -1,5 +1,12 @@
 use std::path::{Path, PathBuf};
 
+/// Information about a CLI tool built by the current project.
+#[derive(Debug, Clone)]
+pub struct ProjectCliTool {
+    pub name: String,
+    pub binary_path: Option<PathBuf>,
+}
+
 // --- Project root discovery ---
 
 /// Walk up from `cwd` to find the project root.
@@ -288,6 +295,110 @@ pub fn parse_python_info(root: &Path) -> Option<PythonInfo> {
         has_poetry,
         has_ruff,
     })
+}
+
+// --- CLI tool detection ---
+
+/// Detect CLI tools built by the current project.
+/// Returns a list of binary names and their paths if the binaries have been built.
+pub fn detect_project_cli_tools(root: &Path) -> Vec<ProjectCliTool> {
+    let mut tools = Vec::new();
+
+    // Rust/clap detection
+    if let Some(manifest) = parse_cargo_manifest(&root.join("Cargo.toml")) {
+        let has_clap = manifest
+            .dependencies
+            .keys()
+            .any(|k| k == "clap" || k == "structopt");
+        if has_clap {
+            // Check [[bin]] targets
+            let bins: Vec<String> = manifest.bin.iter().filter_map(|b| b.name.clone()).collect();
+
+            if bins.is_empty() {
+                // Fall back to package name with src/main.rs
+                if let Some(ref pkg) = manifest.package {
+                    if root.join("src").join("main.rs").exists() {
+                        let name = pkg.name.clone();
+                        let binary_path = find_rust_binary(root, &name);
+                        tools.push(ProjectCliTool { name, binary_path });
+                    }
+                }
+            } else {
+                for name in bins {
+                    let binary_path = find_rust_binary(root, &name);
+                    tools.push(ProjectCliTool { name, binary_path });
+                }
+            }
+        }
+    }
+
+    // Go/cobra detection
+    if root.join("go.mod").exists() {
+        if let Ok(content) = std::fs::read_to_string(root.join("go.mod")) {
+            if content.contains("github.com/spf13/cobra")
+                || content.contains("github.com/urfave/cli")
+            {
+                // Go binary name is typically the directory name
+                if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
+                    let binary_path = root.join(name);
+                    let path = if binary_path.exists() {
+                        Some(binary_path)
+                    } else {
+                        None
+                    };
+                    tools.push(ProjectCliTool {
+                        name: name.to_string(),
+                        binary_path: path,
+                    });
+                }
+            }
+        }
+    }
+
+    // Python/click detection
+    if root.join("pyproject.toml").exists() {
+        if let Ok(content) = std::fs::read_to_string(root.join("pyproject.toml")) {
+            if content.contains("click") || content.contains("typer") {
+                // Look for [project.scripts] entries
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    // Pattern: `name = "module:function"`
+                    if trimmed.contains('=') && trimmed.contains(':') {
+                        if let Some(name) = trimmed.split('=').next() {
+                            let name = name.trim().trim_matches('"');
+                            if !name.is_empty() && !name.starts_with('[') && !name.contains('.') {
+                                // Check if it's in a venv
+                                let venv_bin = root.join(".venv").join("bin").join(name);
+                                let path = if venv_bin.exists() {
+                                    Some(venv_bin)
+                                } else {
+                                    None
+                                };
+                                tools.push(ProjectCliTool {
+                                    name: name.to_string(),
+                                    binary_path: path,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    tools
+}
+
+fn find_rust_binary(root: &Path, name: &str) -> Option<PathBuf> {
+    let debug = root.join("target").join("debug").join(name);
+    if debug.exists() {
+        return Some(debug);
+    }
+    let release = root.join("target").join("release").join(name);
+    if release.exists() {
+        return Some(release);
+    }
+    None
 }
 
 #[cfg(test)]
