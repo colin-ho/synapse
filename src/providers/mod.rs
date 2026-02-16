@@ -103,6 +103,7 @@ where
 }
 
 /// Enum-backed provider dispatch used by the daemon runtime.
+#[derive(Clone)]
 #[enum_dispatch(SuggestionProvider)]
 pub enum Provider {
     History(Arc<history::HistoryProvider>),
