@@ -33,7 +33,7 @@ pub async fn make_provider_request_with_env(
         env_hints,
         ..request
     };
-    let store = Arc::new(SpecStore::new(SpecConfig::default()));
+    let store = Arc::new(SpecStore::new(SpecConfig::default(), None));
     ProviderRequest::from_suggest_request(&request, store).await
 }
 

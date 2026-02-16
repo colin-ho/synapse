@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 
 use crate::config::SpecConfig;
+use crate::llm::LlmClient;
 use crate::spec::{CommandSpec, GeneratorSpec, SpecSource, SubcommandSpec};
 use crate::spec_autogen;
 use crate::{help_parser, spec_cache};
@@ -31,10 +33,11 @@ pub struct SpecStore {
     config: SpecConfig,
     /// Alias → canonical name mapping for builtins
     alias_map: RwLock<HashMap<String, String>>,
+    llm_client: Option<Arc<LlmClient>>,
 }
 
 impl SpecStore {
-    pub fn new(config: SpecConfig) -> Self {
+    pub fn new(config: SpecConfig, llm_client: Option<Arc<LlmClient>>) -> Self {
         let mut builtin = HashMap::new();
         let mut alias_map = HashMap::new();
 
@@ -95,6 +98,7 @@ impl SpecStore {
             generator_cache,
             config,
             alias_map: RwLock::new(alias_map),
+            llm_client,
         }
     }
 
@@ -219,7 +223,16 @@ impl SpecStore {
             },
         };
 
-        let mut spec = help_parser::parse_help_output(command, &help_text);
+        let llm_budget = AtomicUsize::new(
+            self.llm_client
+                .as_ref()
+                .map(|c| c.max_calls_per_discovery())
+                .unwrap_or(0),
+        );
+
+        let mut spec = self
+            .parse_with_llm_or_regex(command, &help_text, &llm_budget)
+            .await;
         spec.source = SpecSource::Discovered;
 
         // Skip if we got nothing useful
@@ -230,7 +243,8 @@ impl SpecStore {
 
         // Recurse into subcommands if configured
         if self.config.discover_max_depth > 0 && !spec.subcommands.is_empty() {
-            self.discover_subcommands(command, &mut spec, cwd).await;
+            self.discover_subcommands(command, &mut spec, cwd, &llm_budget)
+                .await;
         }
 
         // Resolve command path for staleness tracking
@@ -317,9 +331,10 @@ impl SpecStore {
         base_command: &str,
         spec: &mut CommandSpec,
         cwd: Option<&Path>,
+        llm_budget: &AtomicUsize,
     ) {
         for subcommand in spec.subcommands.iter_mut().take(30) {
-            self.discover_subcommand_tree(base_command, &[], subcommand, 1, cwd)
+            self.discover_subcommand_tree(base_command, &[], subcommand, 1, cwd, llm_budget)
                 .await;
         }
     }
@@ -331,6 +346,7 @@ impl SpecStore {
         subcommand: &mut SubcommandSpec,
         depth: usize,
         cwd: Option<&Path>,
+        llm_budget: &AtomicUsize,
     ) {
         if depth > self.config.discover_max_depth {
             return;
@@ -361,7 +377,9 @@ impl SpecStore {
         };
 
         if !help_text.trim().is_empty() {
-            let sub_spec = help_parser::parse_help_output(&subcommand.name, &help_text);
+            let sub_spec = self
+                .parse_with_llm_or_regex(&subcommand.name, &help_text, llm_budget)
+                .await;
             if subcommand.options.is_empty() {
                 subcommand.options = sub_spec.options;
             }
@@ -389,9 +407,41 @@ impl SpecStore {
                 nested,
                 depth + 1,
                 cwd,
+                llm_budget,
             ))
             .await;
         }
+    }
+
+    /// Try LLM parsing first (if available and budget allows), fall back to regex.
+    async fn parse_with_llm_or_regex(
+        &self,
+        command_name: &str,
+        help_text: &str,
+        llm_budget: &AtomicUsize,
+    ) -> CommandSpec {
+        if let Some(ref llm) = self.llm_client {
+            let prev = llm_budget.fetch_sub(1, Ordering::Relaxed);
+            if prev > 0 {
+                match llm.generate_spec(command_name, help_text).await {
+                    Ok(spec) => {
+                        tracing::info!("LLM parsed spec for {command_name}");
+                        return spec;
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "LLM parse failed for {command_name}, falling back to regex: {e}"
+                        );
+                        llm_budget.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            } else {
+                // Restore: fetch_sub already decremented past 0 (wraps for usize)
+                llm_budget.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!("LLM budget exhausted, using regex for {command_name}");
+            }
+        }
+        help_parser::parse_help_output(command_name, help_text)
     }
 
     /// Resolve a command name to its full path.
