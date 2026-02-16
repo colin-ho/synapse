@@ -36,7 +36,7 @@ pub struct NlTranslationResult {
     pub warning: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LlmProvider {
     Anthropic,
     OpenAI,
@@ -45,6 +45,7 @@ enum LlmProvider {
 pub struct LlmClient {
     provider: LlmProvider,
     api_key: String,
+    base_url: Option<String>,
     model: String,
     max_calls_per_discovery: usize,
     client: Client,
@@ -63,18 +64,38 @@ impl LlmClient {
             return None;
         }
 
-        let api_key = std::env::var(&config.api_key_env).ok()?;
-        if api_key.is_empty() {
-            tracing::debug!("LLM disabled: env var {} is empty", config.api_key_env);
-            return None;
-        }
-
         let provider = match config.provider.as_str() {
             "anthropic" => LlmProvider::Anthropic,
             "openai" => LlmProvider::OpenAI,
             other => {
                 tracing::warn!("Unknown LLM provider '{other}', disabling LLM");
                 return None;
+            }
+        };
+
+        let base_url = config
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .map(|v| v.trim_end_matches('/').to_string())
+            .filter(|v| !v.is_empty());
+
+        let api_key = match std::env::var(&config.api_key_env) {
+            Ok(v) if !v.is_empty() => v,
+            _ => {
+                // For local OpenAI-compatible endpoints (LM Studio, etc.), allow a placeholder.
+                if provider == LlmProvider::OpenAI
+                    && base_url.as_deref().is_some_and(is_local_base_url)
+                {
+                    tracing::info!(
+                        "LLM key env {} missing; using placeholder key for local endpoint",
+                        config.api_key_env
+                    );
+                    "lm-studio".to_string()
+                } else {
+                    tracing::debug!("LLM disabled: env var {} is empty", config.api_key_env);
+                    return None;
+                }
             }
         };
 
@@ -86,6 +107,7 @@ impl LlmClient {
         Some(Self {
             provider,
             api_key,
+            base_url,
             model: config.model.clone(),
             max_calls_per_discovery: config.max_calls_per_discovery,
             client,
@@ -300,7 +322,7 @@ impl LlmClient {
 
         let resp = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(self.anthropic_messages_url())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
@@ -328,7 +350,7 @@ impl LlmClient {
 
         let resp = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(self.openai_chat_completions_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .json(&body)
@@ -341,6 +363,20 @@ impl LlmClient {
             .first()
             .map(|c| c.message.content.clone())
             .unwrap_or_default())
+    }
+
+    fn anthropic_messages_url(&self) -> String {
+        match self.base_url.as_deref() {
+            Some(base) => url_with_v1_path(base, "messages"),
+            None => "https://api.anthropic.com/v1/messages".to_string(),
+        }
+    }
+
+    fn openai_chat_completions_url(&self) -> String {
+        match self.base_url.as_deref() {
+            Some(base) => url_with_v1_path(base, "chat/completions"),
+            None => "https://api.openai.com/v1/chat/completions".to_string(),
+        }
     }
 }
 
@@ -668,9 +704,31 @@ fn strip_wrapping_quotes(value: &str) -> &str {
     value
 }
 
+fn url_with_v1_path(base_url: &str, suffix: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let suffix = suffix.trim_start_matches('/');
+    if base.ends_with("/v1") {
+        format!("{base}/{suffix}")
+    } else {
+        format!("{base}/v1/{suffix}")
+    }
+}
+
+fn is_local_base_url(base_url: &str) -> bool {
+    let lower = base_url.to_ascii_lowercase();
+    let host_part = lower.split_once("://").map(|(_, r)| r).unwrap_or(&lower);
+    host_part.starts_with("127.0.0.1")
+        || host_part.starts_with("localhost")
+        || host_part.starts_with("[::1]")
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    static LLM_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_extract_toml_with_toml_fence() {
@@ -736,6 +794,7 @@ ignored = true
 
     #[test]
     fn test_from_config_unknown_provider() {
+        let _guard = LLM_ENV_LOCK.lock().unwrap();
         let config = LlmConfig {
             enabled: true,
             provider: "unknown".into(),
@@ -747,6 +806,64 @@ ignored = true
         let result = LlmClient::from_config(&config, false);
         unsafe { std::env::remove_var("SYNAPSE_TEST_KEY") };
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_from_config_local_openai_without_api_key_uses_placeholder() {
+        let _guard = LLM_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("SYNAPSE_TEST_LOCAL_KEY") };
+
+        let config = LlmConfig {
+            enabled: true,
+            provider: "openai".into(),
+            api_key_env: "SYNAPSE_TEST_LOCAL_KEY".into(),
+            base_url: Some("http://127.0.0.1:1234".into()),
+            ..LlmConfig::default()
+        };
+
+        let client = LlmClient::from_config(&config, false)
+            .expect("local openai-compatible endpoint should allow placeholder key");
+        assert_eq!(client.api_key, "lm-studio");
+        assert_eq!(
+            client.openai_chat_completions_url(),
+            "http://127.0.0.1:1234/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_from_config_non_local_without_api_key_is_none() {
+        let _guard = LLM_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("SYNAPSE_TEST_REMOTE_KEY") };
+
+        let config = LlmConfig {
+            enabled: true,
+            provider: "openai".into(),
+            api_key_env: "SYNAPSE_TEST_REMOTE_KEY".into(),
+            base_url: Some("https://api.openai.com".into()),
+            ..LlmConfig::default()
+        };
+
+        assert!(LlmClient::from_config(&config, false).is_none());
+    }
+
+    #[test]
+    fn test_url_with_v1_path() {
+        assert_eq!(
+            url_with_v1_path("http://127.0.0.1:1234", "chat/completions"),
+            "http://127.0.0.1:1234/v1/chat/completions"
+        );
+        assert_eq!(
+            url_with_v1_path("http://127.0.0.1:1234/v1", "chat/completions"),
+            "http://127.0.0.1:1234/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_is_local_base_url() {
+        assert!(is_local_base_url("http://127.0.0.1:1234"));
+        assert!(is_local_base_url("http://localhost:1234"));
+        assert!(is_local_base_url("http://[::1]:1234"));
+        assert!(!is_local_base_url("https://api.openai.com"));
     }
 
     #[test]

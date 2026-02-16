@@ -97,6 +97,10 @@ pub struct LlmConfig {
     pub enabled: bool,
     pub provider: String,
     pub api_key_env: String,
+    /// Optional API base URL override.
+    /// - OpenAI: uses {base_url}/v1/chat/completions (or {base_url}/chat/completions if base_url already ends in /v1)
+    /// - Anthropic: uses {base_url}/v1/messages (or {base_url}/messages if base_url already ends in /v1)
+    pub base_url: Option<String>,
     pub model: String,
     pub timeout_ms: u64,
     pub max_calls_per_discovery: usize,
@@ -212,6 +216,7 @@ impl Default for LlmConfig {
             enabled: false,
             provider: "anthropic".into(),
             api_key_env: "ANTHROPIC_API_KEY".into(),
+            base_url: None,
             model: "claude-haiku-4-5-20251001".into(),
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
@@ -347,6 +352,7 @@ mod tests {
         assert!(config.llm.contextual_args);
         assert_eq!(config.llm.arg_context_timeout_ms, 2_000);
         assert_eq!(config.llm.arg_max_context_tokens, 3_000);
+        assert_eq!(config.llm.base_url, None);
     }
 
     #[test]
