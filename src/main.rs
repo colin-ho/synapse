@@ -18,8 +18,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use futures_util::stream::SplitSink;
+use futures_util::{SinkExt, StreamExt};
 use tokio::net::UnixListener;
+use tokio_util::codec::{Framed, LinesCodec};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
@@ -39,6 +41,9 @@ use crate::security::Scrubber;
 use crate::session::SessionManager;
 use crate::spec_store::SpecStore;
 use crate::workflow::WorkflowPredictor;
+
+type SharedWriter =
+    Arc<tokio::sync::Mutex<SplitSink<Framed<tokio::net::UnixStream, LinesCodec>, String>>>;
 
 #[derive(Parser)]
 #[command(name = "synapse", about = "Intelligent Zsh command suggestions")]
@@ -548,17 +553,21 @@ async fn handle_connection(
     interaction_logger: Arc<InteractionLogger>,
     config: Arc<Config>,
 ) -> anyhow::Result<()> {
-    let (reader, writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    let writer = Arc::new(tokio::sync::Mutex::new(writer));
-    let mut line = String::new();
+    let framed = Framed::new(stream, LinesCodec::new());
+    let (writer, mut reader) = framed.split();
+    let writer: SharedWriter = Arc::new(tokio::sync::Mutex::new(writer));
 
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
+        let Some(line_result) = reader.next().await else {
             break; // Connection closed
-        }
+        };
+        let line = match line_result {
+            Ok(line) => line,
+            Err(e) => {
+                tracing::debug!("Frame read error: {e}");
+                break;
+            }
+        };
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -590,11 +599,9 @@ async fn handle_connection(
             }
         };
 
-        let mut response_json = serde_json::to_string(&response)?;
-        response_json.push('\n');
+        let response_json = serde_json::to_string(&response)?;
         let mut w = writer.lock().await;
-        w.write_all(response_json.as_bytes()).await?;
-        w.flush().await?;
+        w.send(response_json).await?;
     }
 
     Ok(())
@@ -610,7 +617,7 @@ async fn handle_request(
     session_manager: &SessionManager,
     interaction_logger: &Arc<InteractionLogger>,
     config: &Arc<Config>,
-    writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    writer: SharedWriter,
 ) -> Response {
     match request {
         Request::Suggest(req) => {
@@ -711,11 +718,9 @@ async fn handle_request(
                                     confidence: ai_r.score.min(1.0),
                                 });
 
-                                if let Ok(mut json) = serde_json::to_string(&update) {
-                                    json.push('\n');
+                                if let Ok(json) = serde_json::to_string(&update) {
                                     let mut w = writer.lock().await;
-                                    let _ = w.write_all(json.as_bytes()).await;
-                                    let _ = w.flush().await;
+                                    let _ = w.send(json).await;
                                 }
                             }
                         }

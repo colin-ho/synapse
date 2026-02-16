@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::Path;
+
+use serde::Deserialize;
 
 use crate::spec::{ArgSpec, CommandSpec, OptionSpec, SubcommandSpec};
 
@@ -140,7 +143,7 @@ fn generate_cargo_spec(root: &Path) -> Option<CommandSpec> {
         return None;
     }
 
-    let content = std::fs::read_to_string(&path).ok()?;
+    let manifest = parse_cargo_manifest(&path);
     let mut subcommands = vec![
         SubcommandSpec {
             name: "build".into(),
@@ -178,7 +181,10 @@ fn generate_cargo_spec(root: &Path) -> Option<CommandSpec> {
         },
     ];
 
-    if content.contains("[workspace]") {
+    if manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.workspace.is_some())
+    {
         // Add workspace-specific options to build/test/check
         for sub in &mut subcommands {
             if matches!(sub.name.as_str(), "build" | "test" | "check") {
@@ -191,8 +197,11 @@ fn generate_cargo_spec(root: &Path) -> Option<CommandSpec> {
         }
     }
 
-    // Extract binary targets for `cargo run --bin`
-    if content.contains("[[bin]]") {
+    // Add --bin support if explicit [[bin]] targets exist.
+    if manifest
+        .as_ref()
+        .is_some_and(|manifest| !manifest.bin.is_empty())
+    {
         for sub in &mut subcommands {
             if sub.name == "run" {
                 sub.options.push(OptionSpec {
@@ -225,28 +234,7 @@ fn generate_docker_compose_spec(root: &Path) -> Option<CommandSpec> {
 
     let content = std::fs::read_to_string(compose_path).ok()?;
 
-    // Extract service names
-    let mut services = Vec::new();
-    let mut in_services = false;
-    for line in content.lines() {
-        if line.trim() == "services:" {
-            in_services = true;
-            continue;
-        }
-        if in_services {
-            if line.starts_with("  ") && !line.starts_with("    ") {
-                if let Some(name) = line.trim().strip_suffix(':') {
-                    let name = name.trim();
-                    if !name.is_empty() && !name.starts_with('#') {
-                        services.push(name.to_string());
-                    }
-                }
-            }
-            if !line.is_empty() && !line.starts_with(' ') && !line.starts_with('#') {
-                in_services = false;
-            }
-        }
-    }
+    let services = parse_compose_services(&content);
 
     let service_args = if services.is_empty() {
         Vec::new()
@@ -370,4 +358,22 @@ fn generate_justfile_spec(root: &Path) -> Option<CommandSpec> {
         subcommands,
         ..Default::default()
     })
+}
+
+fn parse_cargo_manifest(path: &Path) -> Option<cargo_toml::Manifest> {
+    let content = std::fs::read_to_string(path).ok()?;
+    cargo_toml::Manifest::from_slice(content.as_bytes()).ok()
+}
+
+#[derive(Debug, Deserialize)]
+struct ComposeFile {
+    #[serde(default)]
+    services: BTreeMap<String, serde_yml::Value>,
+}
+
+fn parse_compose_services(content: &str) -> Vec<String> {
+    serde_yml::from_str::<ComposeFile>(content)
+        .ok()
+        .map(|compose| compose.services.into_keys().collect())
+        .unwrap_or_default()
 }

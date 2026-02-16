@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use moka::future::Cache;
+use serde::Deserialize;
 use tokio::sync::RwLock;
 
 use crate::config::ContextConfig;
@@ -322,6 +324,10 @@ impl SuggestionProvider for ContextProvider {
 // --- Directory scanning helpers ---
 
 fn find_project_root(cwd: &Path, max_depth: usize) -> Option<PathBuf> {
+    if let Some((_, root)) = discover_git_repository(cwd) {
+        return Some(root);
+    }
+
     // Unbounded walk to find git root (design doc: "walks to git root if inside a git repo")
     let mut current = cwd.to_path_buf();
     loop {
@@ -353,20 +359,59 @@ fn find_project_root(cwd: &Path, max_depth: usize) -> Option<PathBuf> {
 }
 
 pub(crate) fn read_git_branch_for_path(root: &Path) -> Option<String> {
-    // Walk up to find git root first
+    if let Some((git_dir, _)) = discover_git_repository(root) {
+        return read_git_branch(&git_dir);
+    }
+
+    // Fallback for minimal synthetic repositories.
     let mut current = root.to_path_buf();
     loop {
-        if current.join(".git").exists() {
-            return read_git_branch(&current);
+        let git_dir = current.join(".git");
+        if git_dir.exists() {
+            return read_git_branch(&git_dir);
         }
         if !current.pop() {
-            return None;
+            break;
+        }
+    }
+    None
+}
+
+fn discover_git_repository(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let (repo_path, _) = gix_discover::upwards(path).ok()?;
+    let (git_dir, work_tree) = repo_path.into_repository_and_work_tree_directories();
+    let root = work_tree.unwrap_or_else(|| git_dir.clone());
+    Some((git_dir, root))
+}
+
+fn read_git_branch_with_gix(git_dir: &Path) -> Option<String> {
+    let store = gix_ref::file::Store::at(
+        git_dir.to_path_buf(),
+        gix_ref::store::init::Options::default(),
+    );
+    let head = store.try_find_loose("HEAD").ok().flatten()?;
+    match head.target {
+        gix_ref::Target::Symbolic(name) => {
+            let full = name.to_string();
+            Some(
+                full.strip_prefix("refs/heads/")
+                    .unwrap_or(full.as_str())
+                    .to_string(),
+            )
+        }
+        gix_ref::Target::Object(id) => {
+            let hex = id.to_string();
+            Some(hex[..8.min(hex.len())].to_string())
         }
     }
 }
 
-fn read_git_branch(root: &Path) -> Option<String> {
-    let head_path = root.join(".git").join("HEAD");
+fn read_git_branch(git_dir: &Path) -> Option<String> {
+    if let Some(branch) = read_git_branch_with_gix(git_dir) {
+        return Some(branch);
+    }
+
+    let head_path = git_dir.join("HEAD");
     let content = std::fs::read_to_string(head_path).ok()?;
     let trimmed = content.trim();
     if let Some(branch) = trimmed.strip_prefix("ref: refs/heads/") {
@@ -375,6 +420,24 @@ fn read_git_branch(root: &Path) -> Option<String> {
         // Detached HEAD — return short hash
         Some(trimmed[..8.min(trimmed.len())].to_string())
     }
+}
+
+fn parse_cargo_manifest(path: &Path) -> Option<cargo_toml::Manifest> {
+    let content = std::fs::read_to_string(path).ok()?;
+    cargo_toml::Manifest::from_slice(content.as_bytes()).ok()
+}
+
+#[derive(Debug, Deserialize)]
+struct ComposeFile {
+    #[serde(default)]
+    services: BTreeMap<String, serde_yml::Value>,
+}
+
+fn parse_compose_services(content: &str) -> Vec<String> {
+    serde_yml::from_str::<ComposeFile>(content)
+        .ok()
+        .map(|compose| compose.services.into_keys().collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -533,9 +596,7 @@ fn scan_cargo_toml(root: &Path) -> Option<Vec<ContextCommand>> {
         },
     ];
 
-    // Check for workspace
-    let content = std::fs::read_to_string(path).ok()?;
-    if content.contains("[workspace]") {
+    if parse_cargo_manifest(&path).is_some_and(|manifest| manifest.workspace.is_some()) {
         commands.push(ContextCommand {
             command: "cargo build --workspace".into(),
             relevance: 0.65,
@@ -639,37 +700,17 @@ fn scan_docker_compose(root: &Path) -> Option<Vec<ContextCommand>> {
         },
     ];
 
-    // Extract service names (simple YAML parsing — look for top-level keys under services:)
-    let mut in_services = false;
-    for line in content.lines() {
-        if line.trim() == "services:" {
-            in_services = true;
-            continue;
-        }
-        if in_services {
-            // A service is a line with exactly 2 spaces of indentation followed by name:
-            if line.starts_with("  ") && !line.starts_with("    ") {
-                if let Some(name) = line.trim().strip_suffix(':') {
-                    let name = name.trim();
-                    if !name.is_empty() && !name.starts_with('#') {
-                        commands.push(ContextCommand {
-                            command: format!("docker compose up {name}"),
-                            relevance: 0.65,
-                            trigger_prefix: "docker".into(),
-                        });
-                        commands.push(ContextCommand {
-                            command: format!("docker compose logs {name}"),
-                            relevance: 0.6,
-                            trigger_prefix: "docker".into(),
-                        });
-                    }
-                }
-            }
-            // Stop parsing services when we hit another top-level key
-            if !line.is_empty() && !line.starts_with(' ') && !line.starts_with('#') {
-                in_services = false;
-            }
-        }
+    for name in parse_compose_services(&content) {
+        commands.push(ContextCommand {
+            command: format!("docker compose up {name}"),
+            relevance: 0.65,
+            trigger_prefix: "docker".into(),
+        });
+        commands.push(ContextCommand {
+            command: format!("docker compose logs {name}"),
+            relevance: 0.6,
+            trigger_prefix: "docker".into(),
+        });
     }
 
     Some(commands)

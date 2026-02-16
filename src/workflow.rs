@@ -109,14 +109,15 @@ impl WorkflowPredictor {
 /// Normalize a command to its "command [subcommand]" prefix.
 /// e.g., "git commit -m 'fix'" → "git commit"
 pub fn normalize_command(cmd: &str) -> String {
-    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    let parts: Vec<String> = shlex::split(cmd)
+        .unwrap_or_else(|| cmd.split_whitespace().map(ToString::to_string).collect());
     match parts.len() {
         0 => String::new(),
-        1 => parts[0].to_string(),
+        1 => parts[0].clone(),
         _ => {
             // Include the first two words if the second doesn't start with '-'
             if parts[1].starts_with('-') {
-                parts[0].to_string()
+                parts[0].clone()
             } else {
                 format!("{} {}", parts[0], parts[1])
             }
