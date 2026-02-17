@@ -124,7 +124,7 @@ pub async fn run() -> anyhow::Result<()> {
                 Cli::command().print_help()?;
                 println!();
             } else {
-                shell::print_init_code();
+                shell::print_init_code()?;
             }
         }
     }

@@ -1,5 +1,10 @@
+use anyhow::Context as _;
+use std::io::ErrorKind;
 use std::io::Write as _;
 use std::path::PathBuf;
+
+/// The plugin source, embedded at compile time.
+const EMBEDDED_PLUGIN: &str = include_str!("../../plugin/synapse.zsh");
 
 /// Check if the current binary is running from a Cargo target directory (dev mode).
 /// Returns (exe_path, workspace_root) if detected.
@@ -36,12 +41,16 @@ fn workspace_hash(path: &std::path::Path) -> String {
 }
 
 /// Find the plugin file. In dev mode, uses workspace root; otherwise searches relative to binary.
-fn find_plugin_path(exe: &std::path::Path, workspace_root: Option<&std::path::Path>) -> PathBuf {
+/// If no on-disk plugin is found, extracts the embedded plugin to a data directory.
+fn find_plugin_path(
+    exe: &std::path::Path,
+    workspace_root: Option<&std::path::Path>,
+) -> anyhow::Result<PathBuf> {
     // Dev mode: workspace_root/plugin/synapse.zsh
     if let Some(root) = workspace_root {
         let p = root.join("plugin").join("synapse.zsh");
         if p.exists() {
-            return p;
+            return Ok(p);
         }
     }
 
@@ -50,33 +59,77 @@ fn find_plugin_path(exe: &std::path::Path, workspace_root: Option<&std::path::Pa
         if let Some(grandparent) = parent.parent() {
             let p = grandparent.join("plugin").join("synapse.zsh");
             if p.exists() {
-                return p;
+                return Ok(p);
             }
         }
         let p = parent.join("plugin").join("synapse.zsh");
         if p.exists() {
-            return p;
+            return Ok(p);
         }
     }
 
-    // Fallback
-    PathBuf::from("plugin/synapse.zsh")
+    // Fallback: extract embedded plugin to ~/.local/share/synapse/plugin/synapse.zsh
+    extract_embedded_plugin().context("failed to extract embedded shell plugin")
+}
+
+/// Extract the embedded plugin to a well-known data directory and return the path.
+fn extract_embedded_plugin() -> anyhow::Result<PathBuf> {
+    let data_dir = dirs::data_local_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
+        .context("failed to determine local data directory")?;
+    extract_embedded_plugin_at(&data_dir)
+}
+
+fn extract_embedded_plugin_at(data_dir: &std::path::Path) -> anyhow::Result<PathBuf> {
+    let plugin_path = data_dir.join("synapse").join("plugin").join("synapse.zsh");
+
+    // Write if missing or content has changed (e.g. after upgrade)
+    let needs_write = match std::fs::read_to_string(&plugin_path) {
+        Ok(existing) => existing != EMBEDDED_PLUGIN,
+        Err(err) if err.kind() == ErrorKind::NotFound => true,
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to read plugin at {}", plugin_path.display()));
+        }
+    };
+
+    if needs_write {
+        if let Some(parent) = plugin_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&plugin_path, EMBEDDED_PLUGIN)
+            .with_context(|| format!("failed to write plugin at {}", plugin_path.display()))?;
+    }
+
+    if !plugin_path.is_file() {
+        anyhow::bail!(
+            "plugin path is not a regular file: {}",
+            plugin_path.display()
+        );
+    }
+
+    Ok(plugin_path)
 }
 
 /// Output shell initialization code to stdout.
-pub(super) fn print_init_code() {
+pub(super) fn print_init_code() -> anyhow::Result<()> {
     if let Some((exe, workspace_root)) = detect_dev_mode() {
-        print_dev_init_code(&exe, &workspace_root);
+        print_dev_init_code(&exe, &workspace_root)?;
     } else {
         let exe = std::env::current_exe().unwrap_or_default();
         let exe = exe.canonicalize().unwrap_or(exe);
-        print_normal_init_code(&exe);
+        print_normal_init_code(&exe)?;
     }
+    Ok(())
 }
 
 /// Output dev-mode shell initialization code.
-fn print_dev_init_code(exe: &std::path::Path, workspace_root: &std::path::Path) {
-    let plugin_path = find_plugin_path(exe, Some(workspace_root));
+fn print_dev_init_code(
+    exe: &std::path::Path,
+    workspace_root: &std::path::Path,
+) -> anyhow::Result<()> {
+    let plugin_path = find_plugin_path(exe, Some(workspace_root))?;
     let hash = workspace_hash(workspace_root);
     let socket_path = format!("/tmp/synapse-dev-{hash}.sock");
     let pid_path = format!("/tmp/synapse-dev-{hash}.pid");
@@ -131,26 +184,28 @@ if [[ -z "$_SYNAPSE_DEV_TRAP_SET" ]]; then
     _SYNAPSE_DEV_TRAP_SET=1
     trap '_synapse_dev_cleanup' EXIT
 fi
-"#,
+    "#,
         exe = exe.display(),
         socket = socket_path,
         pid = pid_path,
         log = log_path,
         plugin = plugin_path.display(),
     );
+    Ok(())
 }
 
 /// Output normal-mode shell initialization code.
-fn print_normal_init_code(exe: &std::path::Path) {
-    let plugin_path = find_plugin_path(exe, None);
+fn print_normal_init_code(exe: &std::path::Path) -> anyhow::Result<()> {
+    let plugin_path = find_plugin_path(exe, None)?;
 
     print!(
         r#"export SYNAPSE_BIN="{exe}"
 source "{plugin}"
-"#,
+    "#,
         exe = exe.display(),
         plugin = plugin_path.display(),
     );
+    Ok(())
 }
 
 /// Idempotently append the init line to a shell RC file.
@@ -180,4 +235,63 @@ pub(super) fn setup_shell_rc(rc_file: &str) -> anyhow::Result<()> {
     println!("Restart your shell or run: {init_line}");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_embedded_plugin_at, EMBEDDED_PLUGIN};
+
+    #[test]
+    fn test_extract_embedded_plugin_writes_when_missing() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let plugin_path = extract_embedded_plugin_at(temp_dir.path())?;
+
+        assert_eq!(
+            plugin_path,
+            temp_dir
+                .path()
+                .join("synapse")
+                .join("plugin")
+                .join("synapse.zsh")
+        );
+        assert_eq!(std::fs::read_to_string(plugin_path)?, EMBEDDED_PLUGIN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_extract_embedded_plugin_rewrites_stale_content() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let plugin_path = temp_dir
+            .path()
+            .join("synapse")
+            .join("plugin")
+            .join("synapse.zsh");
+        std::fs::create_dir_all(plugin_path.parent().expect("plugin path has parent"))?;
+        std::fs::write(&plugin_path, "stale plugin data")?;
+
+        let resolved_path = extract_embedded_plugin_at(temp_dir.path())?;
+
+        assert_eq!(resolved_path, plugin_path);
+        assert_eq!(std::fs::read_to_string(plugin_path)?, EMBEDDED_PLUGIN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_extract_embedded_plugin_errors_when_target_is_directory() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let plugin_path = temp_dir
+            .path()
+            .join("synapse")
+            .join("plugin")
+            .join("synapse.zsh");
+        std::fs::create_dir_all(&plugin_path)?;
+
+        let err =
+            extract_embedded_plugin_at(temp_dir.path()).expect_err("expected extraction error");
+        let message = format!("{err:#}");
+
+        assert!(message.contains("failed to read plugin"));
+        assert!(message.contains(&plugin_path.display().to_string()));
+        Ok(())
+    }
 }
