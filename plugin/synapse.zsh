@@ -39,6 +39,10 @@ typeset -gi _SYNAPSE_HISTORY_BROWSING=0
 typeset -g _SYNAPSE_LAST_SUGGEST_TIME=0
 typeset -gi _SYNAPSE_LAST_SUGGEST_BUFLEN=0
 
+# --- Paste State ---
+typeset -gi _SYNAPSE_PASTING=0
+typeset -g _SYNAPSE_BRACKETED_PASTE_WIDGET="_synapse-orig-bracketed-paste"
+
 # --- Natural Language State ---
 typeset -gi _SYNAPSE_NL_MODE=0
 typeset -gi _SYNAPSE_NL_ERROR_SHOWN=0
@@ -656,9 +660,8 @@ _synapse_handle_update() {
 
     [[ "$msg_type" == "update" ]] || return 1
 
-    # Skip async updates while dropdown is open or in NL mode
-    # (NL results are handled synchronously via _synapse_nl_execute)
-    if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]] || [[ $_SYNAPSE_NL_MODE -eq 1 ]]; then
+    # Skip async updates while dropdown is open, in NL mode, or during paste
+    if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]] || [[ $_SYNAPSE_NL_MODE -eq 1 ]] || (( _SYNAPSE_PASTING )); then
         return 1
     fi
 
@@ -694,6 +697,13 @@ _synapse_report_interaction() {
 # Override self-insert to trigger suggestions on every keypress
 _synapse_self_insert() {
     _SYNAPSE_HISTORY_BROWSING=0
+
+    # During paste, just insert the character — no suggestion logic
+    if (( _SYNAPSE_PASTING )); then
+        zle .self-insert
+        return
+    fi
+
     # Check if we should report ignore (user typed something different)
     if [[ -n "$_SYNAPSE_CURRENT_SUGGESTION" ]]; then
         local next_char="${KEYS}"
@@ -709,6 +719,36 @@ _synapse_self_insert() {
     zle .self-insert
 
     # Check for natural language mode: "? " prefix with enough characters
+    local query=""
+    if _synapse_buffer_has_nl_prefix; then
+        query="$(_synapse_nl_query_from_buffer)"
+    fi
+    if [[ -n "$query" ]]; then
+        _synapse_nl_suggest
+    else
+        if ! _synapse_buffer_has_nl_prefix; then
+            _SYNAPSE_NL_MODE=0
+            _SYNAPSE_NL_ERROR_SHOWN=0
+        fi
+        _synapse_suggest
+    fi
+}
+
+# Override bracketed-paste to suppress suggestions during paste
+_synapse_bracketed_paste() {
+    _SYNAPSE_PASTING=1
+    _synapse_clear_suggestion
+
+    # Delegate to the previously-registered widget when available so we don't
+    # clobber user/plugin bracketed-paste customizations.
+    local paste_widget="${_SYNAPSE_BRACKETED_PASTE_WIDGET}"
+    if ! zle "$paste_widget" "$@" 2>/dev/null; then
+        zle .bracketed-paste "$@" 2>/dev/null
+    fi
+
+    _SYNAPSE_PASTING=0
+
+    # Trigger one suggest for the final buffer state
     local query=""
     if _synapse_buffer_has_nl_prefix; then
         query="$(_synapse_nl_query_from_buffer)"
@@ -849,6 +889,8 @@ _synapse_nl_execute() {
 _synapse_backward_delete_char() {
     _SYNAPSE_HISTORY_BROWSING=0
     zle .backward-delete-char
+
+    (( _SYNAPSE_PASTING )) && return
 
     local query=""
     if _synapse_buffer_has_nl_prefix; then
@@ -1124,6 +1166,7 @@ _synapse_precmd() {
     _SYNAPSE_HISTORY_BROWSING=0
     _SYNAPSE_NL_MODE=0
     _SYNAPSE_NL_ERROR_SHOWN=0
+    _SYNAPSE_PASTING=0
     _synapse_clear_dropdown
     _synapse_clear_suggestion
 }
@@ -1155,6 +1198,10 @@ _synapse_cleanup() {
     _synapse_clear_suggestion
     _SYNAPSE_NL_MODE=0
     _SYNAPSE_NL_ERROR_SHOWN=0
+    _SYNAPSE_PASTING=0
+    # Restore any bracketed-paste widget that was in place before Synapse.
+    zle -A "$_SYNAPSE_BRACKETED_PASTE_WIDGET" bracketed-paste 2>/dev/null
+    zle -D "$_SYNAPSE_BRACKETED_PASTE_WIDGET" 2>/dev/null
     add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
     bindkey -D synapse-dropdown &>/dev/null
@@ -1167,9 +1214,13 @@ _synapse_init() {
     # Generate session ID
     _synapse_generate_session_id
 
+    # Preserve any existing bracketed-paste widget before installing ours.
+    zle -A bracketed-paste "$_SYNAPSE_BRACKETED_PASTE_WIDGET" 2>/dev/null
+
     # Register widgets
     zle -N self-insert _synapse_self_insert
     zle -N backward-delete-char _synapse_backward_delete_char
+    zle -N bracketed-paste _synapse_bracketed_paste
     zle -N synapse-accept _synapse_accept
     zle -N synapse-accept-word _synapse_accept_word
     zle -N synapse-dismiss _synapse_dismiss
