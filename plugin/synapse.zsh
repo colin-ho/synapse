@@ -205,6 +205,26 @@ _synapse_nl_query_from_buffer() {
     fi
 }
 
+# Reset NL mode state.
+_synapse_reset_nl() {
+    _SYNAPSE_NL_MODE=0
+    _SYNAPSE_NL_ERROR_SHOWN=0
+}
+
+# Check buffer for NL prefix and either show NL hint or trigger normal suggest.
+_synapse_suggest_or_nl() {
+    if _synapse_buffer_has_nl_prefix; then
+        local query="$(_synapse_nl_query_from_buffer)"
+        if [[ -n "$query" ]]; then
+            _synapse_nl_suggest
+            return
+        fi
+    else
+        _synapse_reset_nl
+    fi
+    _synapse_suggest
+}
+
 # Send a JSON request and read the response
 _synapse_request() {
     local json="$1"
@@ -307,45 +327,41 @@ _synapse_build_env_hints_json() {
     fi
 }
 
+# Build common JSON fields shared by suggest/list/nl requests.
+# Sets variables: _sj_cwd, _sj_recent, _sj_env in caller scope.
+_synapse_json_common() {
+    _sj_cwd="$(_synapse_json_escape "$1")"
+    _sj_recent="$(_synapse_build_recent_commands_json)"
+    _sj_env="$(_synapse_build_env_hints_json)"
+}
+
 # Build a suggest request JSON
 _synapse_build_suggest_request() {
-    local buffer="$1" cursor_pos="$2" cwd="$3"
+    local buffer="$1" cursor_pos="$2"
+    local escaped_buffer="$(_synapse_json_escape "$buffer")"
+    local _sj_cwd _sj_recent _sj_env
+    _synapse_json_common "$3"
 
-    local escaped_buffer escaped_cwd recent_json
-    escaped_buffer="$(_synapse_json_escape "$buffer")"
-    escaped_cwd="$(_synapse_json_escape "$cwd")"
-    recent_json="$(_synapse_build_recent_commands_json)"
-    local env_hints_json
-    env_hints_json="$(_synapse_build_env_hints_json)"
-
-    echo "{\"type\":\"suggest\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${escaped_cwd}\",\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
+    echo "{\"type\":\"suggest\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${_sj_cwd}\",\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${_sj_recent},\"env_hints\":${_sj_env}}"
 }
 
 # Build a list_suggestions request JSON
 _synapse_build_list_request() {
-    local buffer="$1" cursor_pos="$2" cwd="$3" max_results="${4:-10}"
+    local buffer="$1" cursor_pos="$2" max_results="${4:-10}"
+    local escaped_buffer="$(_synapse_json_escape "$buffer")"
+    local _sj_cwd _sj_recent _sj_env
+    _synapse_json_common "$3"
 
-    local escaped_buffer escaped_cwd recent_json
-    escaped_buffer="$(_synapse_json_escape "$buffer")"
-    escaped_cwd="$(_synapse_json_escape "$cwd")"
-    recent_json="$(_synapse_build_recent_commands_json)"
-    local env_hints_json
-    env_hints_json="$(_synapse_build_env_hints_json)"
-
-    echo "{\"type\":\"list_suggestions\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${escaped_cwd}\",\"max_results\":${max_results},\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
+    echo "{\"type\":\"list_suggestions\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"buffer\":\"${escaped_buffer}\",\"cursor_pos\":${cursor_pos},\"cwd\":\"${_sj_cwd}\",\"max_results\":${max_results},\"last_exit_code\":${_SYNAPSE_LAST_EXIT:-0},\"recent_commands\":${_sj_recent},\"env_hints\":${_sj_env}}"
 }
 
 # Build a natural_language request JSON
 _synapse_build_nl_request() {
-    local query="$1" cwd="$2"
+    local escaped_query="$(_synapse_json_escape "$1")"
+    local _sj_cwd _sj_recent _sj_env
+    _synapse_json_common "$2"
 
-    local escaped_query escaped_cwd recent_json env_hints_json
-    escaped_query="$(_synapse_json_escape "$query")"
-    escaped_cwd="$(_synapse_json_escape "$cwd")"
-    recent_json="$(_synapse_build_recent_commands_json)"
-    env_hints_json="$(_synapse_build_env_hints_json)"
-
-    echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${escaped_cwd}\",\"recent_commands\":${recent_json},\"env_hints\":${env_hints_json}}"
+    echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${_sj_cwd}\",\"recent_commands\":${_sj_recent},\"env_hints\":${_sj_env}}"
 }
 
 # Build an explain request JSON
@@ -364,17 +380,8 @@ _synapse_show_suggestion() {
     local full_suggestion="$1"
     local buffer="$BUFFER"
 
-    # Only show suggestions when cursor is at end of buffer
-    if [[ "$CURSOR" -ne "${#BUFFER}" ]]; then
-        POSTDISPLAY=""
-        _SYNAPSE_CURRENT_SUGGESTION=""
-        region_highlight=()
-        return
-    fi
-
-    if [[ -z "$full_suggestion" ]] || [[ -z "$buffer" ]]; then
-        POSTDISPLAY=""
-        _SYNAPSE_CURRENT_SUGGESTION=""
+    if [[ "$CURSOR" -ne "${#BUFFER}" ]] || [[ -z "$full_suggestion" ]] || [[ -z "$buffer" ]]; then
+        _synapse_clear_suggestion
         return
     fi
 
@@ -384,19 +391,12 @@ _synapse_show_suggestion() {
         if [[ -n "$completion" ]]; then
             POSTDISPLAY="$completion"
             _SYNAPSE_CURRENT_SUGGESTION="$full_suggestion"
-            # Style ghost text dim (same as dropdown items)
             local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
             region_highlight=("${base_offset} $(( base_offset + ${#completion} )) fg=240")
-        else
-            POSTDISPLAY=""
-            _SYNAPSE_CURRENT_SUGGESTION=""
-            region_highlight=()
+            return
         fi
-    else
-        POSTDISPLAY=""
-        _SYNAPSE_CURRENT_SUGGESTION=""
-        region_highlight=()
     fi
+    _synapse_clear_suggestion
 }
 
 _synapse_clear_suggestion() {
@@ -552,8 +552,7 @@ _synapse_clear_dropdown() {
     _SYNAPSE_DROPDOWN_SCROLL=0
     _SYNAPSE_DROPDOWN_SELECTED=""
     _SYNAPSE_DROPDOWN_INSERT_KEY=""
-    POSTDISPLAY=""
-    region_highlight=()
+    _synapse_clear_suggestion
 }
 
 # --- Dropdown Protocol ---
@@ -741,21 +740,7 @@ _synapse_self_insert() {
     fi
 
     zle .self-insert
-
-    # Check for natural language mode: "? " prefix with enough characters
-    local query=""
-    if _synapse_buffer_has_nl_prefix; then
-        query="$(_synapse_nl_query_from_buffer)"
-    fi
-    if [[ -n "$query" ]]; then
-        _synapse_nl_suggest
-    else
-        if ! _synapse_buffer_has_nl_prefix; then
-            _SYNAPSE_NL_MODE=0
-            _SYNAPSE_NL_ERROR_SHOWN=0
-        fi
-        _synapse_suggest
-    fi
+    _synapse_suggest_or_nl
 }
 
 # Override bracketed-paste to suppress suggestions during paste
@@ -771,17 +756,22 @@ _synapse_bracketed_paste() {
     fi
 
     _SYNAPSE_PASTING=0
+    _synapse_suggest_or_nl
+}
 
-    # Show NL hint if pasted text has the NL prefix, otherwise leave clean
-    if _synapse_buffer_has_nl_prefix; then
-        local query="$(_synapse_nl_query_from_buffer)"
-        if [[ -n "$query" ]]; then
-            _synapse_nl_suggest
-        fi
-    else
-        _SYNAPSE_NL_MODE=0
-        _SYNAPSE_NL_ERROR_SHOWN=0
+# Finish dropdown after recursive-edit: apply selection/insert key, then clean up.
+_synapse_dropdown_finish() {
+    if [[ -n "$_SYNAPSE_DROPDOWN_SELECTED" ]]; then
+        BUFFER="$_SYNAPSE_DROPDOWN_SELECTED"
+        CURSOR=${#BUFFER}
+        _synapse_report_interaction "accept"
+    elif [[ -n "$_SYNAPSE_DROPDOWN_INSERT_KEY" ]]; then
+        LBUFFER+="$_SYNAPSE_DROPDOWN_INSERT_KEY"
     fi
+    _SYNAPSE_DROPDOWN_SELECTED=""
+    _SYNAPSE_DROPDOWN_INSERT_KEY=""
+    _synapse_clear_dropdown
+    zle reset-prompt
 }
 
 # Mark NL mode active and show hint (no request sent — Enter triggers that)
@@ -890,19 +880,8 @@ _synapse_nl_execute() {
 
     # Enter modal dropdown navigation
     zle recursive-edit -K synapse-dropdown
-
-    # Handle selection — replace buffer with the chosen command
-    if [[ -n "$_SYNAPSE_DROPDOWN_SELECTED" ]]; then
-        BUFFER="$_SYNAPSE_DROPDOWN_SELECTED"
-        CURSOR=${#BUFFER}
-    fi
-
-    _SYNAPSE_NL_MODE=0
-    _SYNAPSE_NL_ERROR_SHOWN=0
-    _SYNAPSE_DROPDOWN_SELECTED=""
-    _SYNAPSE_DROPDOWN_INSERT_KEY=""
-    _synapse_clear_dropdown
-    zle reset-prompt
+    _synapse_reset_nl
+    _synapse_dropdown_finish
 }
 
 # Override backward-delete-char to re-suggest
@@ -911,20 +890,7 @@ _synapse_backward_delete_char() {
     zle .backward-delete-char
 
     (( _SYNAPSE_PASTING )) && return
-
-    local query=""
-    if _synapse_buffer_has_nl_prefix; then
-        query="$(_synapse_nl_query_from_buffer)"
-    fi
-    if [[ -n "$query" ]]; then
-        _synapse_nl_suggest
-    else
-        if ! _synapse_buffer_has_nl_prefix; then
-            _SYNAPSE_NL_MODE=0
-            _SYNAPSE_NL_ERROR_SHOWN=0
-        fi
-        _synapse_suggest
-    fi
+    _synapse_suggest_or_nl
 }
 
 # Accept the full suggestion
@@ -933,8 +899,7 @@ _synapse_accept() {
         _synapse_report_interaction "accept"
         BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
         CURSOR=${#BUFFER}
-        _SYNAPSE_NL_MODE=0
-        _SYNAPSE_NL_ERROR_SHOWN=0
+        _synapse_reset_nl
         _synapse_clear_suggestion
     else
         # Fall through to default behavior (move cursor right)
@@ -948,8 +913,7 @@ _synapse_accept_line() {
     if _synapse_buffer_has_nl_prefix; then
         _synapse_nl_execute
     else
-        _SYNAPSE_NL_MODE=0
-        _SYNAPSE_NL_ERROR_SHOWN=0
+        _synapse_reset_nl
         zle .accept-line
     fi
 }
@@ -962,8 +926,7 @@ _synapse_tab_accept() {
         _synapse_report_interaction "accept"
         BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
         CURSOR=${#BUFFER}
-        _SYNAPSE_NL_MODE=0
-        _SYNAPSE_NL_ERROR_SHOWN=0
+        _synapse_reset_nl
         _synapse_clear_suggestion
     else
         zle expand-or-complete
@@ -1095,20 +1058,7 @@ _synapse_dropdown_open() {
 
     # Enter modal navigation via recursive-edit with dropdown keymap
     zle recursive-edit -K synapse-dropdown
-
-    # Apply results AFTER recursive-edit exits to avoid buffer restoration
-    if [[ -n "$_SYNAPSE_DROPDOWN_SELECTED" ]]; then
-        BUFFER="$_SYNAPSE_DROPDOWN_SELECTED"
-        CURSOR=${#BUFFER}
-        _synapse_report_interaction "accept"
-    elif [[ -n "$_SYNAPSE_DROPDOWN_INSERT_KEY" ]]; then
-        LBUFFER+="$_SYNAPSE_DROPDOWN_INSERT_KEY"
-    fi
-    _SYNAPSE_DROPDOWN_SELECTED=""
-    _SYNAPSE_DROPDOWN_INSERT_KEY=""
-
-    _synapse_clear_dropdown
-    zle reset-prompt
+    _synapse_dropdown_finish
 }
 
 _synapse_dropdown_down_impl() {
@@ -1185,8 +1135,7 @@ _synapse_precmd() {
 
     # Clear any leftover ghost text, dropdown, history browsing, and NL state
     _SYNAPSE_HISTORY_BROWSING=0
-    _SYNAPSE_NL_MODE=0
-    _SYNAPSE_NL_ERROR_SHOWN=0
+    _synapse_reset_nl
     _SYNAPSE_PASTING=0
     _synapse_clear_dropdown
     _synapse_clear_suggestion
@@ -1217,8 +1166,7 @@ _synapse_cleanup() {
     _synapse_disconnect
     _synapse_clear_dropdown
     _synapse_clear_suggestion
-    _SYNAPSE_NL_MODE=0
-    _SYNAPSE_NL_ERROR_SHOWN=0
+    _synapse_reset_nl
     _SYNAPSE_PASTING=0
     # Restore any bracketed-paste widget that was in place before Synapse.
     zle -A "$_SYNAPSE_BRACKETED_PASTE_WIDGET" bracketed-paste 2>/dev/null
@@ -1261,14 +1209,14 @@ _synapse_init() {
     # Delete and recreate to pick up any main keymap changes on reload
     bindkey -D synapse-dropdown &>/dev/null
     bindkey -N synapse-dropdown main &>/dev/null
-    bindkey -M synapse-dropdown '^[[B' synapse-dropdown-down     # Down arrow (normal)
-    bindkey -M synapse-dropdown '^[OB' synapse-dropdown-down     # Down arrow (application)
-    bindkey -M synapse-dropdown '^[[A' synapse-dropdown-up       # Up arrow (normal)
-    bindkey -M synapse-dropdown '^[OA' synapse-dropdown-up       # Up arrow (application)
+    local seq
+    for seq in '^[[' '^[O'; do
+        bindkey -M synapse-dropdown "${seq}B" synapse-dropdown-down
+        bindkey -M synapse-dropdown "${seq}A" synapse-dropdown-up
+        bindkey -M synapse-dropdown "${seq}C" synapse-dropdown-accept
+    done
     bindkey -M synapse-dropdown '^M' synapse-dropdown-accept     # Enter
     bindkey -M synapse-dropdown '\t' synapse-dropdown-accept     # Tab
-    bindkey -M synapse-dropdown '^[[C' synapse-dropdown-accept   # Right arrow (normal)
-    bindkey -M synapse-dropdown '^[OC' synapse-dropdown-accept   # Right arrow (application)
     bindkey -M synapse-dropdown '^[' synapse-dropdown-dismiss    # Escape
 
     # In dropdown keymap, any normal character closes dropdown and inserts
@@ -1279,15 +1227,14 @@ _synapse_init() {
 
     # Main keymap bindings
     bindkey '\t' synapse-tab-accept       # Tab (accept suggestion or normal completion)
-    bindkey '^[[C' synapse-accept         # Right arrow (normal mode)
-    bindkey '^[OC' synapse-accept         # Right arrow (application mode)
     bindkey '^[[1;5C' synapse-accept-word # Ctrl+Right arrow
     bindkey '^[' synapse-dismiss          # Escape
-    bindkey '^[[A' synapse-up-line-or-history  # Up arrow (normal) — history + flag
-    bindkey '^[OA' synapse-up-line-or-history  # Up arrow (application) — history + flag
-    bindkey '^[[B' synapse-dropdown-open  # Down arrow (normal) — opens dropdown
-    bindkey '^[OB' synapse-dropdown-open  # Down arrow (application) — opens dropdown
     bindkey '^E' synapse-explain          # Ctrl+E — explain NL-generated command (fallback: end-of-line)
+    for seq in '^[[' '^[O'; do
+        bindkey "${seq}C" synapse-accept              # Right arrow
+        bindkey "${seq}A" synapse-up-line-or-history   # Up arrow — history + flag
+        bindkey "${seq}B" synapse-dropdown-open        # Down arrow — opens dropdown
+    done
 
     # Hooks
     autoload -Uz add-zsh-hook
