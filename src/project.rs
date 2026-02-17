@@ -153,11 +153,14 @@ pub fn parse_makefile_targets(root: &Path) -> Vec<String> {
     content
         .lines()
         .filter_map(|line| {
+            // Recipe body lines are indented with a tab — check the original line
+            if line.starts_with('\t') {
+                return None;
+            }
             let target = line.split(':').next()?.trim();
             if !target.is_empty()
                 && !target.starts_with('#')
                 && !target.starts_with('.')
-                && !target.starts_with('\t')
                 && !target.contains(' ')
                 && !target.contains('$')
                 && !target.contains('=')
@@ -236,14 +239,18 @@ pub fn parse_justfile_recipes(root: &Path) -> Vec<String> {
     content
         .lines()
         .filter_map(|line| {
+            // Recipe body lines are indented — check the original line, not trimmed
+            if line.starts_with(' ') || line.starts_with('\t') {
+                return None;
+            }
             let trimmed = line.trim();
             if trimmed.is_empty()
                 || trimmed.starts_with('#')
-                || trimmed.starts_with(' ')
-                || trimmed.starts_with('\t')
                 || trimmed.starts_with("set ")
                 || trimmed.starts_with("export ")
                 || trimmed.starts_with("alias ")
+                || trimmed.starts_with("mod ")
+                || trimmed.starts_with("import ")
             {
                 return None;
             }
@@ -645,16 +652,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("justfile"),
-            "set shell := [\"bash\"]\n\nbuild:\n  cargo build\n\ntest arg:\n  cargo test {{arg}}\n\nalias b := build\n",
+            concat!(
+                "set shell := [\"bash\"]\n",
+                "import 'other.just'\n",
+                "mod submod 'subdir'\n",
+                "\n",
+                "build:\n",
+                "  cargo build\n",
+                "\n",
+                "test arg:\n",
+                "  cargo test {{arg}}\n",
+                "\n",
+                "default:\n",
+                "  @just --list\n",
+                "\n",
+                "alias b := build\n",
+                "export FOO := \"bar\"\n",
+            ),
         )
         .unwrap();
 
         let recipes = parse_justfile_recipes(dir.path());
         assert!(recipes.contains(&"build".to_string()));
         assert!(recipes.contains(&"test".to_string()));
-        assert!(!recipes
-            .iter()
-            .any(|n| n.contains("set") || n.contains("alias")));
+        assert!(recipes.contains(&"default".to_string()));
+        // Body lines, keywords, and directives must not leak through
+        assert!(!recipes.iter().any(|n| n.contains("set")
+            || n.contains("alias")
+            || n.contains("mod")
+            || n.contains("import")
+            || n.contains("export")
+            || n == "cargo"
+            || n == "@just"
+            || n == "just"));
     }
 
     #[test]

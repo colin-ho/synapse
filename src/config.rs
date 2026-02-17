@@ -158,7 +158,7 @@ impl Default for SpecConfig {
             enabled: true,
             auto_generate: true,
             generator_timeout_ms: 500,
-            max_list_results: NonZeroUsize::new(10).unwrap(),
+            max_list_results: NonZeroUsize::new(50).unwrap(),
             trust_project_generators: false,
             scan_depth: 3,
             discover_from_help: true,

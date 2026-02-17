@@ -3,17 +3,25 @@ use std::time::Duration;
 
 use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, OptionSpec, SubcommandSpec};
 
-/// Auto-generate specs from project files at the given root.
-pub fn generate_specs(root: &Path) -> Vec<CommandSpec> {
+/// Auto-generate specs from project files.
+///
+/// `root` is the detected project/git root (used for cargo and python which
+/// are inherently project-root-scoped).
+///
+/// `cwd` is the actual working directory of the session.  Tools like `make`,
+/// `npm run`, `docker compose`, and `just` resolve their config relative to
+/// CWD, so we parse from there to match what the user would actually see
+/// (important in monorepos where subdirectories have their own config files).
+pub fn generate_specs(root: &Path, cwd: &Path) -> Vec<CommandSpec> {
     let mut specs = Vec::new();
 
-    let make_targets = crate::project::parse_makefile_targets(root);
+    let make_targets = crate::project::parse_makefile_targets(cwd);
     if !make_targets.is_empty() {
         specs.push(make_spec(make_targets));
     }
 
-    if let Some(scripts) = crate::project::parse_npm_scripts(root) {
-        let manager = crate::project::detect_package_manager(root);
+    if let Some(scripts) = crate::project::parse_npm_scripts(cwd) {
+        let manager = crate::project::detect_package_manager(cwd);
         specs.push(package_json_spec(manager, scripts));
     }
 
@@ -21,11 +29,11 @@ pub fn generate_specs(root: &Path) -> Vec<CommandSpec> {
         specs.push(cargo_spec(is_workspace, has_bin_targets));
     }
 
-    if let Some(services) = crate::project::parse_docker_services(root) {
+    if let Some(services) = crate::project::parse_docker_services(cwd) {
         specs.push(docker_compose_spec(services));
     }
 
-    let just_recipes = crate::project::parse_justfile_recipes(root);
+    let just_recipes = crate::project::parse_justfile_recipes(cwd);
     if !just_recipes.is_empty() {
         specs.push(justfile_spec(just_recipes));
     }

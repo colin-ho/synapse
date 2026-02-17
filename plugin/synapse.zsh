@@ -1066,7 +1066,7 @@ _synapse_dropdown_open() {
 
     # Send list_suggestions request
     local json
-    json="$(_synapse_build_list_request "$BUFFER" "$CURSOR" "$PWD" 10)"
+    json="$(_synapse_build_list_request "$BUFFER" "$CURSOR" "$PWD" 50)"
 
     local response
     response="$(_synapse_request "$json" "list")" || { zle .down-line-or-history; return; }

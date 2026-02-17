@@ -53,7 +53,7 @@ pub struct ListSuggestionsRequest {
 }
 
 fn default_max_results() -> NonZeroUsize {
-    NonZeroUsize::new(10).unwrap()
+    NonZeroUsize::new(50).unwrap()
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,7 +348,7 @@ mod tests {
 
         match req {
             Request::ListSuggestions(ls) => {
-                assert_eq!(ls.max_results, NonZeroUsize::new(10).unwrap());
+                assert_eq!(ls.max_results, NonZeroUsize::new(50).unwrap());
             }
             _ => panic!("Expected ListSuggestions request"),
         }
