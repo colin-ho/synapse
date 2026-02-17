@@ -84,6 +84,8 @@ Use real keypress-driven behavior in an interactive zsh session:
 
 If environment limitations prevent reliable key injection, downgrade to Lane 1B and mark Lane 1A `BLOCKED` with reason.
 
+> **Automated agents:** Lane 1A is always BLOCKED in non-interactive environments (CI, headless SSH, agent sandboxes). Proceed directly to Lane 1B and Lane 2.
+
 ## Lane 1B: Scripted Plugin Function Checks (Fallback)
 
 Use plugin functions directly (`_synapse_suggest`, `_synapse_request`, dropdown parse helpers) for deterministic validation.
@@ -167,7 +169,9 @@ Run a broad set of scenarios. Target at least 30 distinct scenarios total.
 3. Explain command response quality and stability.
 4. Timeout/degraded behavior when provider is slow.
 5. Probe timeout handling:
-   - validate LLM scenarios with `--stdio --wait-ms` to avoid false negatives from fixed short request timeouts.
+   - validate LLM scenarios with `--stdio --wait-ms` or `--wait-for-update` to avoid false negatives from fixed short request timeouts.
+
+> **Async ack + update pattern:** NL (`natural_language`) and explain (`explain`) requests return an immediate `{"type":"ack"}` response, followed by an async update containing the actual result. Use `--wait-for-update` with `--request` mode to automatically wait for the update after the ack. Alternatively, use `--stdio --wait-ms <timeout>` to capture all output including late-arriving updates.
 
 If blocked by missing API key/env:
 - mark scenario as `BLOCKED`, include exact missing prerequisite.
@@ -206,6 +210,28 @@ synapse probe --socket-path "$SOCK" --request '{"type":"suggest","session_id":"s
 # for slower local LLMs:
 synapse probe --socket-path "$SOCK" --request '{"type":"explain","session_id":"s1","command":"git rebase -i HEAD~3"}' --first-response-timeout-ms 30000
 ```
+
+### NL / Explain / Interaction probe examples
+
+```bash
+# Natural language query (async: returns ack, then update)
+# Use --wait-for-update to capture the async command translation:
+synapse probe --socket-path "$SOCK" --request '{"type":"natural_language","session_id":"s1","query":"find all rust files modified today","cwd":"/tmp","recent_commands":[]}' --wait-for-update --first-response-timeout-ms 30000
+
+# Explain a command (async: returns ack, then update):
+synapse probe --socket-path "$SOCK" --request '{"type":"explain","session_id":"s1","command":"git rebase -i HEAD~3"}' --wait-for-update --first-response-timeout-ms 30000
+
+# Interaction feedback (synchronous ack):
+synapse probe --socket-path "$SOCK" --request '{"type":"interaction","session_id":"s1","action":"accept","buffer":"git status","accepted_text":"git status"}'
+
+# Command executed feedback (synchronous ack):
+synapse probe --socket-path "$SOCK" --request '{"type":"command_executed","session_id":"s1","command":"git status","exit_code":0,"cwd":"/tmp"}'
+
+# Alternative: use --stdio --wait-ms for NL/explain to capture all output including late updates:
+echo '{"type":"natural_language","session_id":"s1","query":"list docker containers","cwd":"/tmp","recent_commands":[]}' | synapse probe --socket-path "$SOCK" --stdio --wait-ms 30000
+```
+
+> **Note:** The `? prefix` syntax is plugin-only (handled by the zsh widget). At the daemon protocol level, use `"type": "natural_language"` instead.
 
 ### Streamed sequence
 

@@ -19,6 +19,7 @@ pub(super) async fn run_probe(
     request: Option<String>,
     wait_ms: u64,
     first_response_timeout_ms: u64,
+    wait_for_update: bool,
 ) -> anyhow::Result<()> {
     if stdio == request.is_some() {
         return Err(anyhow!(
@@ -48,6 +49,7 @@ pub(super) async fn run_probe(
             request,
             wait_ms,
             first_response_timeout_ms,
+            wait_for_update,
         )
         .await
     }
@@ -91,6 +93,7 @@ async fn run_request_mode(
     request: Option<String>,
     wait_ms: u64,
     first_response_timeout_ms: u64,
+    wait_for_update: bool,
 ) -> anyhow::Result<()> {
     let request = request
         .as_deref()
@@ -110,7 +113,32 @@ async fn run_request_mode(
     };
     print_line(&line).await?;
 
+    // If --wait-for-update and the first response looks like an ack, wait for the async update
+    if wait_for_update && is_ack_response(&line) {
+        let update_timeout = Duration::from_millis(first_response_timeout_ms.max(1));
+        match tokio::time::timeout(update_timeout, reader.next()).await {
+            Ok(Some(update_line)) => {
+                print_line(&update_line?).await?;
+            }
+            Ok(None) => {} // Connection closed
+            Err(_) => {
+                eprintln!("Timed out waiting for async update after ack");
+            }
+        }
+    }
+
     drain_until_idle(reader, wait_ms).await
+}
+
+/// Check if a daemon response is an ack (immediate acknowledgement before async processing).
+fn is_ack_response(line: &str) -> bool {
+    // Try to parse as JSON and check for ack-like types
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+        if let Some(typ) = value.get("type").and_then(|v| v.as_str()) {
+            return typ == "ack";
+        }
+    }
+    false
 }
 
 async fn drain_until_idle(reader: &mut ProbeReader, wait_ms: u64) -> anyhow::Result<()> {

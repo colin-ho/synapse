@@ -156,11 +156,25 @@ impl SpecStore {
     }
 
     /// Look up a spec by command name, checking project specs first (higher priority).
+    /// ProjectUser specs fully replace builtins; ProjectAuto specs are merged with builtins
+    /// so that auto-generated additions (e.g. docker-compose services) don't shadow the
+    /// full builtin spec tree.
     pub async fn lookup(&self, command: &str, cwd: &Path) -> Option<CommandSpec> {
-        // Check project specs first (user > auto > builtin)
         let project_specs = self.get_project_specs(cwd).await;
-        if let Some(spec) = project_specs.get(command) {
-            return Some(spec.clone());
+
+        if let Some(project_spec) = project_specs.get(command) {
+            if project_spec.source == SpecSource::ProjectUser {
+                // User specs fully override (intentional)
+                return Some(project_spec.clone());
+            }
+
+            // ProjectAuto: merge with builtin if both exist
+            if let Some(builtin_spec) = self.builtin.get(command) {
+                return Some(merge_specs(builtin_spec, project_spec));
+            }
+
+            // No builtin — return auto as-is
+            return Some(project_spec.clone());
         }
 
         // Check builtin specs
@@ -696,6 +710,60 @@ impl SpecStore {
     }
 }
 
+/// Merge a ProjectAuto spec into a builtin spec.
+/// Starts with a clone of the builtin, then appends any subcommands/options/args from `auto`
+/// that don't already exist in the builtin. For subcommands that exist in both, merges their
+/// nested subcommands and args. Preserves the builtin's source tag for ranking consistency.
+fn merge_specs(builtin: &CommandSpec, auto: &CommandSpec) -> CommandSpec {
+    let mut merged = builtin.clone();
+
+    for auto_sub in &auto.subcommands {
+        if let Some(builtin_sub) = merged
+            .subcommands
+            .iter_mut()
+            .find(|s| s.name == auto_sub.name)
+        {
+            // Merge nested subcommands
+            for nested in &auto_sub.subcommands {
+                if !builtin_sub
+                    .subcommands
+                    .iter()
+                    .any(|s| s.name == nested.name)
+                {
+                    builtin_sub.subcommands.push(nested.clone());
+                }
+            }
+            // Merge nested args
+            for arg in &auto_sub.args {
+                if !builtin_sub.args.iter().any(|a| a.name == arg.name) {
+                    builtin_sub.args.push(arg.clone());
+                }
+            }
+        } else {
+            merged.subcommands.push(auto_sub.clone());
+        }
+    }
+
+    // Merge top-level options
+    for opt in &auto.options {
+        let already = merged.options.iter().any(|o| {
+            (o.long.is_some() && o.long == opt.long) || (o.short.is_some() && o.short == opt.short)
+        });
+        if !already {
+            merged.options.push(opt.clone());
+        }
+    }
+
+    // Merge top-level args
+    for arg in &auto.args {
+        if !merged.args.iter().any(|a| a.name == arg.name) {
+            merged.args.push(arg.clone());
+        }
+    }
+
+    merged
+}
+
 /// Minimal best-effort help text parser used when LLM is unavailable.
 /// Extracts obvious `--option` lines and `command  description` subcommand lines.
 pub fn parse_help_basic(command_name: &str, help_text: &str) -> CommandSpec {
@@ -774,5 +842,194 @@ pub fn parse_help_basic(command_name: &str, help_text: &str) -> CommandSpec {
         subcommands,
         options,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{ArgSpec, CommandSpec, OptionSpec, SpecSource, SubcommandSpec};
+
+    #[test]
+    fn test_merge_specs_adds_new_subcommands() {
+        let builtin = CommandSpec {
+            name: "docker".into(),
+            source: SpecSource::Builtin,
+            subcommands: vec![
+                SubcommandSpec {
+                    name: "build".into(),
+                    description: Some("Build an image".into()),
+                    ..Default::default()
+                },
+                SubcommandSpec {
+                    name: "run".into(),
+                    description: Some("Run a container".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let auto = CommandSpec {
+            name: "docker".into(),
+            source: SpecSource::ProjectAuto,
+            subcommands: vec![SubcommandSpec {
+                name: "compose".into(),
+                subcommands: vec![SubcommandSpec {
+                    name: "up".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let merged = merge_specs(&builtin, &auto);
+        assert_eq!(merged.source, SpecSource::Builtin);
+        assert_eq!(merged.subcommands.len(), 3);
+        assert!(merged.subcommands.iter().any(|s| s.name == "build"));
+        assert!(merged.subcommands.iter().any(|s| s.name == "run"));
+        assert!(merged.subcommands.iter().any(|s| s.name == "compose"));
+    }
+
+    #[test]
+    fn test_merge_specs_merges_existing_subcommand_children() {
+        let builtin = CommandSpec {
+            name: "docker".into(),
+            source: SpecSource::Builtin,
+            subcommands: vec![SubcommandSpec {
+                name: "compose".into(),
+                description: Some("Docker Compose".into()),
+                subcommands: vec![SubcommandSpec {
+                    name: "up".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let auto = CommandSpec {
+            name: "docker".into(),
+            source: SpecSource::ProjectAuto,
+            subcommands: vec![SubcommandSpec {
+                name: "compose".into(),
+                subcommands: vec![
+                    SubcommandSpec {
+                        name: "up".into(), // duplicate — should not be added
+                        ..Default::default()
+                    },
+                    SubcommandSpec {
+                        name: "down".into(),
+                        ..Default::default()
+                    },
+                ],
+                args: vec![ArgSpec {
+                    name: "service".into(),
+                    suggestions: vec!["web".into(), "db".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let merged = merge_specs(&builtin, &auto);
+        let compose = merged
+            .subcommands
+            .iter()
+            .find(|s| s.name == "compose")
+            .unwrap();
+        // "up" from builtin + "down" from auto (no duplicate "up")
+        assert_eq!(compose.subcommands.len(), 2);
+        assert!(compose.subcommands.iter().any(|s| s.name == "up"));
+        assert!(compose.subcommands.iter().any(|s| s.name == "down"));
+        // Service args merged in
+        assert!(compose.args.iter().any(|a| a.name == "service"));
+    }
+
+    #[test]
+    fn test_merge_specs_preserves_builtin_options() {
+        let builtin = CommandSpec {
+            name: "test".into(),
+            options: vec![OptionSpec {
+                long: Some("--verbose".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let auto = CommandSpec {
+            name: "test".into(),
+            options: vec![
+                OptionSpec {
+                    long: Some("--verbose".into()), // duplicate
+                    ..Default::default()
+                },
+                OptionSpec {
+                    long: Some("--extra".into()), // new
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let merged = merge_specs(&builtin, &auto);
+        assert_eq!(merged.options.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_lookup_merges_project_auto_with_builtin_docker() {
+        // Simulate the docker-compose shadowing scenario
+        let tmp = tempfile::tempdir().unwrap();
+        let compose_path = tmp.path().join("docker-compose.yml");
+        std::fs::write(
+            &compose_path,
+            "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n",
+        )
+        .unwrap();
+
+        let config = SpecConfig::default();
+        let store = SpecStore::new(config, None);
+
+        let spec = store.lookup("docker", tmp.path()).await;
+        let spec = spec.expect("docker spec should exist");
+
+        // Must include builtin subcommands (build, run, exec, etc.)
+        let sub_names: Vec<&str> = spec.subcommands.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            sub_names.contains(&"build"),
+            "missing builtin 'build': {sub_names:?}"
+        );
+        assert!(
+            sub_names.contains(&"run"),
+            "missing builtin 'run': {sub_names:?}"
+        );
+        assert!(
+            sub_names.contains(&"exec"),
+            "missing builtin 'exec': {sub_names:?}"
+        );
+        assert!(
+            sub_names.contains(&"compose"),
+            "missing 'compose': {sub_names:?}"
+        );
+        // Should have many subcommands (builtin has 13+)
+        assert!(
+            spec.subcommands.len() >= 10,
+            "expected 10+ subcommands, got {}",
+            spec.subcommands.len()
+        );
+
+        // The compose subcommand should have service args from auto-gen merged in
+        let compose = spec
+            .subcommands
+            .iter()
+            .find(|s| s.name == "compose")
+            .unwrap();
+        // Compose should have subcommands from both builtin and auto-gen
+        assert!(
+            compose.subcommands.iter().any(|s| s.name == "up"),
+            "compose missing 'up'"
+        );
     }
 }

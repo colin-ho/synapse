@@ -44,11 +44,11 @@ scrub_env_keys = ["*_KEY", "*_SECRET", "*_TOKEN", "*_PASSWORD", "*_CREDENTIALS"]
 command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 
 [llm]
-enabled = false                        # enable LLM-powered spec discovery
-provider = "anthropic"                 # "anthropic" or "openai"
-api_key_env = "ANTHROPIC_API_KEY"      # env var name containing the API key
-base_url = ""                          # optional API base URL override (e.g. "http://127.0.0.1:1234" for LM Studio)
-model = "claude-haiku-4-5-20251001"    # model to use (fast + cheap for structured extraction)
+enabled = true                         # enable LLM-powered features (spec discovery, NL, explain, contextual args)
+provider = "openai"                    # "anthropic" or "openai" (use "openai" for LM Studio / local endpoints)
+api_key_env = "LMSTUDIO_API_KEY"       # env var name containing the API key (optional for local endpoints)
+base_url = "http://127.0.0.1:1234"     # API base URL (default: LM Studio local endpoint)
+model = "openai/gpt-oss-20b"           # model to use
 timeout_ms = 10000                     # per-request timeout
 max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
 natural_language = true                # enable ? prefix mode for NL → command translation
@@ -59,13 +59,12 @@ contextual_args = true                 # enable LLM contextual argument suggesti
 arg_context_timeout_ms = 2000          # timeout for context gathering commands (git/docker/etc.)
 arg_max_context_tokens = 3000          # max context budget sent to the LLM
 
-# LM Studio (OpenAI-compatible) example:
+# Anthropic (hosted) example:
 # [llm]
 # enabled = true
-# provider = "openai"
-# base_url = "http://127.0.0.1:1234"
-# api_key_env = "LMSTUDIO_API_KEY"      # optional for local endpoint; placeholder key is used if unset
-# model = "your-local-model-id"
+# provider = "anthropic"
+# api_key_env = "ANTHROPIC_API_KEY"
+# model = "claude-haiku-4-5-20251001"
 
 [workflow]
 enabled = true                         # enable workflow prediction (bigram-based)

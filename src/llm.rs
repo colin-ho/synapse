@@ -122,6 +122,93 @@ impl LlmClient {
         self.max_calls_per_discovery
     }
 
+    /// For local OpenAI-compatible endpoints, query /v1/models to auto-detect the loaded model.
+    /// If the configured model is in the list, keeps it. Otherwise switches to the first
+    /// available model. Skips non-local endpoints entirely.
+    pub async fn auto_detect_model(&mut self) -> Option<String> {
+        if self.provider != LlmProvider::OpenAI {
+            return None;
+        }
+        let base = self.base_url.as_deref()?;
+        if !is_local_base_url(base) {
+            return None;
+        }
+
+        let models_url = url_with_v1_path(base, "models");
+        let detect_client = Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .ok()?;
+
+        let resp = match detect_client.get(&models_url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Model auto-detect: failed to reach {models_url}: {e}");
+                return None;
+            }
+        };
+
+        let models_resp: ModelsResponse = match resp.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Model auto-detect: failed to parse /v1/models response: {e}");
+                return None;
+            }
+        };
+
+        if models_resp.data.is_empty() {
+            tracing::warn!("Model auto-detect: no models loaded at {models_url}");
+            return None;
+        }
+
+        // Check if configured model is in the list
+        if models_resp.data.iter().any(|m| m.id == self.model) {
+            tracing::info!(
+                "Model auto-detect: configured model '{}' is available",
+                self.model
+            );
+            return Some(self.model.clone());
+        }
+
+        // Use first available model
+        let new_model = models_resp.data[0].id.clone();
+        tracing::info!(
+            "Model auto-detect: configured '{}' not found, switching to '{}'",
+            self.model,
+            new_model
+        );
+        self.model = new_model.clone();
+        Some(new_model)
+    }
+
+    /// Startup health check: verify the LLM endpoint is reachable.
+    /// Returns true if any response is received (even errors like 405).
+    /// Does NOT activate backoff — this is a one-time startup check.
+    pub async fn probe_health(&self) -> bool {
+        let url = match self.provider {
+            LlmProvider::OpenAI => self.openai_chat_completions_url(),
+            LlmProvider::Anthropic => self.anthropic_messages_url(),
+        };
+
+        let health_client = match Client::builder().timeout(Duration::from_secs(3)).build() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        match health_client.head(&url).send().await {
+            Ok(_) => {
+                tracing::info!("LLM health check: endpoint reachable at {url}");
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "LLM health check: endpoint unreachable at {url}: {e} — LLM features will be unavailable until the endpoint comes online"
+                );
+                false
+            }
+        }
+    }
+
     /// Send help text to the LLM and parse the response as a `CommandSpec`.
     pub async fn generate_spec(
         &self,
@@ -435,6 +522,18 @@ struct OpenAIMessageResponse {
     content: String,
 }
 
+// --- Models endpoint types (for auto-detection) ---
+
+#[derive(Deserialize)]
+struct ModelsResponse {
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Deserialize)]
+struct ModelEntry {
+    id: String,
+}
+
 // --- Helpers ---
 
 fn build_prompt(command_name: &str, help_text: &str) -> String {
@@ -618,6 +717,8 @@ fn detect_destructive_command(command: &str) -> Option<String> {
         ("truncate ", "truncates file"),
         ("kill -9", "force-kills process"),
         ("pkill ", "kills processes by name"),
+        ("-delete", "deletes files (find -delete)"),
+        ("shred ", "overwrites file data"),
     ];
 
     for (pattern, description) in patterns {
@@ -767,8 +868,23 @@ mod tests {
 
     #[test]
     fn test_from_config_disabled() {
-        let config = LlmConfig::default();
+        let config = LlmConfig {
+            enabled: false,
+            ..LlmConfig::default()
+        };
         assert!(LlmClient::from_config(&config, false).is_none());
+    }
+
+    #[test]
+    fn test_from_config_default_lmstudio() {
+        let config = LlmConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.base_url, Some("http://127.0.0.1:1234".to_string()));
+        // Local endpoint should allow placeholder key
+        let client = LlmClient::from_config(&config, false)
+            .expect("default LM Studio config should create client");
+        assert_eq!(client.api_key, "lm-studio");
     }
 
     #[test]
@@ -959,6 +1075,80 @@ ignored = true
         let prompt = build_explain_prompt("find . -type f -size +100M");
         assert!(prompt.contains("find . -type f -size +100M"));
         assert!(prompt.contains("Explain"));
+    }
+
+    #[tokio::test]
+    async fn test_auto_detect_model_skips_non_local_endpoint() {
+        let _guard = LLM_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SYNAPSE_TEST_DETECT_KEY", "test-key") };
+
+        let config = LlmConfig {
+            enabled: true,
+            provider: "openai".into(),
+            api_key_env: "SYNAPSE_TEST_DETECT_KEY".into(),
+            base_url: Some("https://api.openai.com".into()),
+            ..LlmConfig::default()
+        };
+
+        let mut client = LlmClient::from_config(&config, false).unwrap();
+        let result = client.auto_detect_model().await;
+        assert!(result.is_none(), "should skip non-local endpoints");
+
+        unsafe { std::env::remove_var("SYNAPSE_TEST_DETECT_KEY") };
+    }
+
+    #[tokio::test]
+    async fn test_auto_detect_model_skips_anthropic_provider() {
+        let _guard = LLM_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SYNAPSE_TEST_DETECT_KEY2", "test-key") };
+
+        let config = LlmConfig {
+            enabled: true,
+            provider: "anthropic".into(),
+            api_key_env: "SYNAPSE_TEST_DETECT_KEY2".into(),
+            base_url: None,
+            ..LlmConfig::default()
+        };
+
+        let mut client = LlmClient::from_config(&config, false).unwrap();
+        let result = client.auto_detect_model().await;
+        assert!(result.is_none(), "should skip Anthropic provider");
+
+        unsafe { std::env::remove_var("SYNAPSE_TEST_DETECT_KEY2") };
+    }
+
+    #[tokio::test]
+    async fn test_auto_detect_model_handles_unreachable_endpoint() {
+        // Use a port that (almost certainly) has nothing listening
+        let config = LlmConfig {
+            enabled: true,
+            provider: "openai".into(),
+            api_key_env: "SYNAPSE_TEST_NOEXIST".into(),
+            base_url: Some("http://127.0.0.1:19999".into()),
+            ..LlmConfig::default()
+        };
+
+        let mut client = LlmClient::from_config(&config, false).unwrap();
+        let result = client.auto_detect_model().await;
+        assert!(
+            result.is_none(),
+            "should return None for unreachable endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_probe_health_handles_unreachable_endpoint() {
+        let config = LlmConfig {
+            enabled: true,
+            provider: "openai".into(),
+            api_key_env: "SYNAPSE_TEST_NOEXIST".into(),
+            base_url: Some("http://127.0.0.1:19999".into()),
+            ..LlmConfig::default()
+        };
+
+        let client = LlmClient::from_config(&config, false).unwrap();
+        let healthy = client.probe_health().await;
+        assert!(!healthy, "unreachable endpoint should not be healthy");
     }
 
     #[test]

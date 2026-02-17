@@ -199,6 +199,10 @@ impl EnvironmentProvider {
         let partial = request.partial.as_str();
         let prefix = request.prefix.as_str();
 
+        if partial.is_empty() {
+            return Vec::new();
+        }
+
         // Binary search for prefix start
         let start = execs.partition_point(|e| e.as_str() < partial);
 

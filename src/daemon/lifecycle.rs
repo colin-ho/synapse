@@ -161,13 +161,21 @@ pub(super) async fn start_daemon(
     history_provider.load_history().await;
 
     // Init LLM client (if configured)
-    let llm_client =
-        crate::llm::LlmClient::from_config(&config.llm, config.security.scrub_paths).map(Arc::new);
-    if llm_client.is_some() {
+    let llm_client = if let Some(mut client) =
+        crate::llm::LlmClient::from_config(&config.llm, config.security.scrub_paths)
+    {
         tracing::info!("LLM enabled (provider: {})", config.llm.provider);
-    } else if config.llm.enabled {
-        tracing::warn!("LLM enabled in config but API key env var not set, falling back to regex");
-    }
+        client.auto_detect_model().await;
+        client.probe_health().await;
+        Some(Arc::new(client))
+    } else {
+        if config.llm.enabled {
+            tracing::warn!(
+                "LLM enabled in config but API key env var not set, falling back to regex"
+            );
+        }
+        None
+    };
 
     // Init spec system (share LLM client with spec/workflow/NL handlers)
     let spec_store = Arc::new(SpecStore::new(config.spec.clone(), llm_client.clone()));
