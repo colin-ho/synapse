@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 mod handlers;
 mod lifecycle;
@@ -31,8 +31,7 @@ enum Commands {
         #[arg(long)]
         socket_path: Option<PathBuf>,
     },
-    /// Start the daemon (used internally by the shell plugin)
-    #[command(hide = true)]
+    /// Start the daemon
     Start {
         /// Increase log verbosity (-v info, -vv debug, -vvv trace)
         #[arg(short, long, action = clap::ArgAction::Count)]
@@ -50,6 +49,8 @@ enum Commands {
         #[arg(long)]
         socket_path: Option<PathBuf>,
     },
+    /// Add synapse to your ~/.zshrc
+    Install,
     /// Send protocol requests directly to a running daemon (for testing/debugging)
     Probe {
         /// Override the socket path
@@ -115,9 +116,13 @@ pub async fn run() -> anyhow::Result<()> {
             )
             .await?;
         }
+        Some(Commands::Install) => {
+            shell::setup_shell_rc("~/.zshrc")?;
+        }
         None => {
             if std::io::stdout().is_terminal() {
-                shell::setup_shell_rc("~/.zshrc")?;
+                Cli::command().print_help()?;
+                println!();
             } else {
                 shell::print_init_code();
             }

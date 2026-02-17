@@ -26,7 +26,7 @@ pub(super) fn stop_daemon(socket_path: Option<PathBuf>) -> anyhow::Result<()> {
     let pid_path = config.pid_path();
 
     if !pid_path.exists() {
-        eprintln!("Daemon is not running (no PID file)");
+        println!("Daemon is not running (no PID file)");
         return Ok(());
     }
 
@@ -38,13 +38,13 @@ pub(super) fn stop_daemon(socket_path: Option<PathBuf>) -> anyhow::Result<()> {
         nix::sys::signal::Signal::SIGTERM,
     ) {
         Ok(()) => {
-            eprintln!("Sent SIGTERM to daemon (PID {pid})");
+            println!("Sent SIGTERM to daemon (PID {pid})");
             // Clean up files
             let _ = std::fs::remove_file(&pid_path);
             let _ = std::fs::remove_file(config.socket_path());
         }
         Err(nix::errno::Errno::ESRCH) => {
-            eprintln!("Daemon not running (stale PID file), cleaning up");
+            println!("Daemon not running (stale PID file), cleaning up");
             let _ = std::fs::remove_file(&pid_path);
             let _ = std::fs::remove_file(config.socket_path());
         }
@@ -62,7 +62,7 @@ pub(super) fn show_status(socket_path: Option<PathBuf>) -> anyhow::Result<()> {
     let socket_path = config.socket_path();
 
     if !pid_path.exists() {
-        eprintln!("Daemon is not running (no PID file)");
+        println!("Daemon is not running (no PID file)");
         return Ok(());
     }
 
@@ -71,11 +71,11 @@ pub(super) fn show_status(socket_path: Option<PathBuf>) -> anyhow::Result<()> {
 
     match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
         Ok(()) => {
-            eprintln!("Daemon is running (PID {pid})");
-            eprintln!("Socket: {}", socket_path.display());
+            println!("Daemon is running (PID {pid})");
+            println!("Socket: {}", socket_path.display());
         }
         Err(_) => {
-            eprintln!("Daemon is not running (stale PID file for PID {pid})");
+            println!("Daemon is not running (stale PID file for PID {pid})");
         }
     }
 
