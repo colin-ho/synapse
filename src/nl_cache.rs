@@ -15,9 +15,14 @@ struct NlCacheKey {
 }
 
 #[derive(Debug, Clone)]
-pub struct NlCacheEntry {
+pub struct NlCacheItem {
     pub command: String,
     pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NlCacheEntry {
+    pub items: Vec<NlCacheItem>,
 }
 
 impl Default for NlCache {
@@ -115,15 +120,17 @@ mod tests {
                 "/tmp",
                 "macOS",
                 NlCacheEntry {
-                    command: "find . -size +100M".into(),
-                    warning: None,
+                    items: vec![NlCacheItem {
+                        command: "find . -size +100M".into(),
+                        warning: None,
+                    }],
                 },
             )
             .await;
 
         let result = cache.get("find large files", "/tmp", "macOS").await;
         assert!(result.is_some());
-        assert_eq!(result.unwrap().command, "find . -size +100M");
+        assert_eq!(result.unwrap().items[0].command, "find . -size +100M");
     }
 
     #[tokio::test]
@@ -135,8 +142,10 @@ mod tests {
                 "/tmp",
                 "macOS",
                 NlCacheEntry {
-                    command: "find . -size +100M".into(),
-                    warning: None,
+                    items: vec![NlCacheItem {
+                        command: "find . -size +100M".into(),
+                        warning: None,
+                    }],
                 },
             )
             .await;
@@ -155,8 +164,10 @@ mod tests {
                 "/tmp",
                 "macOS",
                 NlCacheEntry {
-                    command: "find . -size +100M".into(),
-                    warning: None,
+                    items: vec![NlCacheItem {
+                        command: "find . -size +100M".into(),
+                        warning: None,
+                    }],
                 },
             )
             .await;

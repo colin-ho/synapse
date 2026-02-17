@@ -31,9 +31,13 @@ pub struct NlTranslationContext {
     pub recent_commands: Vec<String>,
 }
 
-pub struct NlTranslationResult {
+pub struct NlTranslationItem {
     pub command: String,
     pub warning: Option<String>,
+}
+
+pub struct NlTranslationResult {
+    pub items: Vec<NlTranslationItem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,21 +242,32 @@ impl LlmClient {
         Ok(spec)
     }
 
-    /// Translate a natural language query into a shell command.
+    /// Translate a natural language query into one or more shell commands.
     pub async fn translate_command(
         &self,
         ctx: &NlTranslationContext,
+        max_suggestions: usize,
     ) -> Result<NlTranslationResult, LlmError> {
         let cwd = self.scrub_if_enabled(&ctx.cwd);
-        let prompt = build_nl_prompt(ctx, &cwd);
+        let prompt = build_nl_prompt(ctx, &cwd, max_suggestions);
 
-        let response_text = self.request_completion(&prompt, 512).await?;
-        let command = extract_command(&response_text);
-        if command.is_empty() {
+        let max_tokens = (max_suggestions as u32 * 80).max(512);
+        let response_text = self.request_completion(&prompt, max_tokens).await?;
+        let commands = extract_commands(&response_text, max_suggestions);
+        if commands.is_empty() {
             return Err(LlmError::EmptyResponse);
         }
-        let warning = detect_destructive_command(&command);
-        Ok(NlTranslationResult { command, warning })
+        let items = commands
+            .into_iter()
+            .map(|cmd| {
+                let warning = detect_destructive_command(&cmd);
+                NlTranslationItem {
+                    command: cmd,
+                    warning,
+                }
+            })
+            .collect();
+        Ok(NlTranslationResult { items })
     }
 
     /// Ask the LLM to explain a command.
@@ -617,7 +632,7 @@ fn build_workflow_prompt(
     )
 }
 
-fn build_nl_prompt(ctx: &NlTranslationContext, cwd: &str) -> String {
+fn build_nl_prompt(ctx: &NlTranslationContext, cwd: &str, max_suggestions: usize) -> String {
     let tools_str = if ctx.available_tools.is_empty() {
         "standard POSIX utilities".to_string()
     } else {
@@ -637,8 +652,9 @@ fn build_nl_prompt(ctx: &NlTranslationContext, cwd: &str) -> String {
 
     let project_type = ctx.project_type.as_deref().unwrap_or("unknown");
 
-    format!(
-        r#"You are a shell command generator. Convert the user's natural language request into a single shell command.
+    if max_suggestions <= 1 {
+        format!(
+            r#"You are a shell command generator. Convert the user's natural language request into a single shell command.
 
 Environment:
 - Shell: zsh
@@ -659,13 +675,47 @@ Rules:
 - If the request requires multiple commands, chain them with && or |
 - Never generate destructive commands (rm -rf /, dd, mkfs) without explicit safeguards
 - For file operations, prefer relative paths from the working directory"#,
-        os = ctx.os,
-        cwd = cwd,
-        project_type = project_type,
-        tools = tools_str,
-        recent = recent_str,
-        query = ctx.query,
-    )
+            os = ctx.os,
+            cwd = cwd,
+            project_type = project_type,
+            tools = tools_str,
+            recent = recent_str,
+            query = ctx.query,
+        )
+    } else {
+        format!(
+            r#"You are a shell command generator. Convert the user's natural language request into {n} alternative shell commands, ranked from most likely to least likely.
+
+Environment:
+- Shell: zsh
+- OS: {os}
+- Working directory: {cwd}
+- Project type: {project_type}
+- Available tools: {tools}
+- Recent commands:
+{recent}
+
+User request: {query}
+
+Rules:
+- Return up to {n} alternative commands, one per line, numbered 1. 2. 3. etc.
+- Each line must contain ONLY the number and shell command (no explanations)
+- Vary the approaches: use different tools, flags, or techniques for each alternative
+- Rank from most likely correct interpretation to least likely
+- Use tools available on the system (prefer common POSIX utilities)
+- Use the working directory context (don't use absolute paths unless necessary)
+- If the request requires multiple commands, chain them with && or |
+- Never generate destructive commands (rm -rf /, dd, mkfs) without explicit safeguards
+- For file operations, prefer relative paths from the working directory"#,
+            n = max_suggestions,
+            os = ctx.os,
+            cwd = cwd,
+            project_type = project_type,
+            tools = tools_str,
+            recent = recent_str,
+            query = ctx.query,
+        )
+    }
 }
 
 fn build_explain_prompt(command: &str) -> String {
@@ -711,6 +761,62 @@ fn extract_command(response: &str) -> String {
     }
 
     trimmed.to_string()
+}
+
+/// Extract multiple shell commands from an LLM response.
+/// Handles numbered lists, bullets, markdown fences, and bare commands.
+fn extract_commands(response: &str, max: usize) -> Vec<String> {
+    let trimmed = response.trim();
+
+    // If wrapped in a single fenced block, extract the block content and parse lines within
+    let content = extract_fenced_block(trimmed).unwrap_or(trimmed);
+
+    let mut commands = Vec::new();
+
+    for line in content.lines() {
+        let mut line = line.trim();
+        if line.is_empty() || line.starts_with("```") {
+            continue;
+        }
+
+        // Strip numbered prefix: "1. ", "2. ", etc.
+        if let Some((num, rest)) = line.split_once(". ") {
+            if num.trim().parse::<usize>().is_ok() {
+                line = rest.trim();
+            }
+        }
+
+        // Strip bullet prefix
+        if let Some(rest) = line.strip_prefix("- ") {
+            line = rest.trim();
+        }
+
+        // Strip backtick wrapping
+        line = line.trim_matches('`').trim();
+
+        // Skip comment lines and empty results
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
+
+        let candidate = line.to_string();
+        if !commands.contains(&candidate) {
+            commands.push(candidate);
+            if commands.len() >= max {
+                break;
+            }
+        }
+    }
+
+    // Fallback: if parsing found nothing, try the old single-command extraction
+    if commands.is_empty() {
+        let single = extract_command(response);
+        if !single.is_empty() {
+            commands.push(single);
+        }
+    }
+
+    commands
 }
 
 /// Check if a command contains potentially destructive operations.
@@ -1058,12 +1164,28 @@ ignored = true
             available_tools: vec!["git".into(), "cargo".into()],
             recent_commands: vec!["cargo build".into()],
         };
-        let prompt = build_nl_prompt(&ctx, &ctx.cwd);
+        let prompt = build_nl_prompt(&ctx, &ctx.cwd, 3);
         assert!(prompt.contains("find large files"));
         assert!(prompt.contains("macOS 14.5"));
         assert!(prompt.contains("rust"));
         assert!(prompt.contains("git, cargo"));
         assert!(prompt.contains("cargo build"));
+        assert!(prompt.contains("3 alternative"));
+    }
+
+    #[test]
+    fn test_build_nl_prompt_single_mode() {
+        let ctx = NlTranslationContext {
+            query: "list files".into(),
+            cwd: "/tmp".into(),
+            os: "Linux".into(),
+            project_type: None,
+            available_tools: vec![],
+            recent_commands: vec![],
+        };
+        let prompt = build_nl_prompt(&ctx, &ctx.cwd, 1);
+        assert!(prompt.contains("single shell command"));
+        assert!(prompt.contains("standard POSIX utilities"));
     }
 
     #[test]
@@ -1076,9 +1198,66 @@ ignored = true
             available_tools: vec![],
             recent_commands: vec![],
         };
-        let prompt = build_nl_prompt(&ctx, &ctx.cwd);
+        let prompt = build_nl_prompt(&ctx, &ctx.cwd, 3);
         assert!(prompt.contains("standard POSIX utilities"));
         assert!(prompt.contains("unknown"));
+    }
+
+    #[test]
+    fn test_extract_commands_numbered_list() {
+        let response = "1. find . -type f -size +100M\n2. du -sh * | sort -rh\n3. ls -lhS";
+        let cmds = extract_commands(response, 5);
+        assert_eq!(
+            cmds,
+            vec![
+                "find . -type f -size +100M",
+                "du -sh * | sort -rh",
+                "ls -lhS",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_commands_with_fence() {
+        let response = "```bash\n1. find . -size +100M\n2. du -sh *\n```";
+        let cmds = extract_commands(response, 5);
+        assert_eq!(cmds, vec!["find . -size +100M", "du -sh *"]);
+    }
+
+    #[test]
+    fn test_extract_commands_dedup() {
+        let response = "1. ls -la\n2. ls -la\n3. ls -lh";
+        let cmds = extract_commands(response, 5);
+        assert_eq!(cmds, vec!["ls -la", "ls -lh"]);
+    }
+
+    #[test]
+    fn test_extract_commands_fallback_single() {
+        let response = "find . -name '*.rs'";
+        let cmds = extract_commands(response, 3);
+        assert_eq!(cmds, vec!["find . -name '*.rs'"]);
+    }
+
+    #[test]
+    fn test_extract_commands_with_bullets() {
+        let response = "- find . -size +100M\n- du -sh *";
+        let cmds = extract_commands(response, 5);
+        assert_eq!(cmds, vec!["find . -size +100M", "du -sh *"]);
+    }
+
+    #[test]
+    fn test_extract_commands_respects_max() {
+        let response = "1. cmd1\n2. cmd2\n3. cmd3\n4. cmd4";
+        let cmds = extract_commands(response, 2);
+        assert_eq!(cmds, vec!["cmd1", "cmd2"]);
+    }
+
+    #[test]
+    fn test_extract_commands_skips_comments() {
+        let response =
+            "# Here are the commands:\n1. find . -size +100M\n// another comment\n2. du -sh *";
+        let cmds = extract_commands(response, 5);
+        assert_eq!(cmds, vec!["find . -size +100M", "du -sh *"]);
     }
 
     #[test]
