@@ -68,7 +68,7 @@ Test as a human user would at the prompt:
 4. Dismiss (`Esc`).
 5. Dropdown open/navigation/accept/dismiss via arrow keys.
 6. History navigation interactions with Synapse state.
-7. Natural-language mode (`? <query>`) if enabled.
+7. Natural-language mode (`? <query>`) if enabled (`Enter`/`Tab` triggers translation and dropdown/error rendering).
 8. Explain flow for LLM-sourced command (`Ctrl+E`) when available.
 
 Expected evidence:
@@ -105,7 +105,7 @@ Use `synapse probe` to confirm daemon-side behavior behind UX results:
 
 1. `ping`, `suggest`, `list_suggestions`, `interaction`, `command_executed`.
 2. malformed request handling and parser resilience.
-3. async update capture via `--stdio --wait-ms`.
+3. NL async follow-up capture via `--wait-for-update` or `--stdio --wait-ms` (while treating immediate non-`ack` responses as terminal).
 
 Expected evidence:
 - output lines and frame types matching requests.
@@ -120,7 +120,7 @@ When a plugin-path scenario fails:
 3. If both fail:
    - classify as daemon/provider/protocol issue
 4. Record both repro commands in findings.
-5. If `probe --request` times out on LLM scenarios, retry with `probe --stdio --wait-ms 20000` before marking FAIL.
+5. For NL, if `probe --request` times out waiting for follow-up frames, retry with `probe --stdio --wait-ms 20000` before marking FAIL.
 
 ## Scenario Breadth Matrix (Required)
 
@@ -164,14 +164,16 @@ Run a broad set of scenarios. Target at least 30 distinct scenarios total.
 
 ### E) LLM/NL Scenarios (When Environment Supports)
 
-1. NL query produces command update.
-2. Safety/policy behavior on risky NL translation.
-3. Explain command response quality and stability.
+1. NL query returns either a command `update` or explicit `error` (never silent/ack-only terminal behavior).
+2. Safety/policy behavior on risky NL translation (expect explicit `error` when blocked).
+3. Explain command response quality and stability (`suggest` or `error`).
 4. Timeout/degraded behavior when provider is slow.
 5. Probe timeout handling:
    - validate LLM scenarios with `--stdio --wait-ms` or `--wait-for-update` to avoid false negatives from fixed short request timeouts.
 
-> **Async ack + update pattern:** NL (`natural_language`) and explain (`explain`) requests return an immediate `{"type":"ack"}` response, followed by an async update containing the actual result. Use `--wait-for-update` with `--request` mode to automatically wait for the update after the ack. Alternatively, use `--stdio --wait-ms <timeout>` to capture all output including late-arriving updates.
+> **NL response contract:** `natural_language` can return (a) immediate `update` (cache hit), (b) immediate `error` (validation/config/policy), or (c) `ack` then async `update`/`error`. Do not require `ack` as the first frame.
+>
+> **Explain response contract:** `explain` is synchronous (`suggest` or `error`), not `ack` + async update.
 
 If blocked by missing API key/env:
 - mark scenario as `BLOCKED`, include exact missing prerequisite.
@@ -214,18 +216,18 @@ synapse probe --socket-path "$SOCK" --request '{"type":"explain","session_id":"s
 ### NL / Explain / Interaction probe examples
 
 ```bash
-# Natural language query (async: returns ack, then update)
-# Use --wait-for-update to capture the async command translation:
+# Natural language query (can be immediate update/error OR ack then async update/error).
+# --wait-for-update waits for a follow-up only when first frame is ack:
 synapse probe --socket-path "$SOCK" --request '{"type":"natural_language","session_id":"s1","query":"find all rust files modified today","cwd":"/tmp","recent_commands":[]}' --wait-for-update --first-response-timeout-ms 30000
 
-# Explain a command (async: returns ack, then update):
-synapse probe --socket-path "$SOCK" --request '{"type":"explain","session_id":"s1","command":"git rebase -i HEAD~3"}' --wait-for-update --first-response-timeout-ms 30000
+# Explain a command (synchronous: suggest or error):
+synapse probe --socket-path "$SOCK" --request '{"type":"explain","session_id":"s1","command":"git rebase -i HEAD~3"}' --first-response-timeout-ms 30000
 
 # Interaction feedback (synchronous ack):
-synapse probe --socket-path "$SOCK" --request '{"type":"interaction","session_id":"s1","action":"accept","buffer":"git status","accepted_text":"git status"}'
+synapse probe --socket-path "$SOCK" --request '{"type":"interaction","session_id":"s1","action":"accept","suggestion":"git status","source":"history","buffer_at_action":"git sta"}'
 
 # Command executed feedback (synchronous ack):
-synapse probe --socket-path "$SOCK" --request '{"type":"command_executed","session_id":"s1","command":"git status","exit_code":0,"cwd":"/tmp"}'
+synapse probe --socket-path "$SOCK" --request '{"type":"command_executed","session_id":"s1","command":"git status"}'
 
 # Alternative: use --stdio --wait-ms for NL/explain to capture all output including late updates:
 echo '{"type":"natural_language","session_id":"s1","query":"list docker containers","cwd":"/tmp","recent_commands":[]}' | synapse probe --socket-path "$SOCK" --stdio --wait-ms 30000
