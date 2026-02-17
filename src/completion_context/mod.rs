@@ -1,7 +1,7 @@
 mod builder;
 mod tokenizer;
 
-pub use tokenizer::{tokenize, tokenize_with_operators, Token};
+pub use tokenizer::{split_at_last_operator, tokenize, tokenize_with_operators, Token};
 
 /// Where we are in the command being typed.
 #[derive(Debug, Clone, PartialEq, Eq)]
