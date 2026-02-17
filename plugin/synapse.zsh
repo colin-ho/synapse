@@ -35,6 +35,10 @@ typeset -g _SYNAPSE_DROPDOWN_SELECTED=""
 typeset -g _SYNAPSE_DROPDOWN_INSERT_KEY=""
 typeset -gi _SYNAPSE_HISTORY_BROWSING=0
 
+# --- Debounce State ---
+typeset -g _SYNAPSE_LAST_SUGGEST_TIME=0
+typeset -gi _SYNAPSE_LAST_SUGGEST_BUFLEN=0
+
 # --- Natural Language State ---
 typeset -gi _SYNAPSE_NL_MODE=0
 typeset -g _SYNAPSE_NL_PREFIX="?"
@@ -43,6 +47,7 @@ typeset -g _SYNAPSE_NL_PREFIX="?"
 zmodload zsh/net/socket 2>/dev/null || { return; }
 zmodload zsh/zle 2>/dev/null || { return; }
 zmodload zsh/system 2>/dev/null  # for sysread/syswrite
+zmodload zsh/datetime 2>/dev/null  # for EPOCHREALTIME (debounce)
 
 # --- Helpers ---
 
@@ -588,6 +593,18 @@ _synapse_suggest() {
     if [[ -z "$buffer" ]]; then
         _synapse_clear_suggestion
         return
+    fi
+
+    # Debounce: skip if <30ms since last suggest and buffer changed by 1 char
+    if (( ${+EPOCHREALTIME} )); then
+        local now=${EPOCHREALTIME}
+        local elapsed=$(( now - _SYNAPSE_LAST_SUGGEST_TIME ))
+        local buflen_diff=$(( ${#buffer} - _SYNAPSE_LAST_SUGGEST_BUFLEN ))
+        if (( elapsed < 0.030 )) && (( buflen_diff == 1 || buflen_diff == -1 )); then
+            return
+        fi
+        _SYNAPSE_LAST_SUGGEST_TIME=$now
+        _SYNAPSE_LAST_SUGGEST_BUFLEN=${#buffer}
     fi
 
     local json

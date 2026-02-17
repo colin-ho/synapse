@@ -52,10 +52,23 @@ impl FilesystemProvider {
 
     /// Check if this provider should activate for the given context.
     fn should_activate(ctx: &CompletionContext) -> bool {
-        matches!(
+        if matches!(
             ctx.expected_type,
             ExpectedType::FilePath | ExpectedType::Directory
         ) || matches!(ctx.position, Position::Redirect)
+        {
+            return true;
+        }
+
+        // Activate when the partial looks like a path
+        let p = ctx.partial.as_str();
+        p.starts_with('/')
+            || p.starts_with("./")
+            || p.starts_with("../")
+            || p.starts_with("~/")
+            || p == "."
+            || p == ".."
+            || p == "~"
     }
 
     fn resolve_dir_input(input: &str, cwd: &Path) -> PathBuf {
@@ -312,14 +325,14 @@ impl FilesystemProvider {
             } else {
                 path_query.file_prefix.len() as f64 / entry.name.len().max(1) as f64
             };
-            let dir_bonus = if entry.is_dir { 0.02 } else { 0.0 };
+            let dir_bonus = if entry.is_dir { 0.03 } else { 0.0 };
             let exact_bonus =
                 if !path_query.file_prefix.is_empty() && path_query.file_prefix == entry.name {
-                    0.04
+                    0.06
                 } else {
                     0.0
                 };
-            let score = (0.5 + 0.12 * specificity + dir_bonus + exact_bonus).clamp(0.0, 1.0);
+            let score = (0.55 + 0.25 * specificity + dir_bonus + exact_bonus).clamp(0.0, 1.0);
 
             let kind = SuggestionKind::File;
 
