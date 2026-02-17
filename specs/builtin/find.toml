@@ -58,6 +58,48 @@ long = "-path"
 takes_arg = true
 description = "Match full path pattern"
 
+[[options]]
+long = "-perm"
+takes_arg = true
+description = "File permission bits"
+
+[[options]]
+long = "-user"
+takes_arg = true
+description = "File belongs to user"
+
+[[options]]
+long = "-group"
+takes_arg = true
+description = "File belongs to group"
+
+[[options]]
+long = "-newer"
+takes_arg = true
+description = "File modified more recently than given file"
+
+[[options]]
+long = "-empty"
+description = "File is empty"
+
+[[options]]
+long = "-not"
+description = "Negate the following expression"
+
+[[options]]
+long = "-prune"
+description = "Do not descend into directory"
+
+[[options]]
+long = "-mmin"
+takes_arg = true
+description = "File modified N minutes ago"
+
+[[options]]
+long = "-regex"
+takes_arg = true
+description = "Match full path against regex"
+
 [[args]]
 name = "starting-point"
 template = "directories"

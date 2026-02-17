@@ -1,0 +1,62 @@
+name = "diff"
+description = "Compare files line by line"
+
+[[options]]
+short = "-u"
+long = "--unified"
+description = "Output in unified format"
+
+[[options]]
+short = "-r"
+long = "--recursive"
+description = "Recursively compare subdirectories"
+
+[[options]]
+short = "-q"
+long = "--brief"
+description = "Report only when files differ"
+
+[[options]]
+long = "--color"
+takes_arg = true
+description = "Colorize the output"
+
+[[options]]
+short = "-y"
+long = "--side-by-side"
+description = "Output in two columns"
+
+[[options]]
+short = "-i"
+long = "--ignore-case"
+description = "Ignore case differences"
+
+[[options]]
+short = "-w"
+long = "--ignore-all-space"
+description = "Ignore all white space"
+
+[[options]]
+short = "-B"
+long = "--ignore-blank-lines"
+description = "Ignore changes where lines are all blank"
+
+[[options]]
+long = "--exclude"
+takes_arg = true
+description = "Exclude files matching pattern"
+
+[[options]]
+short = "-N"
+long = "--new-file"
+description = "Treat absent files as empty"
+
+[[options]]
+short = "-c"
+long = "--context"
+description = "Output in context format"
+
+[[args]]
+name = "file"
+template = "file_paths"
+variadic = true

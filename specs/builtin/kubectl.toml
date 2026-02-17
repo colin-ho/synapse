@@ -1,0 +1,232 @@
+name = "kubectl"
+description = "Kubernetes command-line tool"
+
+[[options]]
+short = "-n"
+long = "--namespace"
+takes_arg = true
+description = "Kubernetes namespace"
+[options.generator]
+command = "kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null"
+split_on = " "
+cache_ttl_secs = 60
+
+[[options]]
+long = "--context"
+takes_arg = true
+description = "Kubernetes context"
+[options.generator]
+command = "kubectl config get-contexts -o name 2>/dev/null"
+cache_ttl_secs = 60
+
+[[options]]
+short = "-o"
+long = "--output"
+takes_arg = true
+description = "Output format (json, yaml, wide, name)"
+
+[[subcommands]]
+name = "get"
+description = "Display one or many resources"
+
+  [[subcommands.options]]
+  short = "-o"
+  long = "--output"
+  takes_arg = true
+  description = "Output format"
+
+  [[subcommands.options]]
+  short = "-l"
+  long = "--selector"
+  takes_arg = true
+  description = "Selector (label query) to filter on"
+
+  [[subcommands.options]]
+  short = "-A"
+  long = "--all-namespaces"
+  description = "List across all namespaces"
+
+  [[subcommands.options]]
+  short = "-w"
+  long = "--watch"
+  description = "Watch for changes"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "echo 'pods\nservices\ndeployments\nnodes\nnamespaces\nconfigmaps\nsecrets\ningresses\njobs\ncronjobs\nstatefulsets\ndaemonsets\nreplicasets\npersistentvolumeclaims\npersistentvolumes\nserviceaccounts\nroles\nrolebindings\nclusterroles\nclusterrolebindings\nevents\nhpa'"
+
+[[subcommands]]
+name = "describe"
+description = "Show details of a specific resource"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "echo 'pods\nservices\ndeployments\nnodes\nnamespaces\nconfigmaps\nsecrets\ningresses\njobs\ncronjobs\nstatefulsets\ndaemonsets'"
+
+[[subcommands]]
+name = "apply"
+description = "Apply a configuration to a resource"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--filename"
+  takes_arg = true
+  description = "Filename to apply"
+
+  [[subcommands.options]]
+  short = "-k"
+  long = "--kustomize"
+  takes_arg = true
+  description = "Kustomization directory"
+
+  [[subcommands.options]]
+  long = "--dry-run"
+  takes_arg = true
+  description = "Dry run strategy (none, client, server)"
+
+[[subcommands]]
+name = "delete"
+description = "Delete resources"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--filename"
+  takes_arg = true
+  description = "Filename to delete"
+
+  [[subcommands.options]]
+  long = "--all"
+  description = "Delete all resources of the specified type"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "echo 'pods\nservices\ndeployments\nconfigmaps\nsecrets\ningresses\njobs\ncronjobs\nstatefulsets\ndaemonsets'"
+
+[[subcommands]]
+name = "logs"
+description = "Print the logs for a container"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--follow"
+  description = "Follow log output"
+
+  [[subcommands.options]]
+  long = "--tail"
+  takes_arg = true
+  description = "Lines of recent log to display"
+
+  [[subcommands.options]]
+  short = "-c"
+  long = "--container"
+  takes_arg = true
+  description = "Container name"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--previous"
+  description = "Print logs for the previous instance"
+
+  [[subcommands.args]]
+  name = "pod"
+  [subcommands.args.generator]
+  command = "kubectl get pods -o name 2>/dev/null | sed 's|pod/||'"
+  cache_ttl_secs = 10
+
+[[subcommands]]
+name = "exec"
+description = "Execute a command in a container"
+
+  [[subcommands.options]]
+  short = "-it"
+  description = "Interactive terminal"
+
+  [[subcommands.options]]
+  short = "-c"
+  long = "--container"
+  takes_arg = true
+  description = "Container name"
+
+  [[subcommands.args]]
+  name = "pod"
+  [subcommands.args.generator]
+  command = "kubectl get pods -o name 2>/dev/null | sed 's|pod/||'"
+  cache_ttl_secs = 10
+
+[[subcommands]]
+name = "create"
+description = "Create a resource"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--filename"
+  takes_arg = true
+  description = "Filename to create"
+
+[[subcommands]]
+name = "config"
+description = "Modify kubeconfig files"
+
+  [[subcommands.subcommands]]
+  name = "use-context"
+  description = "Set the current context"
+
+    [[subcommands.subcommands.args]]
+    name = "context"
+    [subcommands.subcommands.args.generator]
+    command = "kubectl config get-contexts -o name 2>/dev/null"
+    cache_ttl_secs = 30
+
+  [[subcommands.subcommands]]
+  name = "get-contexts"
+  description = "List available contexts"
+
+  [[subcommands.subcommands]]
+  name = "current-context"
+  description = "Display the current context"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "Display merged kubeconfig"
+
+[[subcommands]]
+name = "scale"
+description = "Set a new size for a resource"
+
+  [[subcommands.options]]
+  long = "--replicas"
+  takes_arg = true
+  description = "The new desired number of replicas"
+
+[[subcommands]]
+name = "rollout"
+description = "Manage the rollout of a resource"
+
+  [[subcommands.subcommands]]
+  name = "status"
+  description = "Show the status of the rollout"
+
+  [[subcommands.subcommands]]
+  name = "undo"
+  description = "Undo a previous rollout"
+
+  [[subcommands.subcommands]]
+  name = "restart"
+  description = "Restart a resource"
+
+  [[subcommands.subcommands]]
+  name = "history"
+  description = "View rollout history"
+
+[[subcommands]]
+name = "port-forward"
+description = "Forward one or more local ports to a pod"
+
+  [[subcommands.args]]
+  name = "pod"
+  [subcommands.args.generator]
+  command = "kubectl get pods -o name 2>/dev/null | sed 's|pod/||'"
+  cache_ttl_secs = 10

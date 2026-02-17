@@ -1,0 +1,160 @@
+name = "systemctl"
+description = "Control the systemd system and service manager"
+
+[[subcommands]]
+name = "start"
+description = "Start one or more units"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+  [subcommands.args.generator]
+  command = "systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}'"
+  cache_ttl_secs = 60
+
+[[subcommands]]
+name = "stop"
+description = "Stop one or more units"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+  [subcommands.args.generator]
+  command = "systemctl list-units --type=service --state=running --no-legend 2>/dev/null | awk '{print $1}'"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "restart"
+description = "Restart one or more units"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+  [subcommands.args.generator]
+  command = "systemctl list-units --type=service --state=running --no-legend 2>/dev/null | awk '{print $1}'"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "reload"
+description = "Reload one or more units"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+
+[[subcommands]]
+name = "status"
+description = "Show runtime status of one or more units"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+  [subcommands.args.generator]
+  command = "systemctl list-units --type=service --no-legend 2>/dev/null | awk '{print $1}'"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "enable"
+description = "Enable one or more units"
+
+  [[subcommands.options]]
+  long = "--now"
+  description = "Also start the unit"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+  [subcommands.args.generator]
+  command = "systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}'"
+  cache_ttl_secs = 60
+
+[[subcommands]]
+name = "disable"
+description = "Disable one or more units"
+
+  [[subcommands.options]]
+  long = "--now"
+  description = "Also stop the unit"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+  [subcommands.args.generator]
+  command = "systemctl list-unit-files --type=service --state=enabled --no-legend 2>/dev/null | awk '{print $1}'"
+  cache_ttl_secs = 60
+
+[[subcommands]]
+name = "is-active"
+description = "Check whether units are active"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+
+[[subcommands]]
+name = "is-enabled"
+description = "Check whether units are enabled"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+
+[[subcommands]]
+name = "list-units"
+description = "List units currently in memory"
+
+  [[subcommands.options]]
+  long = "--type"
+  takes_arg = true
+  description = "Filter by unit type"
+
+  [[subcommands.options]]
+  long = "--state"
+  takes_arg = true
+  description = "Filter by unit state"
+
+  [[subcommands.options]]
+  long = "--all"
+  description = "Show all loaded units"
+
+[[subcommands]]
+name = "list-unit-files"
+description = "List installed unit files"
+
+  [[subcommands.options]]
+  long = "--type"
+  takes_arg = true
+  description = "Filter by unit type"
+
+  [[subcommands.options]]
+  long = "--state"
+  takes_arg = true
+  description = "Filter by unit file state"
+
+[[subcommands]]
+name = "daemon-reload"
+description = "Reload systemd manager configuration"
+
+[[subcommands]]
+name = "cat"
+description = "Show the backing files of units"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+
+[[subcommands]]
+name = "edit"
+description = "Edit one or more units"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true
+
+[[subcommands]]
+name = "show"
+description = "Show properties of units"
+
+  [[subcommands.args]]
+  name = "unit"
+  variadic = true

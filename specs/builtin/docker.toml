@@ -83,6 +83,27 @@ description = "Create and run a new container"
   takes_arg = true
   description = "Working directory inside the container"
 
+  [[subcommands.options]]
+  long = "--network"
+  takes_arg = true
+  description = "Connect to a network"
+
+  [[subcommands.options]]
+  short = "-u"
+  long = "--user"
+  takes_arg = true
+  description = "Username or UID"
+
+  [[subcommands.options]]
+  long = "--restart"
+  takes_arg = true
+  description = "Restart policy (no, on-failure, always, unless-stopped)"
+
+  [[subcommands.options]]
+  long = "--entrypoint"
+  takes_arg = true
+  description = "Overwrite the default ENTRYPOINT"
+
   [[subcommands.args]]
   name = "image"
   [subcommands.args.generator]
@@ -211,6 +232,18 @@ description = "Fetch the logs of a container"
 name = "compose"
 description = "Docker Compose commands"
 
+  [[subcommands.options]]
+  short = "-f"
+  long = "--file"
+  takes_arg = true
+  description = "Specify a compose file"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--project-name"
+  takes_arg = true
+  description = "Specify a project name"
+
   [[subcommands.subcommands]]
   name = "up"
   description = "Create and start containers"
@@ -309,3 +342,39 @@ description = "Manage volumes"
   [[subcommands.subcommands]]
   name = "prune"
   description = "Remove unused volumes"
+
+[[subcommands]]
+name = "tag"
+description = "Create a tag TARGET_IMAGE that refers to SOURCE_IMAGE"
+
+  [[subcommands.args]]
+  name = "source_image"
+  [subcommands.args.generator]
+  command = "docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "system"
+description = "Manage Docker"
+
+  [[subcommands.subcommands]]
+  name = "prune"
+  description = "Remove unused data"
+
+    [[subcommands.subcommands.options]]
+    short = "-a"
+    long = "--all"
+    description = "Remove all unused images"
+
+    [[subcommands.subcommands.options]]
+    short = "-f"
+    long = "--force"
+    description = "Do not prompt for confirmation"
+
+  [[subcommands.subcommands]]
+  name = "df"
+  description = "Show docker disk usage"
+
+  [[subcommands.subcommands]]
+  name = "info"
+  description = "Display system-wide information"

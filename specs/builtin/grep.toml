@@ -75,6 +75,42 @@ long = "--exclude"
 takes_arg = true
 description = "Skip files matching glob pattern"
 
+[[options]]
+short = "-P"
+long = "--perl-regexp"
+description = "Interpret pattern as a Perl-compatible regex"
+
+[[options]]
+short = "-F"
+long = "--fixed-strings"
+description = "Interpret pattern as fixed strings"
+
+[[options]]
+short = "-m"
+long = "--max-count"
+takes_arg = true
+description = "Stop after NUM matches"
+
+[[options]]
+long = "--color"
+takes_arg = true
+description = "Highlight matching strings"
+
+[[options]]
+short = "-o"
+long = "--only-matching"
+description = "Print only the matched parts of a line"
+
+[[options]]
+short = "-q"
+long = "--quiet"
+description = "Suppress normal output"
+
+[[options]]
+long = "--exclude-dir"
+takes_arg = true
+description = "Skip directories matching pattern"
+
 [[args]]
 name = "pattern"
 

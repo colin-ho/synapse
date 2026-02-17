@@ -1,0 +1,31 @@
+name = "kill"
+description = "Send a signal to a process"
+
+[[options]]
+short = "-s"
+takes_arg = true
+description = "Specify the signal to send"
+
+[[options]]
+short = "-l"
+description = "List signal names"
+
+[[options]]
+short = "-9"
+description = "Send SIGKILL"
+
+[[options]]
+short = "-15"
+description = "Send SIGTERM (default)"
+
+[[options]]
+short = "-1"
+description = "Send SIGHUP"
+
+[[options]]
+short = "-2"
+description = "Send SIGINT"
+
+[[args]]
+name = "pid"
+variadic = true

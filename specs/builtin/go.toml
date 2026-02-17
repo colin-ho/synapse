@@ -1,0 +1,243 @@
+name = "go"
+description = "Go programming language tool"
+
+[[subcommands]]
+name = "build"
+description = "Compile packages and dependencies"
+
+  [[subcommands.options]]
+  short = "-o"
+  takes_arg = true
+  description = "Output file or directory"
+
+  [[subcommands.options]]
+  short = "-v"
+  description = "Print package names as they are compiled"
+
+  [[subcommands.options]]
+  long = "-race"
+  description = "Enable data race detection"
+
+  [[subcommands.options]]
+  long = "-ldflags"
+  takes_arg = true
+  description = "Arguments to pass to the linker"
+
+  [[subcommands.options]]
+  long = "-tags"
+  takes_arg = true
+  description = "Build tags"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "run"
+description = "Compile and run Go program"
+
+  [[subcommands.options]]
+  short = "-v"
+  description = "Print package names as they are compiled"
+
+  [[subcommands.options]]
+  long = "-race"
+  description = "Enable data race detection"
+
+  [[subcommands.args]]
+  name = "files"
+  template = "file_paths"
+  variadic = true
+
+[[subcommands]]
+name = "test"
+description = "Test packages"
+
+  [[subcommands.options]]
+  short = "-v"
+  description = "Verbose output"
+
+  [[subcommands.options]]
+  long = "-run"
+  takes_arg = true
+  description = "Run only tests matching regexp"
+
+  [[subcommands.options]]
+  long = "-bench"
+  takes_arg = true
+  description = "Run only benchmarks matching regexp"
+
+  [[subcommands.options]]
+  long = "-count"
+  takes_arg = true
+  description = "Run each test/benchmark n times"
+
+  [[subcommands.options]]
+  long = "-cover"
+  description = "Enable coverage analysis"
+
+  [[subcommands.options]]
+  long = "-coverprofile"
+  takes_arg = true
+  description = "Write coverage profile to file"
+
+  [[subcommands.options]]
+  long = "-race"
+  description = "Enable data race detection"
+
+  [[subcommands.options]]
+  long = "-timeout"
+  takes_arg = true
+  description = "Test timeout"
+
+  [[subcommands.options]]
+  long = "-short"
+  description = "Tell long-running tests to shorten their run time"
+
+  [[subcommands.options]]
+  long = "-tags"
+  takes_arg = true
+  description = "Build tags"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "get"
+description = "Download and install packages and dependencies"
+
+  [[subcommands.options]]
+  short = "-u"
+  description = "Update packages"
+
+  [[subcommands.options]]
+  short = "-d"
+  description = "Download only, don't install"
+
+  [[subcommands.options]]
+  short = "-v"
+  description = "Verbose output"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "install"
+description = "Compile and install packages"
+
+  [[subcommands.options]]
+  short = "-v"
+  description = "Print package names as they are compiled"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "fmt"
+description = "Gofmt (reformat) package sources"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "vet"
+description = "Report likely mistakes in packages"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "mod"
+description = "Module maintenance"
+
+  [[subcommands.subcommands]]
+  name = "init"
+  description = "Initialize new module in current directory"
+
+    [[subcommands.subcommands.args]]
+    name = "module-path"
+
+  [[subcommands.subcommands]]
+  name = "tidy"
+  description = "Add missing and remove unused modules"
+
+    [[subcommands.subcommands.options]]
+    short = "-v"
+    description = "Print information about removed modules"
+
+  [[subcommands.subcommands]]
+  name = "download"
+  description = "Download modules to local cache"
+
+  [[subcommands.subcommands]]
+  name = "vendor"
+  description = "Make vendored copy of dependencies"
+
+  [[subcommands.subcommands]]
+  name = "verify"
+  description = "Verify dependencies have expected content"
+
+  [[subcommands.subcommands]]
+  name = "graph"
+  description = "Print module requirement graph"
+
+  [[subcommands.subcommands]]
+  name = "edit"
+  description = "Edit go.mod from tools or scripts"
+
+[[subcommands]]
+name = "generate"
+description = "Generate Go files by processing source"
+
+  [[subcommands.options]]
+  short = "-v"
+  description = "Print names of packages and files as they are processed"
+
+  [[subcommands.options]]
+  long = "-run"
+  takes_arg = true
+  description = "Only run generators matching regexp"
+
+[[subcommands]]
+name = "clean"
+description = "Remove object files and cached files"
+
+  [[subcommands.options]]
+  short = "-i"
+  description = "Remove corresponding installed archive or binary"
+
+  [[subcommands.options]]
+  long = "-cache"
+  description = "Remove the entire go build cache"
+
+  [[subcommands.options]]
+  long = "-testcache"
+  description = "Expire all test results in the go build cache"
+
+[[subcommands]]
+name = "env"
+description = "Print Go environment information"
+
+  [[subcommands.options]]
+  short = "-w"
+  description = "Write to go/env file"
+
+  [[subcommands.args]]
+  name = "var"
+  variadic = true
+
+[[subcommands]]
+name = "doc"
+description = "Show documentation for package or symbol"
+
+  [[subcommands.options]]
+  long = "-all"
+  description = "Show all documentation"
+
+  [[subcommands.args]]
+  name = "package"
