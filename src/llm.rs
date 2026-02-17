@@ -185,8 +185,14 @@ impl LlmClient {
     /// Returns true if any response is received (even errors like 405).
     /// Does NOT activate backoff — this is a one-time startup check.
     pub async fn probe_health(&self) -> bool {
+        // For OpenAI-compatible endpoints, use GET /v1/models which is a standard
+        // lightweight read-only endpoint. HEAD on /v1/chat/completions causes
+        // spurious errors in LM Studio and similar local servers.
         let url = match self.provider {
-            LlmProvider::OpenAI => self.openai_chat_completions_url(),
+            LlmProvider::OpenAI => url_with_v1_path(
+                self.base_url.as_deref().unwrap_or("https://api.openai.com"),
+                "models",
+            ),
             LlmProvider::Anthropic => self.anthropic_messages_url(),
         };
 
@@ -195,7 +201,12 @@ impl LlmClient {
             Err(_) => return false,
         };
 
-        match health_client.head(&url).send().await {
+        let result = match self.provider {
+            LlmProvider::OpenAI => health_client.get(&url).send().await,
+            LlmProvider::Anthropic => health_client.head(&url).send().await,
+        };
+
+        match result {
             Ok(_) => {
                 tracing::info!("LLM health check: endpoint reachable at {url}");
                 true
