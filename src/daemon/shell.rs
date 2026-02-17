@@ -163,7 +163,7 @@ pub(super) fn setup_shell_rc(rc_file: &str) -> anyhow::Result<()> {
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
         if contents.contains(init_line) {
-            eprintln!("synapse already present in {}", path.display());
+            println!("synapse already present in {}", path.display());
             return Ok(());
         }
     }
@@ -176,8 +176,8 @@ pub(super) fn setup_shell_rc(rc_file: &str) -> anyhow::Result<()> {
     writeln!(file, "# Synapse — intelligent command suggestions")?;
     writeln!(file, "{init_line}")?;
 
-    eprintln!("Added synapse to {}", path.display());
-    eprintln!("Restart your shell or run: {init_line}");
+    println!("Added synapse to {}", path.display());
+    println!("Restart your shell or run: {init_line}");
 
     Ok(())
 }
