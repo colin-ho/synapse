@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::completion_context::tokenize;
+use crate::completion_context::{split_at_last_operator, tokenize};
 use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
 use crate::spec::{find_option, ArgSpec, ArgTemplate, SpecSource};
@@ -321,7 +321,20 @@ impl SuggestionProvider for SpecProvider {
     ) -> Vec<ProviderSuggestion> {
         let cwd = Path::new(&request.cwd);
         let store = request.spec_store.clone();
-        let mut completions = self.complete(&request.buffer, cwd, &store).await;
+
+        // Split at the last shell operator (&&, ||, ;, |) so we only complete
+        // the current command segment. E.g. "git add . && git co" completes
+        // "git co", not "git add .".
+        let (op_prefix, segment) = split_at_last_operator(&request.buffer);
+
+        let mut completions = self.complete(segment, cwd, &store).await;
+
+        // Prepend the operator chain prefix to all suggestion texts
+        if !op_prefix.is_empty() {
+            for c in &mut completions {
+                c.text = format!("{}{}", op_prefix, c.text);
+            }
+        }
 
         // Filter out empty text entries and entries matching the buffer exactly
         completions.retain(|s| !s.text.is_empty() && s.text != request.buffer);
@@ -505,6 +518,115 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.contains("--message")),
             "Expected --message in suggestions, got: {:?}",
+            texts
+        );
+    }
+
+    // --- Chain operator handling ---
+
+    #[tokio::test]
+    async fn test_chain_operator_and_suggests_new_command() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        // After "git add . && ", should suggest new commands, not git add options
+        let req = make_provider_request("git add . && git ", dir.path().to_str().unwrap()).await;
+        let results = provider.suggest(&req, limit(10)).await;
+
+        // Should suggest git subcommands like commit, push, etc.
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| *t == "git add . && git commit"),
+            "Expected 'git add . && git commit' in suggestions, got: {:?}",
+            texts
+        );
+        // Should NOT suggest git add options
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.ends_with("-p") || t.ends_with("--patch")),
+            "Should not suggest git add options after &&, got: {:?}",
+            texts
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chain_operator_partial_subcommand() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("git add . && git co", dir.path().to_str().unwrap()).await;
+        let results = provider.suggest(&req, limit(5)).await;
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| *t == "git add . && git commit"),
+            "Expected 'git add . && git commit' after &&, got: {:?}",
+            texts
+        );
+    }
+
+    #[tokio::test]
+    async fn test_semicolon_operator_suggests_new_command() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("ls; git co", dir.path().to_str().unwrap()).await;
+        let results = provider.suggest(&req, limit(5)).await;
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| *t == "ls; git commit"),
+            "Expected 'ls; git commit' after semicolon, got: {:?}",
+            texts
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipe_operator_suggests_new_command() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("cat file.txt | gre", dir.path().to_str().unwrap()).await;
+        let results = provider.suggest(&req, limit(5)).await;
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| *t == "cat file.txt | grep"),
+            "Expected 'cat file.txt | grep' after pipe, got: {:?}",
+            texts
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chain_operator_empty_segment_returns_empty() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Nothing typed after &&, spec provider has no command to look up
+        let req = make_provider_request("git add . && ", dir.path().to_str().unwrap()).await;
+        let results = provider.suggest(&req, limit(10)).await;
+        // Spec provider returns empty when there's just a trailing space and no command
+        assert!(
+            results
+                .iter()
+                .all(|r| !r.text.contains("-p") && !r.text.contains("--patch")),
+            "Should not suggest git add options for empty segment after &&, got: {:?}",
+            results.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_operator_still_works() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Normal case without operators should continue to work
+        let req = make_provider_request("git co", dir.path().to_str().unwrap()).await;
+        let results = provider.suggest(&req, limit(5)).await;
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| *t == "git commit" || *t == "git config"),
+            "Normal completion should still work, got: {:?}",
             texts
         );
     }

@@ -161,6 +161,81 @@ pub(super) fn last_segment(tokens: &[Token]) -> (Vec<String>, Option<&Token>) {
     }
 }
 
+/// Split a buffer at the last unquoted shell operator (`&&`, `||`, `;`, `|`).
+/// Returns `(prefix, segment)` where `prefix` includes the operator and any
+/// trailing whitespace, and `segment` is the remaining command to complete.
+/// If no operator is found, returns `("", buffer)`.
+pub fn split_at_last_operator(buffer: &str) -> (&str, &str) {
+    let bytes = buffer.as_bytes();
+    let mut last_op_end: usize = 0;
+    let mut i: usize = 0;
+    let mut in_sq = false;
+    let mut in_dq = false;
+    let mut escaped = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+
+        if b == b'\\' && !in_sq {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+        if b == b'\'' && !in_dq {
+            in_sq = !in_sq;
+            i += 1;
+            continue;
+        }
+        if b == b'"' && !in_sq {
+            in_dq = !in_dq;
+            i += 1;
+            continue;
+        }
+
+        if !in_sq && !in_dq {
+            if b == b'&' && i + 1 < bytes.len() && bytes[i + 1] == b'&' {
+                last_op_end = i + 2;
+                i += 2;
+                continue;
+            }
+            if b == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+                last_op_end = i + 2;
+                i += 2;
+                continue;
+            }
+            if b == b'|' {
+                last_op_end = i + 1;
+                i += 1;
+                continue;
+            }
+            if b == b';' {
+                last_op_end = i + 1;
+                i += 1;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    if last_op_end == 0 {
+        return ("", buffer);
+    }
+
+    // Include whitespace after the operator in the prefix
+    let after = &buffer[last_op_end..];
+    let ws_len = after.len() - after.trim_start().len();
+    let split_point = last_op_end + ws_len;
+
+    (&buffer[..split_point], &buffer[split_point..])
+}
+
 /// Tokenize a command buffer, respecting quotes. Returns words only (no operators).
 pub fn tokenize(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
