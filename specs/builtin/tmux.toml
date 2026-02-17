@@ -1,0 +1,181 @@
+name = "tmux"
+description = "Terminal multiplexer"
+
+[[subcommands]]
+name = "new-session"
+aliases = ["new"]
+description = "Create a new session"
+
+  [[subcommands.options]]
+  short = "-s"
+  takes_arg = true
+  description = "Session name"
+
+  [[subcommands.options]]
+  short = "-d"
+  description = "Don't attach to the new session"
+
+  [[subcommands.options]]
+  short = "-n"
+  takes_arg = true
+  description = "Window name"
+
+[[subcommands]]
+name = "attach-session"
+aliases = ["attach", "a"]
+description = "Attach to an existing session"
+
+  [[subcommands.options]]
+  short = "-t"
+  takes_arg = true
+  description = "Target session"
+  [subcommands.options.generator]
+  command = "tmux list-sessions -F '#{session_name}' 2>/dev/null"
+  cache_ttl_secs = 10
+
+  [[subcommands.options]]
+  short = "-d"
+  description = "Detach other clients"
+
+[[subcommands]]
+name = "detach-client"
+aliases = ["detach"]
+description = "Detach the current client"
+
+[[subcommands]]
+name = "list-sessions"
+aliases = ["ls"]
+description = "List sessions"
+
+[[subcommands]]
+name = "kill-session"
+description = "Destroy a session"
+
+  [[subcommands.options]]
+  short = "-t"
+  takes_arg = true
+  description = "Target session"
+  [subcommands.options.generator]
+  command = "tmux list-sessions -F '#{session_name}' 2>/dev/null"
+  cache_ttl_secs = 10
+
+  [[subcommands.options]]
+  short = "-a"
+  description = "Kill all sessions except the target"
+
+[[subcommands]]
+name = "kill-server"
+description = "Kill the tmux server and all sessions"
+
+[[subcommands]]
+name = "new-window"
+description = "Create a new window"
+
+  [[subcommands.options]]
+  short = "-n"
+  takes_arg = true
+  description = "Window name"
+
+  [[subcommands.options]]
+  short = "-t"
+  takes_arg = true
+  description = "Target window"
+
+[[subcommands]]
+name = "split-window"
+description = "Split a pane into two"
+
+  [[subcommands.options]]
+  short = "-h"
+  description = "Split horizontally"
+
+  [[subcommands.options]]
+  short = "-v"
+  description = "Split vertically"
+
+  [[subcommands.options]]
+  short = "-p"
+  takes_arg = true
+  description = "Size as a percentage"
+
+[[subcommands]]
+name = "select-pane"
+description = "Select a pane"
+
+  [[subcommands.options]]
+  short = "-t"
+  takes_arg = true
+  description = "Target pane"
+
+  [[subcommands.options]]
+  short = "-U"
+  description = "Select the pane above"
+
+  [[subcommands.options]]
+  short = "-D"
+  description = "Select the pane below"
+
+  [[subcommands.options]]
+  short = "-L"
+  description = "Select the pane to the left"
+
+  [[subcommands.options]]
+  short = "-R"
+  description = "Select the pane to the right"
+
+[[subcommands]]
+name = "send-keys"
+description = "Send key(s) to a window"
+
+  [[subcommands.options]]
+  short = "-t"
+  takes_arg = true
+  description = "Target pane"
+
+[[subcommands]]
+name = "list-windows"
+description = "List windows in a session"
+
+[[subcommands]]
+name = "switch-client"
+description = "Switch the current session for a client"
+
+  [[subcommands.options]]
+  short = "-t"
+  takes_arg = true
+  description = "Target session"
+  [subcommands.options.generator]
+  command = "tmux list-sessions -F '#{session_name}' 2>/dev/null"
+  cache_ttl_secs = 10
+
+[[subcommands]]
+name = "source-file"
+description = "Execute tmux commands from a file"
+
+  [[subcommands.args]]
+  name = "path"
+  template = "file_paths"
+
+[[subcommands]]
+name = "resize-pane"
+description = "Resize a pane"
+
+  [[subcommands.options]]
+  short = "-U"
+  takes_arg = true
+  description = "Resize up by N lines"
+
+  [[subcommands.options]]
+  short = "-D"
+  takes_arg = true
+  description = "Resize down by N lines"
+
+  [[subcommands.options]]
+  short = "-L"
+  takes_arg = true
+  description = "Resize left by N cells"
+
+  [[subcommands.options]]
+  short = "-R"
+  takes_arg = true
+  description = "Resize right by N cells"

@@ -771,4 +771,258 @@ command = "printf '%s\n' alpha beta"
             texts
         );
     }
+
+    // --- All builtin specs parse and produce completions ---
+
+    #[tokio::test]
+    async fn test_all_builtin_specs_are_registered() {
+        let config = SpecConfig::default();
+        let store = SpecStore::new(config, None);
+        let dir = tempfile::tempdir().unwrap();
+        let names = store.all_command_names(dir.path()).await;
+
+        // Every full builtin spec should be present
+        for cmd in [
+            "git",
+            "cargo",
+            "npm",
+            "docker",
+            "ls",
+            "grep",
+            "find",
+            "curl",
+            "ssh",
+            "python",
+            "pip",
+            "brew",
+            "tar",
+            "make",
+            "sed",
+            "wget",
+            "rsync",
+            "kubectl",
+            "tmux",
+            "jq",
+            "awk",
+            "scp",
+            "go",
+            "yarn",
+            "pnpm",
+            "cp",
+            "mv",
+            "rm",
+            "chmod",
+            "systemctl",
+            "diff",
+            "kill",
+            "du",
+            "df",
+            "helm",
+            "terraform",
+            "gh",
+            "uv",
+        ] {
+            assert!(
+                names.contains(&cmd.to_string()),
+                "Missing builtin spec for '{cmd}'"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_all_builtin_specs_have_subcommands_or_options() {
+        let config = SpecConfig::default();
+        let store = SpecStore::new(config, None);
+        let dir = tempfile::tempdir().unwrap();
+
+        for cmd in [
+            "git",
+            "cargo",
+            "npm",
+            "docker",
+            "pip",
+            "brew",
+            "kubectl",
+            "tmux",
+            "go",
+            "yarn",
+            "pnpm",
+            "systemctl",
+            "helm",
+            "terraform",
+            "gh",
+            "uv",
+        ] {
+            let spec = store.lookup(cmd, dir.path()).await;
+            assert!(spec.is_some(), "Spec for '{cmd}' not found");
+            let spec = spec.unwrap();
+            assert!(
+                !spec.subcommands.is_empty(),
+                "Spec for '{cmd}' should have subcommands"
+            );
+        }
+
+        for cmd in [
+            "ls", "grep", "find", "curl", "ssh", "python", "tar", "sed", "wget", "rsync", "jq",
+            "awk", "scp", "cp", "mv", "rm", "chmod", "diff", "kill", "du", "df",
+        ] {
+            let spec = store.lookup(cmd, dir.path()).await;
+            assert!(spec.is_some(), "Spec for '{cmd}' not found");
+            let spec = spec.unwrap();
+            assert!(
+                !spec.options.is_empty(),
+                "Spec for '{cmd}' should have options"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_brew_subcommand_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("brew ins", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "brew install");
+    }
+
+    #[tokio::test]
+    async fn test_kubectl_subcommand_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("kubectl g", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "kubectl get");
+    }
+
+    #[tokio::test]
+    async fn test_docker_compose_subcommand_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("docker compose u", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "docker compose up");
+    }
+
+    #[tokio::test]
+    async fn test_gh_pr_subcommand_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("gh pr c", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(5)).await;
+        assert!(!result.is_empty());
+        let texts: Vec<&str> = result.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| *t == "gh pr create"),
+            "Expected 'gh pr create' in {:?}",
+            texts
+        );
+    }
+
+    #[tokio::test]
+    async fn test_uv_subcommand_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("uv ", dir.path().to_str().unwrap()).await;
+        let results = provider.suggest(&req, limit(10)).await;
+        assert!(results.len() > 1, "Expected multiple suggestions for 'uv '");
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| *t == "uv pip"),
+            "Expected 'uv pip' in {:?}",
+            texts
+        );
+    }
+
+    #[tokio::test]
+    async fn test_go_mod_subcommand_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("go mod t", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "go mod tidy");
+    }
+
+    #[tokio::test]
+    async fn test_terraform_subcommand_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("terraform p", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "terraform plan");
+    }
+
+    #[tokio::test]
+    async fn test_helm_subcommand_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("helm ins", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "helm install");
+    }
+
+    #[tokio::test]
+    async fn test_option_completion_for_new_specs() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        // jq -r should suggest --raw-output
+        let req = make_provider_request("jq -", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(10)).await;
+        assert!(!result.is_empty());
+        let texts: Vec<&str> = result.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("-r") || t.contains("--raw-output")),
+            "Expected -r/--raw-output in jq suggestions, got: {:?}",
+            texts
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cp_option_completion() {
+        let provider = make_spec_provider();
+        let dir = tempfile::tempdir().unwrap();
+
+        let req = make_provider_request("cp --r", dir.path().to_str().unwrap()).await;
+        let result = provider.suggest(&req, limit(1)).await;
+        assert!(!result.is_empty());
+        assert_eq!(result[0].text, "cp --recursive");
+    }
+
+    #[tokio::test]
+    async fn test_alias_resolution() {
+        let config = SpecConfig::default();
+        let store = SpecStore::new(config, None);
+        let dir = tempfile::tempdir().unwrap();
+
+        // pip3 should resolve to pip spec via alias
+        let spec = store.lookup("pip3", dir.path()).await;
+        assert!(spec.is_some(), "pip3 alias should resolve");
+        assert_eq!(spec.unwrap().name, "pip");
+
+        // python3 should resolve to python spec
+        let spec = store.lookup("python3", dir.path()).await;
+        assert!(spec.is_some(), "python3 alias should resolve");
+        assert_eq!(spec.unwrap().name, "python");
+
+        // gawk should resolve to awk spec
+        let spec = store.lookup("gawk", dir.path()).await;
+        assert!(spec.is_some(), "gawk alias should resolve");
+        assert_eq!(spec.unwrap().name, "awk");
+    }
 }

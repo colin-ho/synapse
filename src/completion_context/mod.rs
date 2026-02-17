@@ -181,8 +181,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = CompletionContext::build("ssh ", dir.path(), &store).await;
         assert_eq!(ctx.position, Position::Argument { index: 0 });
-        // ssh has a builtin spec now, so expected type comes from the spec (Any)
-        assert_eq!(ctx.expected_type, ExpectedType::Any);
+        // ssh destination arg has a generator for ~/.ssh/config hosts
+        assert!(matches!(ctx.expected_type, ExpectedType::Generator(_)));
     }
 
     #[tokio::test]

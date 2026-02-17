@@ -325,6 +325,30 @@ description = "Show commit logs"
   long = "--patch"
   description = "Show patches"
 
+  [[subcommands.options]]
+  long = "--author"
+  takes_arg = true
+  description = "Limit to commits by author"
+
+  [[subcommands.options]]
+  long = "--grep"
+  takes_arg = true
+  description = "Limit to commits with message matching pattern"
+
+  [[subcommands.options]]
+  long = "--since"
+  takes_arg = true
+  description = "Show commits after a date"
+
+  [[subcommands.options]]
+  long = "--until"
+  takes_arg = true
+  description = "Show commits before a date"
+
+  [[subcommands.options]]
+  long = "--follow"
+  description = "Continue listing history beyond renames"
+
 [[subcommands]]
 name = "diff"
 description = "Show changes between commits, commit and working tree, etc"
@@ -501,3 +525,66 @@ description = "Restore working tree files"
   long = "--source"
   takes_arg = true
   description = "Restore from a specific source"
+
+[[subcommands]]
+name = "show"
+description = "Show various types of objects"
+
+  [[subcommands.options]]
+  long = "--stat"
+  description = "Show diffstat"
+
+  [[subcommands.options]]
+  long = "--name-only"
+  description = "Show only names of changed files"
+
+  [[subcommands.options]]
+  long = "--format"
+  takes_arg = true
+  description = "Pretty-print using a format string"
+
+  [[subcommands.args]]
+  name = "object"
+  description = "The object to show (commit, tag, tree, blob)"
+
+[[subcommands]]
+name = "blame"
+description = "Show who last modified each line of a file"
+
+  [[subcommands.options]]
+  short = "-L"
+  takes_arg = true
+  description = "Annotate only the given line range"
+
+  [[subcommands.options]]
+  short = "-w"
+  description = "Ignore whitespace"
+
+  [[subcommands.args]]
+  name = "file"
+  template = "file_paths"
+
+[[subcommands]]
+name = "config"
+description = "Get and set repository or global options"
+
+  [[subcommands.options]]
+  long = "--global"
+  description = "Use global config file"
+
+  [[subcommands.options]]
+  long = "--local"
+  description = "Use repository config file"
+
+  [[subcommands.options]]
+  short = "-l"
+  long = "--list"
+  description = "List all set variables and their values"
+
+  [[subcommands.options]]
+  long = "--get"
+  description = "Get the value for a given key"
+
+  [[subcommands.options]]
+  long = "--unset"
+  description = "Remove a variable"

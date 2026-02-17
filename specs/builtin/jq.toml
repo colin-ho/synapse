@@ -1,0 +1,69 @@
+name = "jq"
+description = "Command-line JSON processor"
+
+[[options]]
+short = "-r"
+long = "--raw-output"
+description = "Output raw strings, not JSON-encoded"
+
+[[options]]
+short = "-e"
+long = "--exit-status"
+description = "Set exit status based on output"
+
+[[options]]
+short = "-c"
+long = "--compact-output"
+description = "Compact output"
+
+[[options]]
+short = "-S"
+long = "--sort-keys"
+description = "Sort keys of objects"
+
+[[options]]
+short = "-s"
+long = "--slurp"
+description = "Read entire input stream into an array"
+
+[[options]]
+short = "-R"
+long = "--raw-input"
+description = "Read raw strings, not JSON"
+
+[[options]]
+short = "-n"
+long = "--null-input"
+description = "Don't read any input at all"
+
+[[options]]
+long = "--arg"
+takes_arg = true
+description = "Set variable $name to string value"
+
+[[options]]
+long = "--argjson"
+takes_arg = true
+description = "Set variable $name to JSON value"
+
+[[options]]
+long = "--slurpfile"
+takes_arg = true
+description = "Set variable $name to array of JSON values from file"
+
+[[options]]
+long = "--tab"
+description = "Use tabs for indentation"
+
+[[options]]
+long = "--indent"
+takes_arg = true
+description = "Use n spaces for indentation"
+
+[[args]]
+name = "filter"
+
+[[args]]
+name = "file"
+template = "file_paths"
+variadic = true

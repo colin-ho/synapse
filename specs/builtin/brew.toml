@@ -1,0 +1,175 @@
+name = "brew"
+description = "Homebrew package manager"
+
+[[subcommands]]
+name = "install"
+description = "Install a formula or cask"
+
+  [[subcommands.options]]
+  long = "--cask"
+  description = "Install a cask"
+
+  [[subcommands.options]]
+  long = "--force"
+  description = "Force install"
+
+  [[subcommands.args]]
+  name = "formula"
+
+[[subcommands]]
+name = "uninstall"
+aliases = ["remove", "rm"]
+description = "Uninstall a formula or cask"
+
+  [[subcommands.args]]
+  name = "formula"
+  variadic = true
+  [subcommands.args.generator]
+  command = "brew list --formula -1 2>/dev/null"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "upgrade"
+description = "Upgrade outdated formulae and casks"
+
+  [[subcommands.options]]
+  long = "--cask"
+  description = "Upgrade casks"
+
+  [[subcommands.args]]
+  name = "formula"
+  variadic = true
+  [subcommands.args.generator]
+  command = "brew outdated --formula -q 2>/dev/null"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "search"
+description = "Search for formulae and casks"
+
+  [[subcommands.args]]
+  name = "text"
+
+[[subcommands]]
+name = "info"
+description = "Display information about a formula or cask"
+
+  [[subcommands.args]]
+  name = "formula"
+  [subcommands.args.generator]
+  command = "brew list --formula -1 2>/dev/null"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "list"
+aliases = ["ls"]
+description = "List installed formulae"
+
+  [[subcommands.options]]
+  long = "--formula"
+  description = "List formulae only"
+
+  [[subcommands.options]]
+  long = "--cask"
+  description = "List casks only"
+
+  [[subcommands.options]]
+  short = "-1"
+  description = "Force output to one entry per line"
+
+[[subcommands]]
+name = "update"
+description = "Fetch the newest version of Homebrew and formulae"
+
+[[subcommands]]
+name = "cleanup"
+description = "Remove stale lock files and outdated packages"
+
+  [[subcommands.options]]
+  long = "--prune"
+  takes_arg = true
+  description = "Remove all cache files older than specified days"
+
+  [[subcommands.options]]
+  short = "-n"
+  long = "--dry-run"
+  description = "Show what would be removed"
+
+[[subcommands]]
+name = "doctor"
+description = "Check your system for potential problems"
+
+[[subcommands]]
+name = "services"
+description = "Manage background services"
+
+  [[subcommands.subcommands]]
+  name = "start"
+  description = "Start a service"
+
+    [[subcommands.subcommands.args]]
+    name = "formula"
+    [subcommands.subcommands.args.generator]
+    command = "brew services list 2>/dev/null | tail -n +2 | awk '{print $1}'"
+    cache_ttl_secs = 30
+
+  [[subcommands.subcommands]]
+  name = "stop"
+  description = "Stop a service"
+
+    [[subcommands.subcommands.args]]
+    name = "formula"
+    [subcommands.subcommands.args.generator]
+    command = "brew services list 2>/dev/null | tail -n +2 | awk '{print $1}'"
+    cache_ttl_secs = 30
+
+  [[subcommands.subcommands]]
+  name = "restart"
+  description = "Restart a service"
+
+    [[subcommands.subcommands.args]]
+    name = "formula"
+    [subcommands.subcommands.args.generator]
+    command = "brew services list 2>/dev/null | tail -n +2 | awk '{print $1}'"
+    cache_ttl_secs = 30
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List all managed services"
+
+[[subcommands]]
+name = "tap"
+description = "Tap a formula repository"
+
+  [[subcommands.args]]
+  name = "user/repo"
+
+[[subcommands]]
+name = "untap"
+description = "Remove a tapped formula repository"
+
+  [[subcommands.args]]
+  name = "tap"
+  [subcommands.args.generator]
+  command = "brew tap 2>/dev/null"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "pin"
+description = "Pin a formula to prevent upgrades"
+
+  [[subcommands.args]]
+  name = "formula"
+  [subcommands.args.generator]
+  command = "brew list --formula -1 2>/dev/null"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "unpin"
+description = "Unpin a formula to allow upgrades"
+
+  [[subcommands.args]]
+  name = "formula"
+  [subcommands.args.generator]
+  command = "brew list --pinned -1 2>/dev/null"
+  cache_ttl_secs = 30

@@ -1,0 +1,35 @@
+name = "rm"
+description = "Remove files or directories"
+
+[[options]]
+short = "-r"
+long = "--recursive"
+description = "Remove directories and their contents recursively"
+
+[[options]]
+short = "-f"
+long = "--force"
+description = "Ignore nonexistent files, never prompt"
+
+[[options]]
+short = "-i"
+description = "Prompt before every removal"
+
+[[options]]
+short = "-I"
+description = "Prompt before removing more than three files"
+
+[[options]]
+short = "-v"
+long = "--verbose"
+description = "Explain what is being done"
+
+[[options]]
+short = "-d"
+long = "--dir"
+description = "Remove empty directories"
+
+[[args]]
+name = "file"
+template = "file_paths"
+variadic = true

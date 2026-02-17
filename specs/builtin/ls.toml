@@ -47,6 +47,30 @@ long = "--sort"
 takes_arg = true
 description = "Sort by given key"
 
+[[options]]
+short = "-d"
+long = "--directory"
+description = "List directories themselves, not their contents"
+
+[[options]]
+short = "-A"
+long = "--almost-all"
+description = "Do not list implied . and .."
+
+[[options]]
+short = "-F"
+long = "--classify"
+description = "Append indicator to entries"
+
+[[options]]
+short = "-i"
+long = "--inode"
+description = "Print inode number of each file"
+
+[[options]]
+short = "-G"
+description = "Enable colorized output"
+
 [[args]]
 name = "path"
 template = "file_paths"

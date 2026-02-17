@@ -1,0 +1,42 @@
+name = "du"
+description = "Estimate file space usage"
+
+[[options]]
+short = "-h"
+long = "--human-readable"
+description = "Print sizes in human readable format"
+
+[[options]]
+short = "-s"
+long = "--summarize"
+description = "Display only a total for each argument"
+
+[[options]]
+short = "-d"
+long = "--max-depth"
+takes_arg = true
+description = "Print total for a directory only if it is N or fewer levels deep"
+
+[[options]]
+short = "-a"
+long = "--all"
+description = "Write counts for all files"
+
+[[options]]
+short = "-c"
+long = "--total"
+description = "Produce a grand total"
+
+[[options]]
+long = "--exclude"
+takes_arg = true
+description = "Exclude files matching pattern"
+
+[[options]]
+short = "-k"
+description = "Print sizes in kilobytes"
+
+[[args]]
+name = "file"
+template = "file_paths"
+variadic = true

@@ -1,0 +1,69 @@
+name = "tar"
+description = "Manipulate tape archives"
+
+[[options]]
+short = "-c"
+long = "--create"
+description = "Create a new archive"
+
+[[options]]
+short = "-x"
+long = "--extract"
+description = "Extract files from an archive"
+
+[[options]]
+short = "-t"
+long = "--list"
+description = "List the contents of an archive"
+
+[[options]]
+short = "-v"
+long = "--verbose"
+description = "Verbosely list files processed"
+
+[[options]]
+short = "-f"
+long = "--file"
+takes_arg = true
+description = "Use archive file"
+
+[[options]]
+short = "-z"
+long = "--gzip"
+description = "Filter through gzip"
+
+[[options]]
+short = "-j"
+long = "--bzip2"
+description = "Filter through bzip2"
+
+[[options]]
+short = "-J"
+long = "--xz"
+description = "Filter through xz"
+
+[[options]]
+short = "-C"
+long = "--directory"
+takes_arg = true
+description = "Change to directory before performing operations"
+
+[[options]]
+long = "--exclude"
+takes_arg = true
+description = "Exclude files matching pattern"
+
+[[options]]
+long = "--strip-components"
+takes_arg = true
+description = "Strip NUMBER leading components from file names"
+
+[[options]]
+short = "-p"
+long = "--preserve-permissions"
+description = "Preserve file permissions"
+
+[[args]]
+name = "file"
+template = "file_paths"
+variadic = true

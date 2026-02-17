@@ -1,0 +1,235 @@
+name = "terraform"
+description = "Infrastructure as Code tool"
+
+[[subcommands]]
+name = "init"
+description = "Prepare your working directory"
+
+  [[subcommands.options]]
+  long = "-backend-config"
+  takes_arg = true
+  description = "Backend configuration"
+
+  [[subcommands.options]]
+  long = "-upgrade"
+  description = "Update modules and plugins"
+
+  [[subcommands.options]]
+  long = "-reconfigure"
+  description = "Reconfigure the backend"
+
+[[subcommands]]
+name = "plan"
+description = "Show changes required by the current configuration"
+
+  [[subcommands.options]]
+  long = "-out"
+  takes_arg = true
+  description = "Write a plan file"
+
+  [[subcommands.options]]
+  long = "-var"
+  takes_arg = true
+  description = "Set a variable"
+
+  [[subcommands.options]]
+  long = "-var-file"
+  takes_arg = true
+  description = "Set variables from a file"
+
+  [[subcommands.options]]
+  long = "-target"
+  takes_arg = true
+  description = "Target a specific resource"
+
+  [[subcommands.options]]
+  long = "-destroy"
+  description = "Plan to destroy all resources"
+
+  [[subcommands.options]]
+  long = "-refresh-only"
+  description = "Only update state, not resources"
+
+[[subcommands]]
+name = "apply"
+description = "Create or update infrastructure"
+
+  [[subcommands.options]]
+  long = "-auto-approve"
+  description = "Skip interactive approval"
+
+  [[subcommands.options]]
+  long = "-var"
+  takes_arg = true
+  description = "Set a variable"
+
+  [[subcommands.options]]
+  long = "-var-file"
+  takes_arg = true
+  description = "Set variables from a file"
+
+  [[subcommands.options]]
+  long = "-target"
+  takes_arg = true
+  description = "Target a specific resource"
+
+  [[subcommands.options]]
+  long = "-parallelism"
+  takes_arg = true
+  description = "Limit the number of concurrent operations"
+
+  [[subcommands.args]]
+  name = "plan_file"
+  template = "file_paths"
+
+[[subcommands]]
+name = "destroy"
+description = "Destroy previously-created infrastructure"
+
+  [[subcommands.options]]
+  long = "-auto-approve"
+  description = "Skip interactive approval"
+
+  [[subcommands.options]]
+  long = "-var"
+  takes_arg = true
+  description = "Set a variable"
+
+  [[subcommands.options]]
+  long = "-var-file"
+  takes_arg = true
+  description = "Set variables from a file"
+
+  [[subcommands.options]]
+  long = "-target"
+  takes_arg = true
+  description = "Target a specific resource"
+
+[[subcommands]]
+name = "fmt"
+description = "Reformat your configuration"
+
+  [[subcommands.options]]
+  long = "-check"
+  description = "Check if formatting is needed"
+
+  [[subcommands.options]]
+  long = "-diff"
+  description = "Display diffs of formatting changes"
+
+  [[subcommands.options]]
+  long = "-recursive"
+  description = "Also process files in subdirectories"
+
+[[subcommands]]
+name = "validate"
+description = "Validate the configuration"
+
+[[subcommands]]
+name = "output"
+description = "Show output values"
+
+  [[subcommands.options]]
+  long = "-json"
+  description = "Machine-readable output"
+
+  [[subcommands.options]]
+  long = "-raw"
+  description = "Raw output without quotes"
+
+  [[subcommands.args]]
+  name = "name"
+
+[[subcommands]]
+name = "state"
+description = "Advanced state management"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List resources in the state"
+
+  [[subcommands.subcommands]]
+  name = "show"
+  description = "Show a resource in the state"
+
+    [[subcommands.subcommands.args]]
+    name = "address"
+
+  [[subcommands.subcommands]]
+  name = "mv"
+  description = "Move an item in the state"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove items from the state"
+
+    [[subcommands.subcommands.args]]
+    name = "address"
+    variadic = true
+
+  [[subcommands.subcommands]]
+  name = "pull"
+  description = "Pull current state and output to stdout"
+
+  [[subcommands.subcommands]]
+  name = "push"
+  description = "Update remote state from a local state file"
+
+[[subcommands]]
+name = "import"
+description = "Associate existing infrastructure with a Terraform resource"
+
+  [[subcommands.args]]
+  name = "address"
+
+[[subcommands]]
+name = "workspace"
+description = "Workspace management"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List workspaces"
+
+  [[subcommands.subcommands]]
+  name = "select"
+  description = "Select a workspace"
+
+    [[subcommands.subcommands.args]]
+    name = "name"
+    [subcommands.subcommands.args.generator]
+    command = "terraform workspace list 2>/dev/null | sed 's/^[* ]*//' | grep -v '^$'"
+    cache_ttl_secs = 30
+
+  [[subcommands.subcommands]]
+  name = "new"
+  description = "Create a new workspace"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete a workspace"
+
+    [[subcommands.subcommands.args]]
+    name = "name"
+    [subcommands.subcommands.args.generator]
+    command = "terraform workspace list 2>/dev/null | sed 's/^[* ]*//' | grep -v '^$'"
+    cache_ttl_secs = 30
+
+  [[subcommands.subcommands]]
+  name = "show"
+  description = "Show the name of the current workspace"
+
+[[subcommands]]
+name = "providers"
+description = "Show the providers required for this configuration"
+
+  [[subcommands.subcommands]]
+  name = "lock"
+  description = "Write out dependency locks"
+
+  [[subcommands.subcommands]]
+  name = "mirror"
+  description = "Save local copies of all required provider plugins"
+
+  [[subcommands.subcommands]]
+  name = "schema"
+  description = "Show schemas for the providers used"

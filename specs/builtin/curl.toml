@@ -74,5 +74,52 @@ long = "--json"
 takes_arg = true
 description = "Shortcut for JSON content type and data"
 
+[[options]]
+short = "-u"
+long = "--user"
+takes_arg = true
+description = "Server user and password"
+
+[[options]]
+short = "-F"
+long = "--form"
+takes_arg = true
+description = "Multipart POST data"
+
+[[options]]
+short = "-b"
+long = "--cookie"
+takes_arg = true
+description = "Send cookies from string/file"
+
+[[options]]
+long = "--connect-timeout"
+takes_arg = true
+description = "Maximum time for connection"
+
+[[options]]
+short = "-m"
+long = "--max-time"
+takes_arg = true
+description = "Maximum time for the transfer"
+
+[[options]]
+short = "-w"
+long = "--write-out"
+takes_arg = true
+description = "Define output format after completion"
+
+[[options]]
+short = "-x"
+long = "--proxy"
+takes_arg = true
+description = "Use this proxy"
+
+[[options]]
+short = "-T"
+long = "--upload-file"
+takes_arg = true
+description = "Upload a file"
+
 [[args]]
 name = "url"

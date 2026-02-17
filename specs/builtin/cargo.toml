@@ -56,6 +56,20 @@ description = "Compile the current package"
   takes_arg = true
   description = "Number of parallel jobs"
 
+  [[subcommands.options]]
+  short = "-F"
+  long = "--features"
+  takes_arg = true
+  description = "Space or comma separated features to activate"
+
+  [[subcommands.options]]
+  long = "--all-features"
+  description = "Activate all available features"
+
+  [[subcommands.options]]
+  long = "--no-default-features"
+  description = "Do not activate the default feature"
+
 [[subcommands]]
 name = "test"
 aliases = ["t"]
@@ -92,6 +106,20 @@ description = "Run tests"
   long = "--nocapture"
   description = "Don't capture stdout/stderr"
 
+  [[subcommands.options]]
+  short = "-F"
+  long = "--features"
+  takes_arg = true
+  description = "Space or comma separated features to activate"
+
+  [[subcommands.options]]
+  long = "--all-features"
+  description = "Activate all available features"
+
+  [[subcommands.options]]
+  long = "--no-default-features"
+  description = "Do not activate the default feature"
+
 [[subcommands]]
 name = "run"
 aliases = ["r"]
@@ -117,6 +145,20 @@ description = "Run a binary or example"
   takes_arg = true
   description = "Run from the specified package"
 
+  [[subcommands.options]]
+  short = "-F"
+  long = "--features"
+  takes_arg = true
+  description = "Space or comma separated features to activate"
+
+  [[subcommands.options]]
+  long = "--all-features"
+  description = "Activate all available features"
+
+  [[subcommands.options]]
+  long = "--no-default-features"
+  description = "Do not activate the default feature"
+
 [[subcommands]]
 name = "check"
 aliases = ["c"]
@@ -136,6 +178,20 @@ description = "Analyze the current package without building"
   long = "--workspace"
   description = "Check all workspace members"
 
+  [[subcommands.options]]
+  short = "-F"
+  long = "--features"
+  takes_arg = true
+  description = "Space or comma separated features to activate"
+
+  [[subcommands.options]]
+  long = "--all-features"
+  description = "Activate all available features"
+
+  [[subcommands.options]]
+  long = "--no-default-features"
+  description = "Do not activate the default feature"
+
 [[subcommands]]
 name = "clippy"
 description = "Run Clippy lints"
@@ -151,6 +207,20 @@ description = "Run Clippy lints"
   [[subcommands.options]]
   long = "--workspace"
   description = "Lint all workspace members"
+
+  [[subcommands.options]]
+  short = "-F"
+  long = "--features"
+  takes_arg = true
+  description = "Space or comma separated features to activate"
+
+  [[subcommands.options]]
+  long = "--all-features"
+  description = "Activate all available features"
+
+  [[subcommands.options]]
+  long = "--no-default-features"
+  description = "Do not activate the default feature"
 
 [[subcommands]]
 name = "fmt"
@@ -258,3 +328,34 @@ description = "Package and upload this package to a registry"
   [[subcommands.options]]
   long = "--dry-run"
   description = "Perform all checks without uploading"
+
+[[subcommands]]
+name = "install"
+description = "Install a Rust binary"
+
+  [[subcommands.options]]
+  long = "--path"
+  takes_arg = true
+  description = "Install from a local path"
+
+  [[subcommands.options]]
+  long = "--git"
+  takes_arg = true
+  description = "Install from a git URL"
+
+  [[subcommands.options]]
+  long = "--branch"
+  takes_arg = true
+  description = "Branch to use when installing from git"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--force"
+  description = "Force overwriting existing crates"
+
+  [[subcommands.options]]
+  long = "--locked"
+  description = "Require Cargo.lock is up to date"
+
+  [[subcommands.args]]
+  name = "crate"

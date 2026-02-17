@@ -1,0 +1,719 @@
+name = "gh"
+description = "GitHub CLI"
+
+[[subcommands]]
+name = "pr"
+description = "Manage pull requests"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a pull request"
+
+    [[subcommands.subcommands.options]]
+    short = "-t"
+    long = "--title"
+    takes_arg = true
+    description = "Title for the pull request"
+
+    [[subcommands.subcommands.options]]
+    short = "-b"
+    long = "--body"
+    takes_arg = true
+    description = "Body for the pull request"
+
+    [[subcommands.subcommands.options]]
+    short = "-B"
+    long = "--base"
+    takes_arg = true
+    description = "Base branch"
+
+    [[subcommands.subcommands.options]]
+    short = "-d"
+    long = "--draft"
+    description = "Mark as draft"
+
+    [[subcommands.subcommands.options]]
+    short = "-f"
+    long = "--fill"
+    description = "Use commit info for title and body"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--web"
+    description = "Open the web browser to create the PR"
+
+    [[subcommands.subcommands.options]]
+    short = "-l"
+    long = "--label"
+    takes_arg = true
+    description = "Add labels"
+
+    [[subcommands.subcommands.options]]
+    short = "-r"
+    long = "--reviewer"
+    takes_arg = true
+    description = "Request reviews"
+
+    [[subcommands.subcommands.options]]
+    short = "-a"
+    long = "--assignee"
+    takes_arg = true
+    description = "Assign people"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  aliases = ["ls"]
+  description = "List pull requests"
+
+    [[subcommands.subcommands.options]]
+    short = "-s"
+    long = "--state"
+    takes_arg = true
+    description = "Filter by state (open, closed, merged, all)"
+
+    [[subcommands.subcommands.options]]
+    short = "-l"
+    long = "--label"
+    takes_arg = true
+    description = "Filter by label"
+
+    [[subcommands.subcommands.options]]
+    short = "-L"
+    long = "--limit"
+    takes_arg = true
+    description = "Maximum number of items"
+
+    [[subcommands.subcommands.options]]
+    short = "-A"
+    long = "--author"
+    takes_arg = true
+    description = "Filter by author"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View a pull request"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--web"
+    description = "Open in web browser"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "checkout"
+  aliases = ["co"]
+  description = "Check out a pull request locally"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "merge"
+  description = "Merge a pull request"
+
+    [[subcommands.subcommands.options]]
+    short = "-m"
+    long = "--merge"
+    description = "Merge the commits"
+
+    [[subcommands.subcommands.options]]
+    short = "-s"
+    long = "--squash"
+    description = "Squash and merge"
+
+    [[subcommands.subcommands.options]]
+    short = "-r"
+    long = "--rebase"
+    description = "Rebase and merge"
+
+    [[subcommands.subcommands.options]]
+    short = "-d"
+    long = "--delete-branch"
+    description = "Delete the branch after merge"
+
+    [[subcommands.subcommands.options]]
+    long = "--auto"
+    description = "Enable auto-merge"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "close"
+  description = "Close a pull request"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "reopen"
+  description = "Reopen a pull request"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "diff"
+  description = "View changes in a pull request"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "checks"
+  description = "Show CI status for a pull request"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "review"
+  description = "Add a review to a pull request"
+
+    [[subcommands.subcommands.options]]
+    long = "--approve"
+    description = "Approve the pull request"
+
+    [[subcommands.subcommands.options]]
+    long = "--request-changes"
+    description = "Request changes"
+
+    [[subcommands.subcommands.options]]
+    long = "--comment"
+    description = "Leave a review comment"
+
+    [[subcommands.subcommands.options]]
+    short = "-b"
+    long = "--body"
+    takes_arg = true
+    description = "Body of the review"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "ready"
+  description = "Mark a pull request as ready for review"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+[[subcommands]]
+name = "issue"
+description = "Manage issues"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create an issue"
+
+    [[subcommands.subcommands.options]]
+    short = "-t"
+    long = "--title"
+    takes_arg = true
+    description = "Title for the issue"
+
+    [[subcommands.subcommands.options]]
+    short = "-b"
+    long = "--body"
+    takes_arg = true
+    description = "Body for the issue"
+
+    [[subcommands.subcommands.options]]
+    short = "-l"
+    long = "--label"
+    takes_arg = true
+    description = "Add labels"
+
+    [[subcommands.subcommands.options]]
+    short = "-a"
+    long = "--assignee"
+    takes_arg = true
+    description = "Assign people"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--web"
+    description = "Open web browser to create issue"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  aliases = ["ls"]
+  description = "List issues"
+
+    [[subcommands.subcommands.options]]
+    short = "-s"
+    long = "--state"
+    takes_arg = true
+    description = "Filter by state (open, closed, all)"
+
+    [[subcommands.subcommands.options]]
+    short = "-l"
+    long = "--label"
+    takes_arg = true
+    description = "Filter by label"
+
+    [[subcommands.subcommands.options]]
+    short = "-L"
+    long = "--limit"
+    takes_arg = true
+    description = "Maximum number of items"
+
+    [[subcommands.subcommands.options]]
+    short = "-a"
+    long = "--assignee"
+    takes_arg = true
+    description = "Filter by assignee"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View an issue"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--web"
+    description = "Open in web browser"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "close"
+  description = "Close an issue"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "reopen"
+  description = "Reopen an issue"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "comment"
+  description = "Add a comment to an issue"
+
+    [[subcommands.subcommands.options]]
+    short = "-b"
+    long = "--body"
+    takes_arg = true
+    description = "Comment body"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+  [[subcommands.subcommands]]
+  name = "edit"
+  description = "Edit an issue"
+
+    [[subcommands.subcommands.args]]
+    name = "number"
+
+[[subcommands]]
+name = "repo"
+description = "Manage repositories"
+
+  [[subcommands.subcommands]]
+  name = "clone"
+  description = "Clone a repository locally"
+
+    [[subcommands.subcommands.args]]
+    name = "repository"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a new repository"
+
+    [[subcommands.subcommands.options]]
+    long = "--public"
+    description = "Make the repository public"
+
+    [[subcommands.subcommands.options]]
+    long = "--private"
+    description = "Make the repository private"
+
+    [[subcommands.subcommands.options]]
+    short = "-d"
+    long = "--description"
+    takes_arg = true
+    description = "Description of the repository"
+
+    [[subcommands.subcommands.options]]
+    long = "--clone"
+    description = "Clone the repository after creation"
+
+    [[subcommands.subcommands.args]]
+    name = "name"
+
+  [[subcommands.subcommands]]
+  name = "fork"
+  description = "Create a fork of a repository"
+
+    [[subcommands.subcommands.options]]
+    long = "--clone"
+    description = "Clone the fork"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View a repository"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--web"
+    description = "Open in web browser"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  aliases = ["ls"]
+  description = "List repositories owned by user or organization"
+
+    [[subcommands.subcommands.options]]
+    short = "-L"
+    long = "--limit"
+    takes_arg = true
+    description = "Maximum number of repositories"
+
+    [[subcommands.subcommands.options]]
+    long = "--language"
+    takes_arg = true
+    description = "Filter by language"
+
+[[subcommands]]
+name = "run"
+description = "Manage GitHub Actions workflow runs"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List recent workflow runs"
+
+    [[subcommands.subcommands.options]]
+    short = "-L"
+    long = "--limit"
+    takes_arg = true
+    description = "Maximum number of runs"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--workflow"
+    takes_arg = true
+    description = "Filter by workflow"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View a summary of a workflow run"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--web"
+    description = "Open in web browser"
+
+    [[subcommands.subcommands.options]]
+    long = "--log"
+    description = "View full log"
+
+    [[subcommands.subcommands.args]]
+    name = "run-id"
+
+  [[subcommands.subcommands]]
+  name = "watch"
+  description = "Watch a run until it completes"
+
+    [[subcommands.subcommands.args]]
+    name = "run-id"
+
+  [[subcommands.subcommands]]
+  name = "rerun"
+  description = "Rerun a workflow run"
+
+    [[subcommands.subcommands.args]]
+    name = "run-id"
+
+  [[subcommands.subcommands]]
+  name = "cancel"
+  description = "Cancel a workflow run"
+
+    [[subcommands.subcommands.args]]
+    name = "run-id"
+
+[[subcommands]]
+name = "release"
+description = "Manage releases"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a new release"
+
+    [[subcommands.subcommands.options]]
+    short = "-t"
+    long = "--title"
+    takes_arg = true
+    description = "Release title"
+
+    [[subcommands.subcommands.options]]
+    short = "-n"
+    long = "--notes"
+    takes_arg = true
+    description = "Release notes"
+
+    [[subcommands.subcommands.options]]
+    long = "--generate-notes"
+    description = "Automatically generate release notes"
+
+    [[subcommands.subcommands.options]]
+    short = "-d"
+    long = "--draft"
+    description = "Save as draft"
+
+    [[subcommands.subcommands.options]]
+    short = "-p"
+    long = "--prerelease"
+    description = "Mark as prerelease"
+
+    [[subcommands.subcommands.options]]
+    long = "--target"
+    takes_arg = true
+    description = "Target branch or commit SHA"
+
+    [[subcommands.subcommands.args]]
+    name = "tag"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  aliases = ["ls"]
+  description = "List releases"
+
+    [[subcommands.subcommands.options]]
+    short = "-L"
+    long = "--limit"
+    takes_arg = true
+    description = "Maximum number of items"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View a release"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--web"
+    description = "Open in web browser"
+
+    [[subcommands.subcommands.args]]
+    name = "tag"
+
+  [[subcommands.subcommands]]
+  name = "download"
+  description = "Download release assets"
+
+    [[subcommands.subcommands.options]]
+    short = "-D"
+    long = "--dir"
+    takes_arg = true
+    description = "Directory to download into"
+
+    [[subcommands.subcommands.options]]
+    short = "-p"
+    long = "--pattern"
+    takes_arg = true
+    description = "Download only assets matching glob pattern"
+
+    [[subcommands.subcommands.args]]
+    name = "tag"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete a release"
+
+    [[subcommands.subcommands.args]]
+    name = "tag"
+
+[[subcommands]]
+name = "workflow"
+description = "Manage GitHub Actions workflows"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List workflows"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View a workflow"
+
+    [[subcommands.subcommands.args]]
+    name = "workflow-id"
+
+  [[subcommands.subcommands]]
+  name = "run"
+  description = "Run a workflow"
+
+    [[subcommands.subcommands.options]]
+    short = "-r"
+    long = "--ref"
+    takes_arg = true
+    description = "Branch or tag to run against"
+
+    [[subcommands.subcommands.args]]
+    name = "workflow-id"
+
+  [[subcommands.subcommands]]
+  name = "enable"
+  description = "Enable a workflow"
+
+    [[subcommands.subcommands.args]]
+    name = "workflow-id"
+
+  [[subcommands.subcommands]]
+  name = "disable"
+  description = "Disable a workflow"
+
+    [[subcommands.subcommands.args]]
+    name = "workflow-id"
+
+[[subcommands]]
+name = "auth"
+description = "Authenticate gh and git with GitHub"
+
+  [[subcommands.subcommands]]
+  name = "login"
+  description = "Authenticate with a GitHub host"
+
+    [[subcommands.subcommands.options]]
+    short = "-h"
+    long = "--hostname"
+    takes_arg = true
+    description = "The hostname to authenticate with"
+
+    [[subcommands.subcommands.options]]
+    short = "-w"
+    long = "--web"
+    description = "Open a browser to authenticate"
+
+    [[subcommands.subcommands.options]]
+    short = "-p"
+    long = "--git-protocol"
+    takes_arg = true
+    description = "Protocol for git operations (https or ssh)"
+
+  [[subcommands.subcommands]]
+  name = "logout"
+  description = "Log out of a GitHub host"
+
+  [[subcommands.subcommands]]
+  name = "status"
+  description = "View authentication status"
+
+  [[subcommands.subcommands]]
+  name = "token"
+  description = "Print the auth token"
+
+[[subcommands]]
+name = "browse"
+description = "Open the repository in the browser"
+
+  [[subcommands.options]]
+  short = "-b"
+  long = "--branch"
+  takes_arg = true
+  description = "Select a branch"
+
+  [[subcommands.options]]
+  short = "-n"
+  long = "--no-browser"
+  description = "Print URL instead of opening browser"
+
+[[subcommands]]
+name = "api"
+description = "Make an authenticated GitHub API request"
+
+  [[subcommands.options]]
+  short = "-X"
+  long = "--method"
+  takes_arg = true
+  description = "HTTP method"
+
+  [[subcommands.options]]
+  short = "-H"
+  long = "--header"
+  takes_arg = true
+  description = "HTTP header"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--field"
+  takes_arg = true
+  description = "Add a typed parameter"
+
+  [[subcommands.options]]
+  long = "--jq"
+  takes_arg = true
+  description = "Filter JSON output using jq syntax"
+
+  [[subcommands.options]]
+  long = "--paginate"
+  description = "Make additional HTTP requests to fetch all results"
+
+  [[subcommands.args]]
+  name = "endpoint"
+
+[[subcommands]]
+name = "gist"
+description = "Manage gists"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a new gist"
+
+    [[subcommands.subcommands.options]]
+    short = "-d"
+    long = "--desc"
+    takes_arg = true
+    description = "Description"
+
+    [[subcommands.subcommands.options]]
+    short = "-p"
+    long = "--public"
+    description = "Make the gist public"
+
+    [[subcommands.subcommands.args]]
+    name = "files"
+    template = "file_paths"
+    variadic = true
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List your gists"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View a gist"
+
+    [[subcommands.subcommands.args]]
+    name = "id"
+
+[[subcommands]]
+name = "ssh-key"
+description = "Manage SSH keys"
+
+  [[subcommands.subcommands]]
+  name = "add"
+  description = "Add an SSH key to your account"
+
+    [[subcommands.subcommands.options]]
+    short = "-t"
+    long = "--title"
+    takes_arg = true
+    description = "Title for the key"
+
+    [[subcommands.subcommands.args]]
+    name = "key-file"
+    template = "file_paths"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List SSH keys"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete an SSH key"

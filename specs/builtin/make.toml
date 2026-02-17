@@ -1,0 +1,49 @@
+name = "make"
+description = "Build automation tool"
+
+[[options]]
+short = "-j"
+takes_arg = true
+description = "Number of parallel jobs"
+
+[[options]]
+short = "-n"
+long = "--dry-run"
+description = "Print commands without executing"
+
+[[options]]
+short = "-k"
+long = "--keep-going"
+description = "Keep going when some targets fail"
+
+[[options]]
+short = "-B"
+long = "--always-make"
+description = "Unconditionally make all targets"
+
+[[options]]
+short = "-C"
+takes_arg = true
+description = "Change to directory before reading makefiles"
+
+[[options]]
+short = "-f"
+takes_arg = true
+description = "Read file as a makefile"
+
+[[options]]
+short = "-s"
+long = "--silent"
+description = "Don't echo recipes"
+
+[[options]]
+short = "-i"
+long = "--ignore-errors"
+description = "Ignore errors from recipes"
+
+[[args]]
+name = "target"
+variadic = true
+[args.generator]
+command = "make -qp 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+:' | grep -v '^\\.' | cut -d: -f1 | sort -u"
+cache_ttl_secs = 30

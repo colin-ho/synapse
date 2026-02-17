@@ -147,3 +147,33 @@ description = "List installed packages"
   short = "-g"
   long = "--global"
   description = "List global packages"
+
+[[subcommands]]
+name = "link"
+aliases = ["ln"]
+description = "Symlink a package folder"
+
+[[subcommands]]
+name = "view"
+aliases = ["info", "show"]
+description = "View registry info about a package"
+
+  [[subcommands.args]]
+  name = "package"
+
+[[subcommands]]
+name = "version"
+description = "Bump a package version"
+
+  [[subcommands.args]]
+  name = "newversion"
+  [subcommands.args.generator]
+  command = "echo 'major\nminor\npatch\npremajor\npreminor\nprepatch\nprerelease'"
+
+[[subcommands]]
+name = "pack"
+description = "Create a tarball from a package"
+
+  [[subcommands.options]]
+  long = "--dry-run"
+  description = "Do everything except create the tarball"

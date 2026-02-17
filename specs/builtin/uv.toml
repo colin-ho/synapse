@@ -1,0 +1,336 @@
+name = "uv"
+description = "Fast Python package installer and resolver"
+
+[[subcommands]]
+name = "pip"
+description = "Manage Python packages with a pip-compatible interface"
+
+  [[subcommands.subcommands]]
+  name = "install"
+  description = "Install packages"
+
+    [[subcommands.subcommands.options]]
+    short = "-r"
+    long = "--requirement"
+    takes_arg = true
+    description = "Install from requirements file"
+
+    [[subcommands.subcommands.options]]
+    short = "-e"
+    long = "--editable"
+    takes_arg = true
+    description = "Install editable project"
+
+    [[subcommands.subcommands.options]]
+    long = "--no-deps"
+    description = "Don't install dependencies"
+
+    [[subcommands.subcommands.options]]
+    short = "-U"
+    long = "--upgrade"
+    description = "Upgrade packages"
+
+    [[subcommands.subcommands.options]]
+    short = "-p"
+    long = "--python"
+    takes_arg = true
+    description = "Python interpreter"
+
+    [[subcommands.subcommands.args]]
+    name = "packages"
+    variadic = true
+
+  [[subcommands.subcommands]]
+  name = "uninstall"
+  description = "Uninstall packages"
+
+    [[subcommands.subcommands.args]]
+    name = "packages"
+    variadic = true
+
+  [[subcommands.subcommands]]
+  name = "freeze"
+  description = "List installed packages"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List installed packages"
+
+  [[subcommands.subcommands]]
+  name = "show"
+  description = "Show information about an installed package"
+
+    [[subcommands.subcommands.args]]
+    name = "package"
+
+  [[subcommands.subcommands]]
+  name = "compile"
+  description = "Compile requirements into a lockfile"
+
+    [[subcommands.subcommands.options]]
+    short = "-o"
+    long = "--output-file"
+    takes_arg = true
+    description = "Output file"
+
+    [[subcommands.subcommands.args]]
+    name = "src-file"
+    template = "file_paths"
+
+  [[subcommands.subcommands]]
+  name = "sync"
+  description = "Sync an environment with a requirements file"
+
+    [[subcommands.subcommands.args]]
+    name = "src-file"
+    template = "file_paths"
+
+[[subcommands]]
+name = "venv"
+description = "Create a virtual environment"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--python"
+  takes_arg = true
+  description = "Python interpreter"
+
+  [[subcommands.options]]
+  long = "--seed"
+  description = "Install seed packages (pip, setuptools, wheel)"
+
+  [[subcommands.args]]
+  name = "name"
+
+[[subcommands]]
+name = "run"
+description = "Run a command or script"
+
+  [[subcommands.options]]
+  long = "--with"
+  takes_arg = true
+  description = "Run with the given packages installed"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--python"
+  takes_arg = true
+  description = "Python interpreter"
+
+  [[subcommands.options]]
+  long = "--no-project"
+  description = "Avoid discovering the project"
+
+  [[subcommands.args]]
+  name = "command"
+
+[[subcommands]]
+name = "init"
+description = "Create a new project"
+
+  [[subcommands.options]]
+  long = "--lib"
+  description = "Create a library project"
+
+  [[subcommands.options]]
+  long = "--app"
+  description = "Create an application project"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--python"
+  takes_arg = true
+  description = "Python version"
+
+  [[subcommands.args]]
+  name = "name"
+
+[[subcommands]]
+name = "add"
+description = "Add dependencies to the project"
+
+  [[subcommands.options]]
+  long = "--dev"
+  description = "Add as development dependency"
+
+  [[subcommands.options]]
+  long = "--optional"
+  takes_arg = true
+  description = "Add as optional dependency group"
+
+  [[subcommands.options]]
+  long = "--extra"
+  takes_arg = true
+  description = "Extras to enable for the dependency"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "remove"
+description = "Remove dependencies from the project"
+
+  [[subcommands.options]]
+  long = "--dev"
+  description = "Remove from development dependencies"
+
+  [[subcommands.args]]
+  name = "packages"
+  variadic = true
+
+[[subcommands]]
+name = "sync"
+description = "Update the project's environment"
+
+  [[subcommands.options]]
+  long = "--frozen"
+  description = "Don't update the lockfile"
+
+  [[subcommands.options]]
+  long = "--no-dev"
+  description = "Omit development dependencies"
+
+  [[subcommands.options]]
+  long = "--extra"
+  takes_arg = true
+  description = "Include optional dependency group"
+
+  [[subcommands.options]]
+  long = "--all-extras"
+  description = "Include all optional dependency groups"
+
+[[subcommands]]
+name = "lock"
+description = "Update the project's lockfile"
+
+  [[subcommands.options]]
+  short = "-U"
+  long = "--upgrade"
+  description = "Allow package upgrades"
+
+  [[subcommands.options]]
+  long = "--upgrade-package"
+  takes_arg = true
+  description = "Allow upgrades for a specific package"
+
+[[subcommands]]
+name = "tree"
+description = "Display the project's dependency tree"
+
+  [[subcommands.options]]
+  long = "--depth"
+  takes_arg = true
+  description = "Maximum display depth"
+
+  [[subcommands.options]]
+  long = "--invert"
+  description = "Show which packages depend on a given package"
+
+  [[subcommands.options]]
+  long = "--no-dev"
+  description = "Omit development dependencies"
+
+[[subcommands]]
+name = "tool"
+description = "Run and manage tools"
+
+  [[subcommands.subcommands]]
+  name = "run"
+  description = "Run a tool"
+
+    [[subcommands.subcommands.args]]
+    name = "command"
+
+  [[subcommands.subcommands]]
+  name = "install"
+  description = "Install a tool"
+
+    [[subcommands.subcommands.args]]
+    name = "package"
+
+  [[subcommands.subcommands]]
+  name = "uninstall"
+  description = "Uninstall a tool"
+
+    [[subcommands.subcommands.args]]
+    name = "name"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List installed tools"
+
+  [[subcommands.subcommands]]
+  name = "upgrade"
+  description = "Upgrade a tool"
+
+    [[subcommands.subcommands.options]]
+    long = "--all"
+    description = "Upgrade all tools"
+
+    [[subcommands.subcommands.args]]
+    name = "name"
+
+[[subcommands]]
+name = "python"
+description = "Manage Python versions"
+
+  [[subcommands.subcommands]]
+  name = "install"
+  description = "Download and install Python versions"
+
+    [[subcommands.subcommands.args]]
+    name = "version"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List available Python installations"
+
+    [[subcommands.subcommands.options]]
+    long = "--all-versions"
+    description = "List all available versions"
+
+  [[subcommands.subcommands]]
+  name = "find"
+  description = "Search for a Python installation"
+
+    [[subcommands.subcommands.args]]
+    name = "version"
+
+  [[subcommands.subcommands]]
+  name = "pin"
+  description = "Pin to a specific Python version"
+
+    [[subcommands.subcommands.args]]
+    name = "version"
+
+  [[subcommands.subcommands]]
+  name = "uninstall"
+  description = "Uninstall Python versions"
+
+    [[subcommands.subcommands.args]]
+    name = "version"
+
+[[subcommands]]
+name = "cache"
+description = "Manage the cache"
+
+  [[subcommands.subcommands]]
+  name = "clean"
+  description = "Clear the cache"
+
+  [[subcommands.subcommands]]
+  name = "prune"
+  description = "Prune all unreachable objects from the cache"
+
+  [[subcommands.subcommands]]
+  name = "dir"
+  description = "Show the cache directory"
+
+[[subcommands]]
+name = "self"
+description = "Manage the uv executable"
+
+  [[subcommands.subcommands]]
+  name = "update"
+  description = "Update uv"

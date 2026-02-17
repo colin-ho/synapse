@@ -33,6 +33,36 @@ description = "Print version"
 long = "--help"
 description = "Print help"
 
+[[options]]
+short = "-B"
+description = "Don't write .pyc files"
+
+[[options]]
+short = "-O"
+description = "Remove assert and __debug__-dependent statements"
+
+[[options]]
+short = "-W"
+takes_arg = true
+description = "Warning control"
+
+[[options]]
+short = "-q"
+description = "Don't print version and copyright messages"
+
+[[options]]
+short = "-S"
+description = "Don't imply 'import site' on initialization"
+
+[[options]]
+short = "-E"
+description = "Ignore PYTHON* environment variables"
+
+[[options]]
+short = "-X"
+takes_arg = true
+description = "Set implementation-specific option"
+
 [[args]]
 name = "script"
 template = "file_paths"

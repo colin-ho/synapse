@@ -65,6 +65,39 @@ short = "-J"
 takes_arg = true
 description = "Connect via jump host"
 
+[[options]]
+short = "-X"
+description = "Enable X11 forwarding"
+
+[[options]]
+short = "-Y"
+description = "Enable trusted X11 forwarding"
+
+[[options]]
+short = "-C"
+description = "Request compression"
+
+[[options]]
+short = "-F"
+takes_arg = true
+description = "Configuration file"
+
+[[options]]
+short = "-W"
+takes_arg = true
+description = "Forward stdin/stdout to host:port"
+
+[[options]]
+short = "-4"
+description = "Use IPv4 addresses only"
+
+[[options]]
+short = "-6"
+description = "Use IPv6 addresses only"
+
 [[args]]
 name = "destination"
 description = "user@hostname"
+[args.generator]
+command = "grep -i '^Host ' ~/.ssh/config 2>/dev/null | awk '{for(i=2;i<=NF;i++) if($i !~ /[*?]/) print $i}'"
+cache_ttl_secs = 60

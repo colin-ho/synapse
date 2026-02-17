@@ -31,6 +31,31 @@ description = "Install packages"
   long = "--pre"
   description = "Include pre-release versions"
 
+  [[subcommands.options]]
+  long = "--user"
+  description = "Install to user site-packages directory"
+
+  [[subcommands.options]]
+  long = "--no-cache-dir"
+  description = "Disable the cache"
+
+  [[subcommands.options]]
+  short = "-i"
+  long = "--index-url"
+  takes_arg = true
+  description = "Base URL of the Python Package Index"
+
+  [[subcommands.options]]
+  long = "--extra-index-url"
+  takes_arg = true
+  description = "Extra URLs of package indexes"
+
+  [[subcommands.options]]
+  short = "-t"
+  long = "--target"
+  takes_arg = true
+  description = "Install packages into target directory"
+
   [[subcommands.args]]
   name = "packages"
   variadic = true
@@ -47,6 +72,9 @@ description = "Uninstall packages"
   [[subcommands.args]]
   name = "packages"
   variadic = true
+  [subcommands.args.generator]
+  command = "pip list --format=columns 2>/dev/null | tail -n +3 | awk '{print $1}'"
+  cache_ttl_secs = 30
 
 [[subcommands]]
 name = "freeze"
@@ -73,6 +101,13 @@ description = "Show information about packages"
   [[subcommands.args]]
   name = "packages"
   variadic = true
+  [subcommands.args.generator]
+  command = "pip list --format=columns 2>/dev/null | tail -n +3 | awk '{print $1}'"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "check"
+description = "Verify installed packages have compatible dependencies"
 
 [[subcommands]]
 name = "search"
