@@ -410,6 +410,10 @@ _synapse_clear_suggestion() {
 # This catches widgets we don't explicitly override (cursor movement, kill-word, etc.).
 _synapse_line_pre_redraw() {
     [[ -z "$_SYNAPSE_CURRENT_SUGGESTION" ]] && return
+    # In NL mode or with dropdown open the suggestion is a translation, not a
+    # buffer prefix — skip the prefix check so we don't wipe the display.
+    [[ $_SYNAPSE_NL_MODE -eq 1 ]] && return
+    [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]] && return
     if [[ -z "$BUFFER" ]] || [[ "$CURSOR" -ne "${#BUFFER}" ]] || \
        [[ "$_SYNAPSE_CURRENT_SUGGESTION" != "$BUFFER"* ]]; then
         _synapse_clear_suggestion
