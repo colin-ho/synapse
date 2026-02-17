@@ -429,14 +429,22 @@ async fn handle_natural_language(
 
     let os = detect_os();
 
-    // Check cache — return immediately if cached
+    // Check cache — send all cached results via writer, return Ack
     if let Some(cached) = state.nl_cache.get(&req.query, &req.cwd, &os).await {
-        return Response::Update(SuggestionResponse {
-            text: cached.command,
-            source: SuggestionSource::Llm,
-            confidence: 0.95,
-            description: cached.warning,
-        });
+        for item in &cached.items {
+            send_async_response(
+                &writer,
+                Response::Update(SuggestionResponse {
+                    text: item.command.clone(),
+                    source: SuggestionSource::Llm,
+                    confidence: 0.95,
+                    description: item.warning.clone(),
+                }),
+                "NL cached update",
+            )
+            .await;
+        }
+        return Response::Ack;
     }
 
     // Spawn async task for LLM call — return Ack immediately
@@ -487,80 +495,90 @@ async fn handle_natural_language(
             recent_commands,
         };
 
-        match llm_client.translate_command(&ctx).await {
+        let max_suggestions = config.llm.nl_max_suggestions;
+        match llm_client.translate_command(&ctx, max_suggestions).await {
             Ok(result) => {
-                // Validate: first token must be non-empty
-                let first_token = result.command.split_whitespace().next().unwrap_or("");
-                if first_token.is_empty() {
+                // Filter: validate and security-check each item individually
+                let valid_items: Vec<_> = result
+                    .items
+                    .into_iter()
+                    .filter(|item| {
+                        let first_token = item.command.split_whitespace().next().unwrap_or("");
+                        if first_token.is_empty() {
+                            return false;
+                        }
+                        if is_blocked_command(&item.command, &config.security.command_blocklist) {
+                            tracing::warn!(
+                                "NL translation blocked by security policy: {}",
+                                item.command
+                            );
+                            return false;
+                        }
+                        true
+                    })
+                    .collect();
+
+                if valid_items.is_empty() {
                     send_async_response(
                         &writer,
                         Response::Error {
-                            message: "Natural language translation produced an empty command"
+                            message: "All NL translations were empty or blocked by security policy"
                                 .into(),
                         },
-                        "NL empty-command error",
+                        "NL all-blocked error",
                     )
                     .await;
                     return;
                 }
 
-                // Check against security blocklist
-                if is_blocked_command(&result.command, &config.security.command_blocklist) {
-                    tracing::warn!(
-                        "NL translation blocked by security policy: {}",
-                        result.command
-                    );
-                    send_async_response(
-                        &writer,
-                        Response::Error {
-                            message: "Natural language translation blocked by security policy"
-                                .into(),
-                        },
-                        "NL blocked-command error",
-                    )
-                    .await;
-                    return;
-                }
-
-                // Cache the result
+                // Cache the valid results
                 nl_cache
                     .insert(
                         &query,
                         &cwd,
                         &os,
                         crate::nl_cache::NlCacheEntry {
-                            command: result.command.clone(),
-                            warning: result.warning.clone(),
+                            items: valid_items
+                                .iter()
+                                .map(|item| crate::nl_cache::NlCacheItem {
+                                    command: item.command.clone(),
+                                    warning: item.warning.clone(),
+                                })
+                                .collect(),
                         },
                     )
                     .await;
 
-                // Log the NL interaction
-                interaction_logger.log_interaction(
-                    &session_id,
-                    crate::protocol::InteractionAction::Accept,
-                    &format!("? {query}"),
-                    &result.command,
-                    SuggestionSource::Llm,
-                    0.95,
-                    &cwd,
-                    Some(&query),
-                );
+                // Log the first result as the primary NL interaction
+                if let Some(first) = valid_items.first() {
+                    interaction_logger.log_interaction(
+                        &session_id,
+                        crate::protocol::InteractionAction::Accept,
+                        &format!("? {query}"),
+                        &first.command,
+                        SuggestionSource::Llm,
+                        0.95,
+                        &cwd,
+                        Some(&query),
+                    );
+                }
 
-                // Send Update response via the writer
+                // Send one Update frame per valid item
                 // (No post-LLM staleness check — if the task passed the debounce, its
                 // result is worth showing. The plugin overwrites with newer results.)
-                send_async_response(
-                    &writer,
-                    Response::Update(SuggestionResponse {
-                        text: result.command,
-                        source: SuggestionSource::Llm,
-                        confidence: 0.95,
-                        description: result.warning,
-                    }),
-                    "NL update",
-                )
-                .await;
+                for item in valid_items {
+                    send_async_response(
+                        &writer,
+                        Response::Update(SuggestionResponse {
+                            text: item.command,
+                            source: SuggestionSource::Llm,
+                            confidence: 0.95,
+                            description: item.warning,
+                        }),
+                        "NL update",
+                    )
+                    .await;
+                }
             }
             Err(e) => {
                 tracing::warn!("NL translation failed: {e}");
@@ -765,7 +783,7 @@ mod tests {
     };
     use crate::config::Config;
     use crate::logging::InteractionLogger;
-    use crate::nl_cache::{NlCache, NlCacheEntry};
+    use crate::nl_cache::{NlCache, NlCacheEntry, NlCacheItem};
     use crate::protocol::{NaturalLanguageRequest, Response};
     use crate::ranking::Ranker;
     use crate::session::SessionManager;
@@ -874,7 +892,12 @@ mod tests {
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config);
-        let writer = test_shared_writer();
+
+        let (writer_stream, reader_stream) =
+            tokio::net::UnixStream::pair().expect("UnixStream::pair");
+        let (sink, _) = Framed::new(writer_stream, LinesCodec::new()).split();
+        let writer: SharedWriter = Arc::new(tokio::sync::Mutex::new(sink));
+        let mut reader = Framed::new(reader_stream, LinesCodec::new());
 
         let query = "find rust files".to_string();
         let cwd = "/tmp".to_string();
@@ -886,8 +909,16 @@ mod tests {
                 &cwd,
                 &os,
                 NlCacheEntry {
-                    command: "fd -e rs".to_string(),
-                    warning: None,
+                    items: vec![
+                        NlCacheItem {
+                            command: "fd -e rs".to_string(),
+                            warning: None,
+                        },
+                        NlCacheItem {
+                            command: "find . -name '*.rs'".to_string(),
+                            warning: None,
+                        },
+                    ],
                 },
             )
             .await;
@@ -905,10 +936,26 @@ mod tests {
         )
         .await;
 
-        match resp {
-            Response::Update(s) => assert_eq!(s.text, "fd -e rs"),
-            other => panic!("expected cached update response, got: {other:?}"),
-        }
+        // Cache hit now returns Ack; updates are sent via the writer
+        assert!(matches!(resp, Response::Ack));
+
+        // Read the two update frames
+        let line1 = tokio::time::timeout(Duration::from_secs(2), reader.next())
+            .await
+            .expect("timed out")
+            .expect("writer closed")
+            .expect("read error");
+        assert!(line1.starts_with("update\tfd -e rs\t"), "got: {line1}");
+
+        let line2 = tokio::time::timeout(Duration::from_secs(2), reader.next())
+            .await
+            .expect("timed out")
+            .expect("writer closed")
+            .expect("read error");
+        assert!(
+            line2.starts_with("update\tfind . -name '*.rs'\t"),
+            "got: {line2}"
+        );
 
         let gens = state.nl_generations.lock().unwrap();
         assert_eq!(gens.get("sess-cache").copied(), Some(1));
