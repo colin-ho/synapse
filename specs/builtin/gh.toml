@@ -717,3 +717,292 @@ description = "Manage SSH keys"
   [[subcommands.subcommands]]
   name = "delete"
   description = "Delete an SSH key"
+
+[[subcommands]]
+name = "codespace"
+aliases = ["cs"]
+description = "Connect to and manage codespaces"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a codespace"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List codespaces"
+
+  [[subcommands.subcommands]]
+  name = "ssh"
+  description = "SSH into a codespace"
+
+  [[subcommands.subcommands]]
+  name = "stop"
+  description = "Stop a running codespace"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete codespaces"
+
+  [[subcommands.subcommands]]
+  name = "code"
+  description = "Open a codespace in Visual Studio Code"
+
+  [[subcommands.subcommands]]
+  name = "logs"
+  description = "Access codespace logs"
+
+  [[subcommands.subcommands]]
+  name = "ports"
+  description = "List ports in a codespace"
+
+  [[subcommands.subcommands]]
+  name = "cp"
+  description = "Copy files between local and remote file systems"
+
+[[subcommands]]
+name = "org"
+description = "Manage organizations"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List organizations for the authenticated user"
+
+[[subcommands]]
+name = "project"
+description = "Work with GitHub Projects"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a project"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List projects"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View a project"
+
+  [[subcommands.subcommands]]
+  name = "edit"
+  description = "Edit a project"
+
+  [[subcommands.subcommands]]
+  name = "close"
+  description = "Close a project"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete a project"
+
+  [[subcommands.subcommands]]
+  name = "item-list"
+  description = "List items in a project"
+
+  [[subcommands.subcommands]]
+  name = "item-add"
+  description = "Add an item to a project"
+
+  [[subcommands.subcommands]]
+  name = "item-delete"
+  description = "Delete an item from a project"
+
+[[subcommands]]
+name = "cache"
+description = "Manage GitHub Actions caches"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List caches"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete caches"
+
+[[subcommands]]
+name = "search"
+description = "Search for repositories, issues, and pull requests"
+
+  [[subcommands.subcommands]]
+  name = "repos"
+  description = "Search for repositories"
+
+  [[subcommands.subcommands]]
+  name = "issues"
+  description = "Search for issues"
+
+  [[subcommands.subcommands]]
+  name = "prs"
+  description = "Search for pull requests"
+
+  [[subcommands.subcommands]]
+  name = "commits"
+  description = "Search for commits"
+
+  [[subcommands.subcommands]]
+  name = "code"
+  description = "Search for code"
+
+[[subcommands]]
+name = "secret"
+description = "Manage GitHub secrets"
+
+  [[subcommands.subcommands]]
+  name = "set"
+  description = "Create or update secrets"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List secrets"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete secrets"
+
+[[subcommands]]
+name = "variable"
+description = "Manage GitHub Actions variables"
+
+  [[subcommands.subcommands]]
+  name = "set"
+  description = "Create or update variables"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List variables"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete a variable"
+
+  [[subcommands.subcommands]]
+  name = "get"
+  description = "Get a variable"
+
+[[subcommands]]
+name = "config"
+description = "Manage configuration for gh"
+
+  [[subcommands.subcommands]]
+  name = "set"
+  description = "Update configuration"
+
+  [[subcommands.subcommands]]
+  name = "get"
+  description = "Print the value of a configuration key"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "Print all configuration keys and values"
+
+[[subcommands]]
+name = "alias"
+description = "Create command shortcuts"
+
+  [[subcommands.subcommands]]
+  name = "set"
+  description = "Create a shortcut for a gh command"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List your aliases"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete an alias"
+
+[[subcommands]]
+name = "extension"
+description = "Manage gh extensions"
+
+  [[subcommands.subcommands]]
+  name = "install"
+  description = "Install an extension"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List installed extensions"
+
+  [[subcommands.subcommands]]
+  name = "remove"
+  description = "Remove an installed extension"
+
+  [[subcommands.subcommands]]
+  name = "upgrade"
+  description = "Upgrade installed extensions"
+
+  [[subcommands.subcommands]]
+  name = "search"
+  description = "Search for extensions"
+
+[[subcommands]]
+name = "label"
+description = "Manage labels"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a label"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List labels"
+
+  [[subcommands.subcommands]]
+  name = "edit"
+  description = "Edit a label"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete a label"
+
+[[subcommands]]
+name = "ruleset"
+description = "View info about repo rulesets"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List rulesets"
+
+  [[subcommands.subcommands]]
+  name = "view"
+  description = "View a ruleset"
+
+  [[subcommands.subcommands]]
+  name = "check"
+  description = "View rules that would apply to a branch"
+
+[[subcommands]]
+name = "attestation"
+description = "Work with artifact attestations"
+
+  [[subcommands.subcommands]]
+  name = "verify"
+  description = "Verify artifact attestations"
+
+[[subcommands]]
+name = "gpg-key"
+description = "Manage GPG keys"
+
+  [[subcommands.subcommands]]
+  name = "add"
+  description = "Add a GPG key to your account"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List GPG keys"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete a GPG key"
+
+[[subcommands]]
+name = "completion"
+description = "Generate shell completion scripts"
+
+  [[subcommands.args]]
+  name = "shell"
+  suggestions = ["bash", "zsh", "fish", "powershell"]
+
+[[subcommands]]
+name = "status"
+description = "Print information about relevant issues, pull requests, and notifications"

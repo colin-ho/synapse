@@ -173,3 +173,70 @@ description = "Unpin a formula to allow upgrades"
   [subcommands.args.generator]
   command = "brew list --pinned -1 2>/dev/null"
   cache_ttl_secs = 30
+
+[[subcommands]]
+name = "outdated"
+description = "List installed casks and formulae that have an updated version available"
+
+  [[subcommands.options]]
+  long = "--formula"
+  description = "List outdated formulae only"
+
+  [[subcommands.options]]
+  long = "--cask"
+  description = "List outdated casks only"
+
+[[subcommands]]
+name = "deps"
+description = "Show dependencies for a formula"
+
+  [[subcommands.options]]
+  long = "--tree"
+  description = "Show dependencies as a tree"
+
+  [[subcommands.options]]
+  long = "--installed"
+  description = "Only list installed dependencies"
+
+  [[subcommands.args]]
+  name = "formula"
+  [subcommands.args.generator]
+  command = "brew list --formula -1 2>/dev/null"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "config"
+description = "Show Homebrew and system configuration info"
+
+[[subcommands]]
+name = "commands"
+description = "Show lists of built-in and external commands"
+
+[[subcommands]]
+name = "edit"
+description = "Open a formula or cask in an editor"
+
+  [[subcommands.args]]
+  name = "formula"
+  [subcommands.args.generator]
+  command = "brew list --formula -1 2>/dev/null"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "reinstall"
+description = "Uninstall and then reinstall a formula or cask"
+
+  [[subcommands.args]]
+  name = "formula"
+  variadic = true
+  [subcommands.args.generator]
+  command = "brew list --formula -1 2>/dev/null"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "leaves"
+description = "List installed formulae that are not dependencies of another installed formula"
+
+[[subcommands]]
+name = "autoremove"
+description = "Uninstall formulae that were only installed as a dependency and are no longer needed"

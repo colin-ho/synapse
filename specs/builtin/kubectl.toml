@@ -230,3 +230,424 @@ description = "Forward one or more local ports to a pod"
   [subcommands.args.generator]
   command = "kubectl get pods -o name 2>/dev/null | sed 's|pod/||'"
   cache_ttl_secs = 10
+
+[[subcommands]]
+name = "run"
+description = "Run a particular image on the cluster"
+
+  [[subcommands.options]]
+  long = "--image"
+  takes_arg = true
+  description = "The image to run"
+
+  [[subcommands.options]]
+  long = "--restart"
+  takes_arg = true
+  description = "Restart policy (Always, OnFailure, Never)"
+
+  [[subcommands.options]]
+  long = "--port"
+  takes_arg = true
+  description = "Port that this container exposes"
+
+  [[subcommands.options]]
+  long = "--env"
+  takes_arg = true
+  description = "Environment variables to set"
+
+  [[subcommands.options]]
+  long = "--dry-run"
+  takes_arg = true
+  description = "Dry run strategy (none, client, server)"
+
+  [[subcommands.options]]
+  short = "-it"
+  description = "Interactive terminal"
+
+  [[subcommands.options]]
+  long = "--rm"
+  description = "Delete the pod after it exits"
+
+  [[subcommands.args]]
+  name = "name"
+
+[[subcommands]]
+name = "expose"
+description = "Expose a resource as a new Kubernetes service"
+
+  [[subcommands.options]]
+  long = "--port"
+  takes_arg = true
+  description = "The port that the service should serve on"
+
+  [[subcommands.options]]
+  long = "--target-port"
+  takes_arg = true
+  description = "Port on the container to forward to"
+
+  [[subcommands.options]]
+  long = "--type"
+  takes_arg = true
+  description = "Type of service (ClusterIP, NodePort, LoadBalancer, ExternalName)"
+
+  [[subcommands.options]]
+  long = "--name"
+  takes_arg = true
+  description = "Name of the service"
+
+[[subcommands]]
+name = "set"
+description = "Set specific features on objects"
+
+  [[subcommands.subcommands]]
+  name = "image"
+  description = "Update the image of a resource"
+
+  [[subcommands.subcommands]]
+  name = "resources"
+  description = "Update resource requests/limits"
+
+  [[subcommands.subcommands]]
+  name = "env"
+  description = "Update environment variables"
+
+  [[subcommands.subcommands]]
+  name = "serviceaccount"
+  description = "Update the service account of a resource"
+
+[[subcommands]]
+name = "edit"
+description = "Edit a resource on the server"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "echo 'pods\nservices\ndeployments\nconfigmaps\nsecrets\ningresses\njobs\ncronjobs\nstatefulsets\ndaemonsets'"
+
+[[subcommands]]
+name = "explain"
+description = "Get documentation for a resource"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "echo 'pods\nservices\ndeployments\nnodes\nnamespaces\nconfigmaps\nsecrets\ningresses\njobs\ncronjobs\nstatefulsets\ndaemonsets\nreplicasets\nhpa'"
+
+[[subcommands]]
+name = "autoscale"
+description = "Auto-scale a deployment, replica set, or stateful set"
+
+  [[subcommands.options]]
+  long = "--min"
+  takes_arg = true
+  description = "Lower limit for number of pods"
+
+  [[subcommands.options]]
+  long = "--max"
+  takes_arg = true
+  description = "Upper limit for number of pods"
+
+  [[subcommands.options]]
+  long = "--cpu-percent"
+  takes_arg = true
+  description = "Target average CPU utilization"
+
+[[subcommands]]
+name = "top"
+description = "Display resource usage (CPU/memory)"
+
+  [[subcommands.subcommands]]
+  name = "node"
+  description = "Display resource usage of nodes"
+
+  [[subcommands.subcommands]]
+  name = "pod"
+  description = "Display resource usage of pods"
+
+[[subcommands]]
+name = "cordon"
+description = "Mark node as unschedulable"
+
+  [[subcommands.args]]
+  name = "node"
+  [subcommands.args.generator]
+  command = "kubectl get nodes -o name 2>/dev/null | sed 's|node/||'"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "uncordon"
+description = "Mark node as schedulable"
+
+  [[subcommands.args]]
+  name = "node"
+  [subcommands.args.generator]
+  command = "kubectl get nodes -o name 2>/dev/null | sed 's|node/||'"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "drain"
+description = "Drain node in preparation for maintenance"
+
+  [[subcommands.options]]
+  long = "--force"
+  description = "Continue even if there are pods not managed by a controller"
+
+  [[subcommands.options]]
+  long = "--ignore-daemonsets"
+  description = "Ignore DaemonSet-managed pods"
+
+  [[subcommands.options]]
+  long = "--delete-emptydir-data"
+  description = "Delete pods using emptyDir data"
+
+  [[subcommands.args]]
+  name = "node"
+  [subcommands.args.generator]
+  command = "kubectl get nodes -o name 2>/dev/null | sed 's|node/||'"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "taint"
+description = "Update the taints on one or more nodes"
+
+  [[subcommands.args]]
+  name = "node"
+  [subcommands.args.generator]
+  command = "kubectl get nodes -o name 2>/dev/null | sed 's|node/||'"
+  cache_ttl_secs = 30
+
+[[subcommands]]
+name = "attach"
+description = "Attach to a running container"
+
+  [[subcommands.options]]
+  short = "-c"
+  long = "--container"
+  takes_arg = true
+  description = "Container name"
+
+  [[subcommands.options]]
+  short = "-it"
+  description = "Interactive terminal"
+
+  [[subcommands.args]]
+  name = "pod"
+  [subcommands.args.generator]
+  command = "kubectl get pods -o name 2>/dev/null | sed 's|pod/||'"
+  cache_ttl_secs = 10
+
+[[subcommands]]
+name = "cp"
+description = "Copy files and directories to and from containers"
+
+  [[subcommands.options]]
+  short = "-c"
+  long = "--container"
+  takes_arg = true
+  description = "Container name"
+
+[[subcommands]]
+name = "proxy"
+description = "Run a proxy to the Kubernetes API server"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--port"
+  takes_arg = true
+  description = "Port to run the proxy on"
+
+[[subcommands]]
+name = "auth"
+description = "Inspect authorization"
+
+  [[subcommands.subcommands]]
+  name = "can-i"
+  description = "Check if an action is allowed"
+
+  [[subcommands.subcommands]]
+  name = "whoami"
+  description = "Show the subject attributes of the current user"
+
+[[subcommands]]
+name = "debug"
+description = "Create debugging sessions for troubleshooting workloads and nodes"
+
+  [[subcommands.options]]
+  long = "--image"
+  takes_arg = true
+  description = "Container image for the debug container"
+
+  [[subcommands.options]]
+  short = "-it"
+  description = "Interactive terminal"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "kubectl get pods -o name 2>/dev/null | sed 's|pod/||'"
+  cache_ttl_secs = 10
+
+[[subcommands]]
+name = "events"
+description = "List events"
+
+  [[subcommands.options]]
+  short = "-A"
+  long = "--all-namespaces"
+  description = "List across all namespaces"
+
+  [[subcommands.options]]
+  short = "-w"
+  long = "--watch"
+  description = "Watch for changes"
+
+[[subcommands]]
+name = "diff"
+description = "Diff the live version against a would-be applied version"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--filename"
+  takes_arg = true
+  description = "Filename to diff"
+
+[[subcommands]]
+name = "patch"
+description = "Update fields of a resource"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--patch"
+  takes_arg = true
+  description = "The patch to apply"
+
+  [[subcommands.options]]
+  long = "--type"
+  takes_arg = true
+  description = "Patch type (strategic, merge, json)"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "echo 'pods\nservices\ndeployments\nconfigmaps\nsecrets\ningresses\njobs\ncronjobs\nstatefulsets\ndaemonsets'"
+
+[[subcommands]]
+name = "replace"
+description = "Replace a resource by filename or stdin"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--filename"
+  takes_arg = true
+  description = "Filename to replace"
+
+  [[subcommands.options]]
+  long = "--force"
+  description = "Delete and re-create the resource"
+
+[[subcommands]]
+name = "wait"
+description = "Wait for a specific condition on one or many resources"
+
+  [[subcommands.options]]
+  long = "--for"
+  takes_arg = true
+  description = "Condition to wait for (e.g. condition=Ready)"
+
+  [[subcommands.options]]
+  long = "--timeout"
+  takes_arg = true
+  description = "Length of time to wait before giving up"
+
+[[subcommands]]
+name = "kustomize"
+description = "Build a kustomization target from a directory or URL"
+
+  [[subcommands.args]]
+  name = "directory"
+  template = "directories"
+
+[[subcommands]]
+name = "label"
+description = "Update the labels on a resource"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "echo 'pods\nservices\ndeployments\nnodes\nnamespaces\nconfigmaps\nsecrets'"
+
+[[subcommands]]
+name = "annotate"
+description = "Update the annotations on a resource"
+
+  [[subcommands.args]]
+  name = "resource"
+  [subcommands.args.generator]
+  command = "echo 'pods\nservices\ndeployments\nnodes\nnamespaces\nconfigmaps\nsecrets'"
+
+[[subcommands]]
+name = "completion"
+description = "Output shell completion code for the specified shell"
+
+  [[subcommands.args]]
+  name = "shell"
+  suggestions = ["bash", "zsh", "fish", "powershell"]
+
+[[subcommands]]
+name = "api-resources"
+description = "Print the supported API resources on the server"
+
+  [[subcommands.options]]
+  long = "--namespaced"
+  description = "Only show namespaced resources"
+
+  [[subcommands.options]]
+  long = "--verbs"
+  takes_arg = true
+  description = "Limit to resources that support the specified verbs"
+
+[[subcommands]]
+name = "api-versions"
+description = "Print the supported API versions on the server"
+
+[[subcommands]]
+name = "version"
+description = "Print the client and server version information"
+
+  [[subcommands.options]]
+  long = "--client"
+  description = "Client version only"
+
+  [[subcommands.options]]
+  short = "-o"
+  long = "--output"
+  takes_arg = true
+  description = "Output format (json, yaml)"
+
+[[subcommands]]
+name = "cluster-info"
+description = "Display cluster information"
+
+  [[subcommands.subcommands]]
+  name = "dump"
+  description = "Dump relevant information for debugging and diagnosis"
+
+[[subcommands]]
+name = "certificate"
+description = "Modify certificate resources"
+
+  [[subcommands.subcommands]]
+  name = "approve"
+  description = "Approve a certificate signing request"
+
+  [[subcommands.subcommands]]
+  name = "deny"
+  description = "Deny a certificate signing request"
+
+[[subcommands]]
+name = "plugin"
+description = "Provides utilities for interacting with plugins"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List all available plugin files on the user's PATH"
