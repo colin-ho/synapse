@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::stream::SplitSink;
@@ -29,6 +29,8 @@ pub(super) struct RuntimeState {
     pub(super) config: Config,
     pub(super) llm_client: Option<Arc<LlmClient>>,
     pub(super) nl_cache: NlCache,
+    /// Per-session generation counter for NL request debouncing.
+    pub(super) nl_generations: Arc<std::sync::Mutex<HashMap<String, u64>>>,
 }
 
 impl RuntimeState {
@@ -57,6 +59,7 @@ impl RuntimeState {
             config,
             llm_client,
             nl_cache,
+            nl_generations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 }
