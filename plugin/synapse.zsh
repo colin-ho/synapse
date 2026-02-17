@@ -41,7 +41,9 @@ typeset -gi _SYNAPSE_LAST_SUGGEST_BUFLEN=0
 
 # --- Natural Language State ---
 typeset -gi _SYNAPSE_NL_MODE=0
+typeset -gi _SYNAPSE_NL_ERROR_SHOWN=0
 typeset -g _SYNAPSE_NL_PREFIX="?"
+typeset -g _SYNAPSE_ASYNC_BUFFER=""
 
 # --- Modules ---
 zmodload zsh/net/socket 2>/dev/null || { return; }
@@ -156,6 +158,7 @@ _synapse_connect() {
     _SYNAPSE_SOCKET_FD="$REPLY"
     _SYNAPSE_CONNECTED=1
     _SYNAPSE_REQUEST_FAILURES=0
+    _SYNAPSE_ASYNC_BUFFER=""
 
     # Register async handler for pushed updates
     zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler
@@ -172,6 +175,7 @@ _synapse_disconnect() {
     _SYNAPSE_CONNECTED=0
     _SYNAPSE_CURRENT_SUGGESTION=""
     _SYNAPSE_CURRENT_SOURCE=""
+    _SYNAPSE_ASYNC_BUFFER=""
     POSTDISPLAY=""
 }
 
@@ -195,20 +199,6 @@ _synapse_nl_query_from_buffer() {
     else
         echo "${BUFFER[$start,-1]}"
     fi
-}
-
-# Render an NL-generated full command below the query.
-_synapse_show_nl_command() {
-    local text="$1"
-    if [[ -z "$text" ]]; then
-        _synapse_clear_suggestion
-        return
-    fi
-    _SYNAPSE_CURRENT_SUGGESTION="$text"
-    _SYNAPSE_CURRENT_SOURCE="llm"
-    POSTDISPLAY=$'\n'"  > ${text}"
-    local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
-    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=14")
 }
 
 # Send a JSON request and read the response
@@ -634,9 +624,23 @@ _synapse_async_handler() {
         return
     fi
 
-    local response=""
-    if read -u "$fd" response 2>/dev/null; then
-        _synapse_handle_update "$response"
+    # Read available bytes with sysread to avoid zsh read-buffering behavior with
+    # zle -F. Keep a persistent buffer and only process complete newline-delimited
+    # frames to avoid dropping partial lines split across reads.
+    local raw_data=""
+    if sysread -i "$fd" -c 4096 raw_data 2>/dev/null; then
+        _SYNAPSE_ASYNC_BUFFER+="$raw_data"
+        local line
+        local needs_redraw=0
+        while [[ "$_SYNAPSE_ASYNC_BUFFER" == *$'\n'* ]]; do
+            line="${_SYNAPSE_ASYNC_BUFFER%%$'\n'*}"
+            _SYNAPSE_ASYNC_BUFFER="${_SYNAPSE_ASYNC_BUFFER#*$'\n'}"
+            [[ -n "$line" ]] || continue
+            _synapse_handle_update "$line" && needs_redraw=1
+        done
+        if (( needs_redraw )); then
+            zle -R 2>/dev/null
+        fi
     else
         # EOF or read error — daemon connection lost
         _synapse_disconnect
@@ -648,23 +652,21 @@ _synapse_handle_update() {
     local -a _tsv_fields
     IFS=$'\t' read -rA _tsv_fields <<< "$response"
 
-    [[ "${_tsv_fields[1]}" == "update" ]] || return 1
+    local msg_type="${_tsv_fields[1]}"
 
-    # Skip async updates while dropdown is open
-    if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]]; then
-        return 0
+    [[ "$msg_type" == "update" ]] || return 1
+
+    # Skip async updates while dropdown is open or in NL mode
+    # (NL results are handled synchronously via _synapse_nl_execute)
+    if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]] || [[ $_SYNAPSE_NL_MODE -eq 1 ]]; then
+        return 1
     fi
 
     local text="${_tsv_fields[2]}"
     local source="${_tsv_fields[3]}"
 
-    if [[ "$source" == "llm" ]] && [[ $_SYNAPSE_NL_MODE -eq 1 ]] && _synapse_buffer_has_nl_prefix; then
-        _synapse_show_nl_command "$text"
-    else
-        _SYNAPSE_CURRENT_SOURCE="$source"
-        _synapse_show_suggestion "$text"
-    fi
-    zle -R 2>/dev/null  # Redraw when inside zle
+    _SYNAPSE_CURRENT_SOURCE="$source"
+    _synapse_show_suggestion "$text"
     return 0
 }
 
@@ -716,29 +718,131 @@ _synapse_self_insert() {
     else
         if ! _synapse_buffer_has_nl_prefix; then
             _SYNAPSE_NL_MODE=0
+            _SYNAPSE_NL_ERROR_SHOWN=0
         fi
         _synapse_suggest
     fi
 }
 
-# Send a natural language request (fire-and-forget, response comes via async handler)
+# Mark NL mode active and show hint (no request sent — Enter triggers that)
 _synapse_nl_suggest() {
     _SYNAPSE_NL_MODE=1
+    _synapse_clear_suggestion
+    POSTDISPLAY=$'\n'"  > press Enter to translate"
+    local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=8")
+}
 
-    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return
+# Execute NL query synchronously: send request, wait for LLM result, show in dropdown.
+_synapse_nl_execute() {
+    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || { zle .accept-line; return; }
 
     local query
     query="$(_synapse_nl_query_from_buffer)"
-    [[ -n "$query" ]] || return
+    if [[ -z "$query" ]]; then
+        zle .accept-line
+        return
+    fi
 
+    # Show thinking indicator (works from widget context)
+    POSTDISPLAY=$'\n'"  thinking..."
+    local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=8")
+    zle -R
+
+    # Build and send NL request
     local json
     json="$(_synapse_build_nl_request "$query" "$PWD")"
 
-    # Fire and forget — the async handler will receive the Update response
+    # Disable async handler while doing synchronous read
+    zle -F "$_SYNAPSE_SOCKET_FD" 2>/dev/null
+
     print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || {
         _synapse_disconnect
+        POSTDISPLAY=""
+        zle -R
         return
     }
+
+    # Collect update results (skip ack frames), up to 15s
+    local -a nl_results=()
+    local -a nl_sources=()
+    local response="" reads=0
+    local max_reads=1500
+
+    while (( reads < max_reads )); do
+        if read -t 0.01 -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
+            local -a _fields
+            IFS=$'\t' read -rA _fields <<< "$response"
+
+            case "${_fields[1]}" in
+                update)
+                    nl_results+=("${_fields[2]}")
+                    nl_sources+=("${_fields[3]}")
+                    # After first update, wait briefly for more
+                    max_reads=$(( reads + 300 ))
+                    ;;
+                error)
+                    POSTDISPLAY=$'\n'"  [${_fields[2]}]"
+                    base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+                    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=1")
+                    zle -R
+                    zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler 2>/dev/null
+                    return
+                    ;;
+                ack) ;;  # skip
+            esac
+        fi
+        (( reads++ ))
+    done
+
+    # Re-enable async handler
+    zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler 2>/dev/null
+
+    if (( ${#nl_results[@]} == 0 )); then
+        POSTDISPLAY=$'\n'"  [no results]"
+        base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+        region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=1")
+        zle -R
+        return
+    fi
+
+    # Populate dropdown with NL results
+    _SYNAPSE_DROPDOWN_ITEMS=("${nl_results[@]}")
+    _SYNAPSE_DROPDOWN_SOURCES=("${nl_sources[@]}")
+    _SYNAPSE_DROPDOWN_DESCS=()
+    _SYNAPSE_DROPDOWN_KINDS=()
+    local i
+    for (( i=0; i < ${#nl_results[@]}; i++ )); do
+        _SYNAPSE_DROPDOWN_DESCS+=("")
+        _SYNAPSE_DROPDOWN_KINDS+=("command")
+    done
+    _SYNAPSE_DROPDOWN_COUNT=${#nl_results[@]}
+    _SYNAPSE_DROPDOWN_INDEX=0
+    _SYNAPSE_DROPDOWN_SCROLL=0
+    _SYNAPSE_DROPDOWN_OPEN=1
+
+    _SYNAPSE_CURRENT_SUGGESTION="${nl_results[1]}"
+    _SYNAPSE_CURRENT_SOURCE="${nl_sources[1]}"
+
+    _synapse_render_dropdown
+    zle -R
+
+    # Enter modal dropdown navigation
+    zle recursive-edit -K synapse-dropdown
+
+    # Handle selection — replace buffer with the chosen command
+    if [[ -n "$_SYNAPSE_DROPDOWN_SELECTED" ]]; then
+        BUFFER="$_SYNAPSE_DROPDOWN_SELECTED"
+        CURSOR=${#BUFFER}
+    fi
+
+    _SYNAPSE_NL_MODE=0
+    _SYNAPSE_NL_ERROR_SHOWN=0
+    _SYNAPSE_DROPDOWN_SELECTED=""
+    _SYNAPSE_DROPDOWN_INSERT_KEY=""
+    _synapse_clear_dropdown
+    zle reset-prompt
 }
 
 # Override backward-delete-char to re-suggest
@@ -755,6 +859,7 @@ _synapse_backward_delete_char() {
     else
         if ! _synapse_buffer_has_nl_prefix; then
             _SYNAPSE_NL_MODE=0
+            _SYNAPSE_NL_ERROR_SHOWN=0
         fi
         _synapse_suggest
     fi
@@ -767,6 +872,7 @@ _synapse_accept() {
         BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
         CURSOR=${#BUFFER}
         _SYNAPSE_NL_MODE=0
+        _SYNAPSE_NL_ERROR_SHOWN=0
         _synapse_clear_suggestion
     else
         # Fall through to default behavior (move cursor right)
@@ -774,13 +880,27 @@ _synapse_accept() {
     fi
 }
 
+# Accept line: intercept Enter in NL mode to trigger synchronous NL execution
+_synapse_accept_line() {
+    if _synapse_buffer_has_nl_prefix; then
+        _synapse_nl_execute
+    else
+        _SYNAPSE_NL_MODE=0
+        _SYNAPSE_NL_ERROR_SHOWN=0
+        zle .accept-line
+    fi
+}
+
 # Accept the suggestion on Tab, or fall through to normal tab completion
 _synapse_tab_accept() {
-    if [[ -n "$_SYNAPSE_CURRENT_SUGGESTION" ]] && [[ -n "$POSTDISPLAY" ]]; then
+    if _synapse_buffer_has_nl_prefix; then
+        _synapse_nl_execute
+    elif [[ -n "$_SYNAPSE_CURRENT_SUGGESTION" ]] && [[ -n "$POSTDISPLAY" ]]; then
         _synapse_report_interaction "accept"
         BUFFER="$_SYNAPSE_CURRENT_SUGGESTION"
         CURSOR=${#BUFFER}
         _SYNAPSE_NL_MODE=0
+        _SYNAPSE_NL_ERROR_SHOWN=0
         _synapse_clear_suggestion
     else
         zle expand-or-complete
@@ -1003,6 +1123,7 @@ _synapse_precmd() {
     # Clear any leftover ghost text, dropdown, history browsing, and NL state
     _SYNAPSE_HISTORY_BROWSING=0
     _SYNAPSE_NL_MODE=0
+    _SYNAPSE_NL_ERROR_SHOWN=0
     _synapse_clear_dropdown
     _synapse_clear_suggestion
 }
@@ -1033,6 +1154,7 @@ _synapse_cleanup() {
     _synapse_clear_dropdown
     _synapse_clear_suggestion
     _SYNAPSE_NL_MODE=0
+    _SYNAPSE_NL_ERROR_SHOWN=0
     add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
     bindkey -D synapse-dropdown &>/dev/null
@@ -1060,6 +1182,7 @@ _synapse_init() {
     zle -N synapse-dropdown-close-and-insert _synapse_dropdown_close_and_insert
     zle -N synapse-up-line-or-history _synapse_up_line_or_history
     zle -N synapse-explain _synapse_explain
+    zle -N accept-line _synapse_accept_line
 
     # Create dropdown keymap (based on main, with overrides)
     # Delete and recreate to pick up any main keymap changes on reload

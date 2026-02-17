@@ -407,9 +407,24 @@ async fn handle_natural_language(
         }
     };
 
+    // Debounce generation: always bump first so older in-flight requests become stale,
+    // even when this request is served from cache or rejected early.
+    let nl_gens = state.nl_generations.clone();
+    let gen = {
+        let mut gens = nl_gens.lock().unwrap();
+        let g = gens.entry(req.session_id.clone()).or_insert(0);
+        *g += 1;
+        *g
+    };
+
     // Check minimum query length
     if req.query.len() < state.config.llm.nl_min_query_length {
-        return Response::Ack;
+        return Response::Error {
+            message: format!(
+                "Natural language query too short (minimum {} characters)",
+                state.config.llm.nl_min_query_length
+            ),
+        };
     }
 
     let os = detect_os();
@@ -435,6 +450,25 @@ async fn handle_natural_language(
     let recent_commands = req.recent_commands.clone();
 
     tokio::spawn(async move {
+        // Debounce: wait 300ms, then check if a newer request arrived
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let is_stale = {
+            let gens = nl_gens.lock().unwrap();
+            gens.get(&session_id).copied().unwrap_or(0) != gen
+        };
+        if is_stale {
+            tracing::debug!(session = %session_id, "NL debounce: skipping stale request");
+            send_async_response(
+                &writer,
+                Response::Error {
+                    message: "Natural language request superseded by a newer query".into(),
+                },
+                "NL stale error",
+            )
+            .await;
+            return;
+        }
+
         // Detect project type
         let project_root =
             crate::project::find_project_root(std::path::Path::new(&cwd), config.spec.scan_depth);
@@ -458,6 +492,15 @@ async fn handle_natural_language(
                 // Validate: first token must be non-empty
                 let first_token = result.command.split_whitespace().next().unwrap_or("");
                 if first_token.is_empty() {
+                    send_async_response(
+                        &writer,
+                        Response::Error {
+                            message: "Natural language translation produced an empty command"
+                                .into(),
+                        },
+                        "NL empty-command error",
+                    )
+                    .await;
                     return;
                 }
 
@@ -467,6 +510,15 @@ async fn handle_natural_language(
                         "NL translation blocked by security policy: {}",
                         result.command
                     );
+                    send_async_response(
+                        &writer,
+                        Response::Error {
+                            message: "Natural language translation blocked by security policy"
+                                .into(),
+                        },
+                        "NL blocked-command error",
+                    )
+                    .await;
                     return;
                 }
 
@@ -496,25 +548,43 @@ async fn handle_natural_language(
                 );
 
                 // Send Update response via the writer
-                let response = Response::Update(SuggestionResponse {
-                    text: result.command,
-                    source: SuggestionSource::Llm,
-                    confidence: 0.95,
-                    description: result.warning,
-                });
-                let response_line = response.to_tsv();
-                let mut w = writer.lock().await;
-                if let Err(e) = w.send(response_line).await {
-                    tracing::debug!("Failed to send NL update: {e}");
-                }
+                // (No post-LLM staleness check — if the task passed the debounce, its
+                // result is worth showing. The plugin overwrites with newer results.)
+                send_async_response(
+                    &writer,
+                    Response::Update(SuggestionResponse {
+                        text: result.command,
+                        source: SuggestionSource::Llm,
+                        confidence: 0.95,
+                        description: result.warning,
+                    }),
+                    "NL update",
+                )
+                .await;
             }
             Err(e) => {
                 tracing::warn!("NL translation failed: {e}");
+                send_async_response(
+                    &writer,
+                    Response::Error {
+                        message: format!("Natural language translation failed: {e}"),
+                    },
+                    "NL translation error",
+                )
+                .await;
             }
         }
     });
 
     Response::Ack
+}
+
+async fn send_async_response(writer: &SharedWriter, response: Response, context: &str) {
+    let response_line = response.to_tsv();
+    let mut w = writer.lock().await;
+    if let Err(e) = w.send(response_line).await {
+        tracing::debug!("Failed to send {context}: {e}");
+    }
 }
 
 async fn handle_explain(req: ExplainRequest, state: &RuntimeState) -> Response {
@@ -682,7 +752,58 @@ async fn collect_provider_suggestions(
 
 #[cfg(test)]
 mod tests {
-    use super::{command_matches_block_pattern, is_blocked_command};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use futures_util::StreamExt;
+    use tokio_util::codec::{Framed, LinesCodec};
+
+    use super::{
+        command_matches_block_pattern, detect_os, handle_natural_language, is_blocked_command,
+        RuntimeState, SharedWriter,
+    };
+    use crate::config::Config;
+    use crate::logging::InteractionLogger;
+    use crate::nl_cache::{NlCache, NlCacheEntry};
+    use crate::protocol::{NaturalLanguageRequest, Response};
+    use crate::ranking::Ranker;
+    use crate::session::SessionManager;
+    use crate::spec_store::SpecStore;
+    use crate::workflow::WorkflowPredictor;
+
+    fn test_runtime_state(config: Config) -> RuntimeState {
+        let llm_client =
+            crate::llm::LlmClient::from_config(&config.llm, config.security.scrub_paths)
+                .map(Arc::new);
+        let log_path = std::env::temp_dir().join(format!(
+            "synapse-handlers-test-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        RuntimeState::new(
+            Vec::new(),
+            Vec::new(),
+            Arc::new(SpecStore::new(config.spec.clone(), llm_client.clone())),
+            Ranker::new(config.weights.clone()),
+            Arc::new(WorkflowPredictor::new()),
+            SessionManager::new(),
+            InteractionLogger::new(log_path, 1),
+            config,
+            llm_client,
+            NlCache::new(),
+        )
+    }
+
+    fn test_shared_writer() -> SharedWriter {
+        let (stream, _) = tokio::net::UnixStream::pair().expect("UnixStream::pair");
+        let (sink, _) = Framed::new(stream, LinesCodec::new()).split();
+        Arc::new(tokio::sync::Mutex::new(sink))
+    }
 
     #[test]
     fn test_block_pattern_plain_substring() {
@@ -712,5 +833,127 @@ mod tests {
             &patterns
         ));
         assert!(!is_blocked_command("echo hello", &patterns));
+    }
+
+    #[tokio::test]
+    async fn test_nl_short_query_returns_error() {
+        let mut config = Config::default();
+        config.llm.nl_min_query_length = 20;
+        config.llm.base_url = Some("http://127.0.0.1:1".to_string());
+        config.llm.timeout_ms = 100;
+        let state = test_runtime_state(config.clone());
+        let writer = test_shared_writer();
+
+        let resp = handle_natural_language(
+            NaturalLanguageRequest {
+                session_id: "sess-short".to_string(),
+                query: "tiny".to_string(),
+                cwd: "/tmp".to_string(),
+                recent_commands: Vec::new(),
+                env_hints: HashMap::new(),
+            },
+            &state,
+            writer,
+        )
+        .await;
+
+        match resp {
+            Response::Error { message } => {
+                assert!(
+                    message.contains("query too short"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected error response, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nl_cache_hit_still_bumps_generation() {
+        let mut config = Config::default();
+        config.llm.base_url = Some("http://127.0.0.1:1".to_string());
+        config.llm.timeout_ms = 100;
+        let state = test_runtime_state(config);
+        let writer = test_shared_writer();
+
+        let query = "find rust files".to_string();
+        let cwd = "/tmp".to_string();
+        let os = detect_os();
+        state
+            .nl_cache
+            .insert(
+                &query,
+                &cwd,
+                &os,
+                NlCacheEntry {
+                    command: "fd -e rs".to_string(),
+                    warning: None,
+                },
+            )
+            .await;
+
+        let resp = handle_natural_language(
+            NaturalLanguageRequest {
+                session_id: "sess-cache".to_string(),
+                query,
+                cwd,
+                recent_commands: Vec::new(),
+                env_hints: HashMap::new(),
+            },
+            &state,
+            writer,
+        )
+        .await;
+
+        match resp {
+            Response::Update(s) => assert_eq!(s.text, "fd -e rs"),
+            other => panic!("expected cached update response, got: {other:?}"),
+        }
+
+        let gens = state.nl_generations.lock().unwrap();
+        assert_eq!(gens.get("sess-cache").copied(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_nl_llm_failure_sends_async_error() {
+        let mut config = Config::default();
+        config.llm.base_url = Some("http://127.0.0.1:1".to_string());
+        config.llm.timeout_ms = 100;
+        let state = test_runtime_state(config);
+
+        let (writer_stream, reader_stream) =
+            tokio::net::UnixStream::pair().expect("UnixStream::pair");
+        let (sink, _) = Framed::new(writer_stream, LinesCodec::new()).split();
+        let writer: SharedWriter = Arc::new(tokio::sync::Mutex::new(sink));
+        let mut reader = Framed::new(reader_stream, LinesCodec::new());
+
+        let resp = handle_natural_language(
+            NaturalLanguageRequest {
+                session_id: "sess-fail".to_string(),
+                query: "show me git status in porcelain mode".to_string(),
+                cwd: "/tmp".to_string(),
+                recent_commands: Vec::new(),
+                env_hints: HashMap::new(),
+            },
+            &state,
+            writer,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ack));
+
+        let line = tokio::time::timeout(Duration::from_secs(5), reader.next())
+            .await
+            .expect("timed out waiting for async NL response")
+            .expect("writer closed unexpectedly")
+            .expect("failed to read async NL frame");
+
+        assert!(
+            line.starts_with("error\t"),
+            "expected async error frame, got: {line}"
+        );
+        assert!(
+            line.contains("Natural language translation failed"),
+            "unexpected async error message: {line}"
+        );
     }
 }
