@@ -177,3 +177,312 @@ description = "Create a tarball from a package"
   [[subcommands.options]]
   long = "--dry-run"
   description = "Do everything except create the tarball"
+
+[[subcommands]]
+name = "search"
+aliases = ["s"]
+description = "Search for packages"
+
+  [[subcommands.args]]
+  name = "search-term"
+
+[[subcommands]]
+name = "config"
+aliases = ["c"]
+description = "Manage the npm configuration files"
+
+  [[subcommands.subcommands]]
+  name = "set"
+  description = "Set a config key to a value"
+
+  [[subcommands.subcommands]]
+  name = "get"
+  description = "Get a config value"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete a config key"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "Show all config settings"
+
+  [[subcommands.subcommands]]
+  name = "edit"
+  description = "Open config file in an editor"
+
+[[subcommands]]
+name = "login"
+aliases = ["adduser"]
+description = "Login to a registry"
+
+[[subcommands]]
+name = "logout"
+description = "Log out of the registry"
+
+[[subcommands]]
+name = "whoami"
+description = "Display npm username"
+
+[[subcommands]]
+name = "bugs"
+description = "Report bugs for a package"
+
+  [[subcommands.args]]
+  name = "package"
+
+[[subcommands]]
+name = "docs"
+aliases = ["home"]
+description = "Open documentation for a package in a web browser"
+
+  [[subcommands.args]]
+  name = "package"
+
+[[subcommands]]
+name = "repo"
+description = "Open package repository page in the browser"
+
+  [[subcommands.args]]
+  name = "package"
+
+[[subcommands]]
+name = "fund"
+description = "Retrieve funding information"
+
+  [[subcommands.options]]
+  long = "--which"
+  takes_arg = true
+  description = "Source number to open"
+
+[[subcommands]]
+name = "doctor"
+description = "Check your npm environment"
+
+[[subcommands]]
+name = "explain"
+aliases = ["why"]
+description = "Explain installed packages"
+
+  [[subcommands.args]]
+  name = "package"
+
+[[subcommands]]
+name = "diff"
+description = "Show diff of installed packages"
+
+  [[subcommands.options]]
+  long = "--diff"
+  takes_arg = true
+  description = "Package to compare"
+
+[[subcommands]]
+name = "rebuild"
+aliases = ["rb"]
+description = "Rebuild a package"
+
+  [[subcommands.args]]
+  name = "package"
+
+[[subcommands]]
+name = "dedupe"
+aliases = ["ddp", "find-dupes"]
+description = "Reduce duplication in the package tree"
+
+[[subcommands]]
+name = "prune"
+description = "Remove extraneous packages"
+
+  [[subcommands.options]]
+  long = "--production"
+  description = "Remove devDependencies"
+
+[[subcommands]]
+name = "dist-tag"
+aliases = ["dist-tags"]
+description = "Modify package distribution tags"
+
+  [[subcommands.subcommands]]
+  name = "add"
+  description = "Add a dist-tag"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove a dist-tag"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List dist-tags"
+
+[[subcommands]]
+name = "owner"
+aliases = ["author"]
+description = "Manage package owners"
+
+  [[subcommands.subcommands]]
+  name = "add"
+  description = "Add an owner"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove an owner"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List owners"
+
+[[subcommands]]
+name = "access"
+description = "Set access level on published packages"
+
+  [[subcommands.subcommands]]
+  name = "public"
+  description = "Set package access to public"
+
+  [[subcommands.subcommands]]
+  name = "restricted"
+  description = "Set package access to restricted"
+
+  [[subcommands.subcommands]]
+  name = "grant"
+  description = "Grant access to a team or user"
+
+  [[subcommands.subcommands]]
+  name = "revoke"
+  description = "Revoke access from a team or user"
+
+  [[subcommands.subcommands]]
+  name = "ls-packages"
+  description = "List packages a user/team has access to"
+
+  [[subcommands.subcommands]]
+  name = "ls-collaborators"
+  description = "List collaborators on a package"
+
+[[subcommands]]
+name = "token"
+description = "Manage your authentication tokens"
+
+  [[subcommands.subcommands]]
+  name = "list"
+  description = "List tokens"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a new token"
+
+  [[subcommands.subcommands]]
+  name = "revoke"
+  description = "Revoke a token"
+
+[[subcommands]]
+name = "profile"
+description = "Change settings on your registry profile"
+
+  [[subcommands.subcommands]]
+  name = "get"
+  description = "Display profile properties"
+
+  [[subcommands.subcommands]]
+  name = "set"
+  description = "Set a profile property"
+
+[[subcommands]]
+name = "team"
+description = "Manage organization teams and team memberships"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a team"
+
+  [[subcommands.subcommands]]
+  name = "destroy"
+  description = "Destroy a team"
+
+  [[subcommands.subcommands]]
+  name = "add"
+  description = "Add a user to a team"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove a user from a team"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List teams or team members"
+
+[[subcommands]]
+name = "deprecate"
+description = "Deprecate a version of a package"
+
+  [[subcommands.args]]
+  name = "package-spec"
+
+[[subcommands]]
+name = "unpublish"
+description = "Remove a package from the registry"
+
+  [[subcommands.options]]
+  long = "--force"
+  description = "Force unpublish"
+
+  [[subcommands.args]]
+  name = "package-spec"
+
+[[subcommands]]
+name = "ping"
+description = "Ping npm registry"
+
+[[subcommands]]
+name = "prefix"
+description = "Display prefix"
+
+  [[subcommands.options]]
+  short = "-g"
+  long = "--global"
+  description = "Show global prefix"
+
+[[subcommands]]
+name = "root"
+description = "Display npm root"
+
+  [[subcommands.options]]
+  short = "-g"
+  long = "--global"
+  description = "Show global root"
+
+[[subcommands]]
+name = "completion"
+description = "Tab completion for npm"
+
+[[subcommands]]
+name = "pkg"
+description = "Manage package.json"
+
+  [[subcommands.subcommands]]
+  name = "get"
+  description = "Get a value from package.json"
+
+  [[subcommands.subcommands]]
+  name = "set"
+  description = "Set a value in package.json"
+
+  [[subcommands.subcommands]]
+  name = "delete"
+  description = "Delete a key from package.json"
+
+[[subcommands]]
+name = "query"
+description = "Retrieve a filtered list of packages"
+
+  [[subcommands.args]]
+  name = "selector"
+
+[[subcommands]]
+name = "sbom"
+description = "Generate a Software Bill of Materials"
+
+  [[subcommands.options]]
+  long = "--sbom-format"
+  takes_arg = true
+  description = "SBOM format (cyclonedx or spdx)"

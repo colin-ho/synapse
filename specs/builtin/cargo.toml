@@ -359,3 +359,22 @@ description = "Install a Rust binary"
 
   [[subcommands.args]]
   name = "crate"
+
+[[subcommands]]
+name = "uninstall"
+description = "Remove a Rust binary"
+
+  [[subcommands.args]]
+  name = "crate"
+
+[[subcommands]]
+name = "search"
+description = "Search packages in crates.io"
+
+  [[subcommands.options]]
+  long = "--limit"
+  takes_arg = true
+  description = "Limit the number of results"
+
+  [[subcommands.args]]
+  name = "query"

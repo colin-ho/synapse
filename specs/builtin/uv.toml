@@ -334,3 +334,84 @@ description = "Manage the uv executable"
   [[subcommands.subcommands]]
   name = "update"
   description = "Update uv"
+
+[[subcommands]]
+name = "build"
+description = "Build Python packages into source distributions and wheels"
+
+  [[subcommands.options]]
+  long = "--sdist"
+  description = "Build a source distribution"
+
+  [[subcommands.options]]
+  long = "--wheel"
+  description = "Build a binary distribution (wheel)"
+
+  [[subcommands.options]]
+  short = "-o"
+  long = "--out-dir"
+  takes_arg = true
+  description = "Output directory for built distributions"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--python"
+  takes_arg = true
+  description = "Python interpreter"
+
+[[subcommands]]
+name = "publish"
+description = "Upload distributions to an index"
+
+  [[subcommands.options]]
+  long = "--token"
+  takes_arg = true
+  description = "The token to use for publishing"
+
+  [[subcommands.options]]
+  long = "--publish-url"
+  takes_arg = true
+  description = "The URL of the upload endpoint"
+
+  [[subcommands.args]]
+  name = "dist"
+  variadic = true
+  template = "file_paths"
+
+[[subcommands]]
+name = "auth"
+description = "Manage authentication"
+
+[[subcommands]]
+name = "export"
+description = "Export the project's lockfile to an alternate format"
+
+  [[subcommands.options]]
+  long = "--format"
+  takes_arg = true
+  description = "Export format (requirements-txt)"
+
+  [[subcommands.options]]
+  short = "-o"
+  long = "--output-file"
+  takes_arg = true
+  description = "Output file"
+
+  [[subcommands.options]]
+  long = "--no-dev"
+  description = "Omit development dependencies"
+
+  [[subcommands.options]]
+  long = "--frozen"
+  description = "Don't update the lockfile"
+
+[[subcommands]]
+name = "format"
+description = "Format Python code in the project"
+
+[[subcommands]]
+name = "version"
+description = "Read or update the project's version"
+
+  [[subcommands.args]]
+  name = "value"

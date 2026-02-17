@@ -588,3 +588,130 @@ description = "Get and set repository or global options"
   [[subcommands.options]]
   long = "--unset"
   description = "Remove a variable"
+
+[[subcommands]]
+name = "init"
+description = "Create an empty Git repository or reinitialize an existing one"
+
+  [[subcommands.options]]
+  long = "--bare"
+  description = "Create a bare repository"
+
+  [[subcommands.options]]
+  short = "-b"
+  long = "--initial-branch"
+  takes_arg = true
+  description = "Name for the initial branch"
+
+  [[subcommands.args]]
+  name = "directory"
+  template = "directories"
+
+[[subcommands]]
+name = "mv"
+description = "Move or rename a file, a directory, or a symlink"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--force"
+  description = "Force renaming or moving even if target exists"
+
+  [[subcommands.options]]
+  short = "-n"
+  long = "--dry-run"
+  description = "Do nothing; only show what would happen"
+
+  [[subcommands.args]]
+  name = "source"
+  template = "file_paths"
+
+[[subcommands]]
+name = "rm"
+description = "Remove files from the working tree and from the index"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--force"
+  description = "Override the up-to-date check"
+
+  [[subcommands.options]]
+  short = "-r"
+  description = "Allow recursive removal"
+
+  [[subcommands.options]]
+  long = "--cached"
+  description = "Unstage and remove paths only from the index"
+
+  [[subcommands.options]]
+  short = "-n"
+  long = "--dry-run"
+  description = "Don't actually remove anything"
+
+  [[subcommands.args]]
+  name = "file"
+  variadic = true
+  template = "file_paths"
+
+[[subcommands]]
+name = "bisect"
+description = "Use binary search to find the commit that introduced a bug"
+
+  [[subcommands.subcommands]]
+  name = "start"
+  description = "Start bisecting"
+
+  [[subcommands.subcommands]]
+  name = "bad"
+  description = "Mark the current revision as bad"
+
+  [[subcommands.subcommands]]
+  name = "good"
+  description = "Mark the current revision as good"
+
+  [[subcommands.subcommands]]
+  name = "reset"
+  description = "Finish bisecting"
+
+  [[subcommands.subcommands]]
+  name = "skip"
+  description = "Skip the current revision"
+
+  [[subcommands.subcommands]]
+  name = "log"
+  description = "Show bisect log"
+
+  [[subcommands.subcommands]]
+  name = "run"
+  description = "Run bisect automation with a script"
+
+[[subcommands]]
+name = "grep"
+description = "Print lines matching a pattern"
+
+  [[subcommands.options]]
+  short = "-n"
+  long = "--line-number"
+  description = "Prefix the line number to matching lines"
+
+  [[subcommands.options]]
+  short = "-i"
+  long = "--ignore-case"
+  description = "Ignore case"
+
+  [[subcommands.options]]
+  short = "-c"
+  long = "--count"
+  description = "Show number of matching lines"
+
+  [[subcommands.options]]
+  short = "-l"
+  long = "--files-with-matches"
+  description = "Show only filenames"
+
+  [[subcommands.options]]
+  short = "-e"
+  takes_arg = true
+  description = "Pattern to search for"
+
+  [[subcommands.args]]
+  name = "pattern"

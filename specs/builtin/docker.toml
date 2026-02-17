@@ -378,3 +378,600 @@ description = "Manage Docker"
   [[subcommands.subcommands]]
   name = "info"
   description = "Display system-wide information"
+
+[[subcommands]]
+name = "login"
+description = "Authenticate to a registry"
+
+  [[subcommands.options]]
+  short = "-u"
+  long = "--username"
+  takes_arg = true
+  description = "Username"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--password"
+  takes_arg = true
+  description = "Password"
+
+  [[subcommands.options]]
+  long = "--password-stdin"
+  description = "Take the password from stdin"
+
+[[subcommands]]
+name = "logout"
+description = "Log out from a registry"
+
+[[subcommands]]
+name = "search"
+description = "Search Docker Hub for images"
+
+  [[subcommands.options]]
+  long = "--limit"
+  takes_arg = true
+  description = "Max number of search results"
+
+  [[subcommands.options]]
+  long = "--filter"
+  takes_arg = true
+  description = "Filter output based on conditions"
+
+[[subcommands]]
+name = "version"
+description = "Show the Docker version information"
+
+[[subcommands]]
+name = "info"
+description = "Display system-wide information"
+
+[[subcommands]]
+name = "inspect"
+description = "Return low-level information on Docker objects"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--format"
+  takes_arg = true
+  description = "Format output using a Go template"
+
+[[subcommands]]
+name = "start"
+description = "Start one or more stopped containers"
+
+  [[subcommands.options]]
+  short = "-a"
+  long = "--attach"
+  description = "Attach STDOUT/STDERR and forward signals"
+
+  [[subcommands.options]]
+  short = "-i"
+  long = "--interactive"
+  description = "Attach container's STDIN"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps -a --filter 'status=exited' --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "restart"
+description = "Restart one or more containers"
+
+  [[subcommands.options]]
+  short = "-t"
+  long = "--time"
+  takes_arg = true
+  description = "Seconds to wait before killing the container"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "kill"
+description = "Kill one or more running containers"
+
+  [[subcommands.options]]
+  short = "-s"
+  long = "--signal"
+  takes_arg = true
+  description = "Signal to send to the container"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "pause"
+description = "Pause all processes within one or more containers"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "unpause"
+description = "Unpause all processes within one or more containers"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps --filter 'status=paused' --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "attach"
+description = "Attach local standard input, output, and error streams to a running container"
+
+  [[subcommands.options]]
+  long = "--no-stdin"
+  description = "Do not attach STDIN"
+
+  [[subcommands.options]]
+  long = "--sig-proxy"
+  description = "Proxy all received signals to the process"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "create"
+description = "Create a new container"
+
+  [[subcommands.options]]
+  long = "--name"
+  takes_arg = true
+  description = "Assign a name to the container"
+
+  [[subcommands.options]]
+  short = "-p"
+  long = "--publish"
+  takes_arg = true
+  description = "Publish port (host:container)"
+
+  [[subcommands.options]]
+  short = "-v"
+  long = "--volume"
+  takes_arg = true
+  description = "Bind mount a volume"
+
+  [[subcommands.options]]
+  short = "-e"
+  long = "--env"
+  takes_arg = true
+  description = "Set environment variables"
+
+  [[subcommands.args]]
+  name = "image"
+  [subcommands.args.generator]
+  command = "docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "cp"
+description = "Copy files/folders between a container and the local filesystem"
+
+  [[subcommands.options]]
+  short = "-a"
+  long = "--archive"
+  description = "Archive mode (copy all uid/gid information)"
+
+  [[subcommands.options]]
+  short = "-L"
+  long = "--follow-link"
+  description = "Always follow symbol link in SRC_PATH"
+
+[[subcommands]]
+name = "commit"
+description = "Create a new image from a container's changes"
+
+  [[subcommands.options]]
+  short = "-m"
+  long = "--message"
+  takes_arg = true
+  description = "Commit message"
+
+  [[subcommands.options]]
+  short = "-a"
+  long = "--author"
+  takes_arg = true
+  description = "Author"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps -a --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "diff"
+description = "Inspect changes to files or directories on a container's filesystem"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps -a --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "export"
+description = "Export a container's filesystem as a tar archive"
+
+  [[subcommands.options]]
+  short = "-o"
+  long = "--output"
+  takes_arg = true
+  description = "Write to a file instead of STDOUT"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps -a --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "import"
+description = "Import the contents from a tarball to create a filesystem image"
+
+[[subcommands]]
+name = "save"
+description = "Save one or more images to a tar archive"
+
+  [[subcommands.options]]
+  short = "-o"
+  long = "--output"
+  takes_arg = true
+  description = "Write to a file instead of STDOUT"
+
+  [[subcommands.args]]
+  name = "image"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "load"
+description = "Load an image from a tar archive or STDIN"
+
+  [[subcommands.options]]
+  short = "-i"
+  long = "--input"
+  takes_arg = true
+  description = "Read from tar archive file"
+
+  [[subcommands.options]]
+  short = "-q"
+  long = "--quiet"
+  description = "Suppress the load output"
+
+[[subcommands]]
+name = "history"
+description = "Show the history of an image"
+
+  [[subcommands.options]]
+  long = "--no-trunc"
+  description = "Don't truncate output"
+
+  [[subcommands.options]]
+  short = "-q"
+  long = "--quiet"
+  description = "Only show image IDs"
+
+  [[subcommands.args]]
+  name = "image"
+  [subcommands.args.generator]
+  command = "docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null"
+  cache_ttl_secs = 15
+
+[[subcommands]]
+name = "stats"
+description = "Display a live stream of container resource usage statistics"
+
+  [[subcommands.options]]
+  short = "-a"
+  long = "--all"
+  description = "Show all containers (default shows just running)"
+
+  [[subcommands.options]]
+  long = "--no-stream"
+  description = "Disable streaming stats and only pull the first result"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "top"
+description = "Display the running processes of a container"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "port"
+description = "List port mappings or a specific mapping for the container"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "rename"
+description = "Rename a container"
+
+  [[subcommands.args]]
+  name = "container"
+  [subcommands.args.generator]
+  command = "docker ps -a --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "update"
+description = "Update configuration of one or more containers"
+
+  [[subcommands.options]]
+  long = "--cpus"
+  takes_arg = true
+  description = "Number of CPUs"
+
+  [[subcommands.options]]
+  short = "-m"
+  long = "--memory"
+  takes_arg = true
+  description = "Memory limit"
+
+  [[subcommands.options]]
+  long = "--restart"
+  takes_arg = true
+  description = "Restart policy"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps -a --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "wait"
+description = "Block until one or more containers stop, then print their exit codes"
+
+  [[subcommands.args]]
+  name = "container"
+  variadic = true
+  [subcommands.args.generator]
+  command = "docker ps --format '{{.Names}}' 2>/dev/null"
+  cache_ttl_secs = 5
+
+[[subcommands]]
+name = "events"
+description = "Get real time events from the server"
+
+  [[subcommands.options]]
+  long = "--since"
+  takes_arg = true
+  description = "Show events since timestamp"
+
+  [[subcommands.options]]
+  long = "--until"
+  takes_arg = true
+  description = "Show events until timestamp"
+
+  [[subcommands.options]]
+  short = "-f"
+  long = "--filter"
+  takes_arg = true
+  description = "Filter output based on conditions"
+
+[[subcommands]]
+name = "container"
+description = "Manage containers"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List containers"
+
+  [[subcommands.subcommands]]
+  name = "run"
+  description = "Create and run a new container"
+
+  [[subcommands.subcommands]]
+  name = "start"
+  description = "Start stopped containers"
+
+  [[subcommands.subcommands]]
+  name = "stop"
+  description = "Stop running containers"
+
+  [[subcommands.subcommands]]
+  name = "restart"
+  description = "Restart containers"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove containers"
+
+  [[subcommands.subcommands]]
+  name = "exec"
+  description = "Execute a command in a running container"
+
+  [[subcommands.subcommands]]
+  name = "logs"
+  description = "Fetch container logs"
+
+  [[subcommands.subcommands]]
+  name = "inspect"
+  description = "Display detailed information"
+
+  [[subcommands.subcommands]]
+  name = "prune"
+  description = "Remove all stopped containers"
+
+[[subcommands]]
+name = "image"
+description = "Manage images"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List images"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove images"
+
+  [[subcommands.subcommands]]
+  name = "pull"
+  description = "Download an image"
+
+  [[subcommands.subcommands]]
+  name = "push"
+  description = "Upload an image"
+
+  [[subcommands.subcommands]]
+  name = "build"
+  description = "Build an image from a Dockerfile"
+
+  [[subcommands.subcommands]]
+  name = "inspect"
+  description = "Display detailed information"
+
+  [[subcommands.subcommands]]
+  name = "history"
+  description = "Show the history of an image"
+
+  [[subcommands.subcommands]]
+  name = "tag"
+  description = "Create a tag for an image"
+
+  [[subcommands.subcommands]]
+  name = "prune"
+  description = "Remove unused images"
+
+[[subcommands]]
+name = "context"
+description = "Manage contexts"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List contexts"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a context"
+
+  [[subcommands.subcommands]]
+  name = "use"
+  description = "Set the current docker context"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove contexts"
+
+  [[subcommands.subcommands]]
+  name = "inspect"
+  description = "Display detailed information"
+
+[[subcommands]]
+name = "builder"
+description = "Manage builds"
+
+  [[subcommands.subcommands]]
+  name = "prune"
+  description = "Remove build cache"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List builder instances"
+
+[[subcommands]]
+name = "manifest"
+description = "Manage Docker image manifests and manifest lists"
+
+  [[subcommands.subcommands]]
+  name = "create"
+  description = "Create a manifest list"
+
+  [[subcommands.subcommands]]
+  name = "inspect"
+  description = "Display a manifest or manifest list"
+
+  [[subcommands.subcommands]]
+  name = "push"
+  description = "Push a manifest list to a registry"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Delete manifest lists"
+
+[[subcommands]]
+name = "plugin"
+description = "Manage plugins"
+
+  [[subcommands.subcommands]]
+  name = "ls"
+  description = "List plugins"
+
+  [[subcommands.subcommands]]
+  name = "install"
+  description = "Install a plugin"
+
+  [[subcommands.subcommands]]
+  name = "rm"
+  description = "Remove a plugin"
+
+  [[subcommands.subcommands]]
+  name = "enable"
+  description = "Enable a plugin"
+
+  [[subcommands.subcommands]]
+  name = "disable"
+  description = "Disable a plugin"
+
+[[subcommands]]
+name = "trust"
+description = "Manage trust on Docker images"
+
+  [[subcommands.subcommands]]
+  name = "inspect"
+  description = "Return low-level information about keys and signatures"
+
+  [[subcommands.subcommands]]
+  name = "key"
+  description = "Manage keys for signing"
+
+  [[subcommands.subcommands]]
+  name = "signer"
+  description = "Manage entities who can sign"
+
+  [[subcommands.subcommands]]
+  name = "sign"
+  description = "Sign an image"
+
+  [[subcommands.subcommands]]
+  name = "revoke"
+  description = "Remove trust for an image"
