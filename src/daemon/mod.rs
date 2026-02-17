@@ -71,6 +71,11 @@ enum Commands {
         /// Timeout for the first daemon response in milliseconds
         #[arg(long, default_value_t = 5000)]
         first_response_timeout_ms: u64,
+
+        /// After receiving an initial "ack" response, wait for one follow-up update
+        /// (useful for async NL/explain queries that return ack then update)
+        #[arg(long, default_value_t = false)]
+        wait_for_update: bool,
     },
 }
 
@@ -98,6 +103,7 @@ pub async fn run() -> anyhow::Result<()> {
             request,
             wait_ms,
             first_response_timeout_ms,
+            wait_for_update,
         }) => {
             probe::run_probe(
                 socket_path,
@@ -105,6 +111,7 @@ pub async fn run() -> anyhow::Result<()> {
                 request,
                 wait_ms,
                 first_response_timeout_ms,
+                wait_for_update,
             )
             .await?;
         }

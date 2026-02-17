@@ -213,11 +213,11 @@ impl Default for LoggingConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            provider: "anthropic".into(),
-            api_key_env: "ANTHROPIC_API_KEY".into(),
-            base_url: None,
-            model: "claude-haiku-4-5-20251001".into(),
+            enabled: true,
+            provider: "openai".into(),
+            api_key_env: "LMSTUDIO_API_KEY".into(),
+            base_url: Some("http://127.0.0.1:1234".into()),
+            model: "openai/gpt-oss-20b".into(),
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
             natural_language: true,
@@ -352,7 +352,10 @@ mod tests {
         assert!(config.llm.contextual_args);
         assert_eq!(config.llm.arg_context_timeout_ms, 2_000);
         assert_eq!(config.llm.arg_max_context_tokens, 3_000);
-        assert_eq!(config.llm.base_url, None);
+        assert_eq!(
+            config.llm.base_url,
+            Some("http://127.0.0.1:1234".to_string())
+        );
     }
 
     #[test]
