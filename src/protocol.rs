@@ -513,6 +513,56 @@ mod tests {
     }
 
     #[test]
+    fn test_to_tsv_suggestion_list_empty_descriptions_preserve_field_count() {
+        // Regression: the Zsh plugin splits TSV with a stride of 4 fields per item.
+        // Empty descriptions MUST produce an empty field (\t\t) so the stride stays aligned.
+        let resp = Response::SuggestionList(SuggestionListResponse {
+            suggestions: vec![
+                SuggestionItem {
+                    text: "daft-sync".into(),
+                    source: SuggestionSource::History,
+                    confidence: 0.9,
+                    description: None,
+                    kind: SuggestionKind::History,
+                },
+                SuggestionItem {
+                    text: "daft-sync stop".into(),
+                    source: SuggestionSource::History,
+                    confidence: 0.8,
+                    description: None,
+                    kind: SuggestionKind::History,
+                },
+                SuggestionItem {
+                    text: "daft-sync watch".into(),
+                    source: SuggestionSource::History,
+                    confidence: 0.7,
+                    description: None,
+                    kind: SuggestionKind::History,
+                },
+            ],
+        });
+        let tsv = resp.to_tsv();
+        let fields: Vec<&str> = tsv.split('\t').collect();
+
+        // 2 header fields + 3 items * 4 fields each = 14
+        assert_eq!(fields.len(), 14, "TSV field count mismatch: {tsv:?}");
+        assert_eq!(fields[0], "list");
+        assert_eq!(fields[1], "3");
+
+        // Each item must have exactly 4 fields: text, source, desc, kind
+        for i in 0..3 {
+            let base = 2 + i * 4;
+            assert!(
+                !fields[base].is_empty(),
+                "item {i} text should not be empty"
+            );
+            assert_eq!(fields[base + 1], "history", "item {i} source");
+            assert_eq!(fields[base + 2], "", "item {i} desc should be empty");
+            assert_eq!(fields[base + 3], "history", "item {i} kind");
+        }
+    }
+
+    #[test]
     fn test_as_str_matches_serde() {
         for source in [
             SuggestionSource::History,
