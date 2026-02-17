@@ -224,7 +224,7 @@ fn fuzzy_matches<'a>(
     query: &str,
     seen: &HashSet<&str>,
 ) -> Vec<(f64, &'a str)> {
-    if query.len() < 2 {
+    if query.len() < 4 {
         return Vec::new();
     }
     let first_char = match query.chars().next() {
@@ -241,7 +241,7 @@ fn fuzzy_matches<'a>(
             continue;
         }
         let distance = levenshtein(query, &cmd[..query.len().min(cmd.len())]);
-        let max_distance = (query.len() as f64 * 0.3).ceil() as usize;
+        let max_distance = (query.len() as f64 * 0.2).ceil() as usize;
         if distance <= max_distance && distance > 0 && cmd.len() > query.len() {
             let base_score = compute_score(entry, data.max_epoch, data.max_freq);
             let fuzzy_penalty = 1.0 - (distance as f64 / query.len() as f64);

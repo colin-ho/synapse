@@ -251,7 +251,9 @@ pub(super) fn spawn_phase2_update(
             return;
         };
 
-        if best.score <= baseline_score {
+        // Require meaningful improvement before pushing a visual update
+        const PHASE2_MIN_MARGIN: f64 = 0.05;
+        if best.score <= baseline_score + PHASE2_MIN_MARGIN {
             return;
         }
         if baseline_text.as_deref() == Some(best.text.as_str())
@@ -657,10 +659,21 @@ async fn collect_provider_suggestions(
     }
 
     let mut all_suggestions = Vec::new();
-    while let Some(result) = task_set.join_next().await {
-        match result {
-            Ok(mut suggestions) => all_suggestions.append(&mut suggestions),
-            Err(error) => tracing::debug!("Provider task failed: {error}"),
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
+
+    loop {
+        match tokio::time::timeout_at(deadline, task_set.join_next()).await {
+            Ok(Some(Ok(mut suggestions))) => all_suggestions.append(&mut suggestions),
+            Ok(Some(Err(error))) => tracing::debug!("Provider task failed: {error}"),
+            Ok(None) => break, // All tasks completed
+            Err(_) => {
+                tracing::debug!(
+                    "Phase 1 timeout: returning {} suggestions from {} providers",
+                    all_suggestions.len(),
+                    providers.len()
+                );
+                break;
+            }
         }
     }
 
