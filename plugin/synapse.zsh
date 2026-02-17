@@ -552,7 +552,7 @@ _synapse_parse_suggestion_list() {
     _SYNAPSE_DROPDOWN_KINDS=()
 
     local -a _tsv_fields
-    IFS=$'\t' read -rA _tsv_fields <<< "$response"
+    _tsv_fields=("${(@s:	:)response}")
     if [[ "${_tsv_fields[1]}" != "list" ]]; then
         _SYNAPSE_DROPDOWN_COUNT=0
         return
