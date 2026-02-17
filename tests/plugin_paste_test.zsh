@@ -199,19 +199,15 @@ _synapse_bracketed_paste() {
 
     _SYNAPSE_PASTING=0
 
-    # Trigger one suggest for the final buffer state
-    local query=""
+    # Show NL hint if pasted text has the NL prefix, otherwise leave clean
     if _synapse_buffer_has_nl_prefix; then
-        query="$(_synapse_nl_query_from_buffer)"
-    fi
-    if [[ -n "$query" ]]; then
-        _synapse_nl_suggest
-    else
-        if ! _synapse_buffer_has_nl_prefix; then
-            _SYNAPSE_NL_MODE=0
-            _SYNAPSE_NL_ERROR_SHOWN=0
+        local query="$(_synapse_nl_query_from_buffer)"
+        if [[ -n "$query" ]]; then
+            _synapse_nl_suggest
         fi
-        _synapse_suggest
+    else
+        _SYNAPSE_NL_MODE=0
+        _SYNAPSE_NL_ERROR_SHOWN=0
     fi
 }
 
@@ -241,7 +237,7 @@ assert_eq "normal update renders suggestion once" "1" "$SHOW_COUNT"
 assert_eq "normal update sets source" "history" "$_SYNAPSE_CURRENT_SOURCE"
 assert_eq "normal update uses text payload" "echo two" "$LAST_SHOWN_TEXT"
 
-print "test: bracketed paste triggers one final suggest..."
+print "test: bracketed paste does not suggest for plain shell text..."
 _reset_state
 TEST_PASTE_TEXT="echo hello"
 _synapse_bracketed_paste
@@ -249,7 +245,7 @@ assert_eq "delegate called once" "1" "$DELEGATE_CALL_COUNT"
 assert_eq "builtin not used when delegate works" "0" "$BUILTIN_BRACKETED_PASTE_CALL_COUNT"
 assert_eq "buffer gets full paste text" "echo hello" "$BUFFER"
 assert_eq "clear suggestion called before paste" "1" "$CLEAR_COUNT"
-assert_eq "suggest called once after paste" "1" "$SUGGEST_COUNT"
+assert_eq "suggest not called after paste" "0" "$SUGGEST_COUNT"
 assert_eq "nl suggest not called for shell text" "0" "$NL_SUGGEST_COUNT"
 assert_eq "pasting flag reset" "0" "$_SYNAPSE_PASTING"
 
@@ -270,7 +266,7 @@ _synapse_bracketed_paste
 assert_eq "delegate attempted once" "1" "$DELEGATE_CALL_COUNT"
 assert_eq "builtin fallback used once" "1" "$BUILTIN_BRACKETED_PASTE_CALL_COUNT"
 assert_eq "fallback still inserts text" "pwd" "$BUFFER"
-assert_eq "fallback still triggers one suggest" "1" "$SUGGEST_COUNT"
+assert_eq "fallback does not suggest after paste" "0" "$SUGGEST_COUNT"
 
 # --- Summary ---
 

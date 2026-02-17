@@ -364,6 +364,14 @@ _synapse_show_suggestion() {
     local full_suggestion="$1"
     local buffer="$BUFFER"
 
+    # Only show suggestions when cursor is at end of buffer
+    if [[ "$CURSOR" -ne "${#BUFFER}" ]]; then
+        POSTDISPLAY=""
+        _SYNAPSE_CURRENT_SUGGESTION=""
+        region_highlight=()
+        return
+    fi
+
     if [[ -z "$full_suggestion" ]] || [[ -z "$buffer" ]]; then
         POSTDISPLAY=""
         _SYNAPSE_CURRENT_SUGGESTION=""
@@ -396,6 +404,16 @@ _synapse_clear_suggestion() {
     _SYNAPSE_CURRENT_SUGGESTION=""
     _SYNAPSE_CURRENT_SOURCE=""
     region_highlight=()
+}
+
+# Clear stale ghost text after any widget that moves cursor or changes buffer.
+# This catches widgets we don't explicitly override (cursor movement, kill-word, etc.).
+_synapse_line_pre_redraw() {
+    [[ -z "$_SYNAPSE_CURRENT_SUGGESTION" ]] && return
+    if [[ -z "$BUFFER" ]] || [[ "$CURSOR" -ne "${#BUFFER}" ]] || \
+       [[ "$_SYNAPSE_CURRENT_SUGGESTION" != "$BUFFER"* ]]; then
+        _synapse_clear_suggestion
+    fi
 }
 
 # --- Dropdown Rendering ---
@@ -589,6 +607,12 @@ _synapse_suggest() {
         return
     fi
 
+    # Only suggest when cursor is at end of buffer
+    if [[ "$cursor" -ne "${#buffer}" ]]; then
+        _synapse_clear_suggestion
+        return
+    fi
+
     # Debounce: skip if <30ms since last suggest and buffer changed by 1 char
     if (( ${+EPOCHREALTIME} )); then
         local now=${EPOCHREALTIME}
@@ -748,19 +772,15 @@ _synapse_bracketed_paste() {
 
     _SYNAPSE_PASTING=0
 
-    # Trigger one suggest for the final buffer state
-    local query=""
+    # Show NL hint if pasted text has the NL prefix, otherwise leave clean
     if _synapse_buffer_has_nl_prefix; then
-        query="$(_synapse_nl_query_from_buffer)"
-    fi
-    if [[ -n "$query" ]]; then
-        _synapse_nl_suggest
-    else
-        if ! _synapse_buffer_has_nl_prefix; then
-            _SYNAPSE_NL_MODE=0
-            _SYNAPSE_NL_ERROR_SHOWN=0
+        local query="$(_synapse_nl_query_from_buffer)"
+        if [[ -n "$query" ]]; then
+            _synapse_nl_suggest
         fi
-        _synapse_suggest
+    else
+        _SYNAPSE_NL_MODE=0
+        _SYNAPSE_NL_ERROR_SHOWN=0
     fi
 }
 
@@ -924,6 +944,7 @@ _synapse_accept() {
 
 # Accept line: intercept Enter in NL mode to trigger synchronous NL execution
 _synapse_accept_line() {
+    _synapse_clear_suggestion
     if _synapse_buffer_has_nl_prefix; then
         _synapse_nl_execute
     else
@@ -1234,6 +1255,7 @@ _synapse_init() {
     zle -N synapse-up-line-or-history _synapse_up_line_or_history
     zle -N synapse-explain _synapse_explain
     zle -N accept-line _synapse_accept_line
+    zle -N zle-line-pre-redraw _synapse_line_pre_redraw
 
     # Create dropdown keymap (based on main, with overrides)
     # Delete and recreate to pick up any main keymap changes on reload
