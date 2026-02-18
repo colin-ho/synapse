@@ -120,13 +120,11 @@ impl SessionManager {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn remove(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
         sessions.remove(session_id);
     }
 
-    #[allow(dead_code)]
     pub async fn prune_inactive(&self, max_idle: std::time::Duration) {
         let mut sessions = self.sessions.write().await;
         let now = std::time::Instant::now();

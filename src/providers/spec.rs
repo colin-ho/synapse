@@ -72,7 +72,7 @@ impl SpecProvider {
         let mut current_args = &spec.args;
         let remaining_tokens = &tokens[1..];
 
-        let mut _consumed = 0;
+        let mut positional_count: usize = 0;
         let mut skip_next = false;
         let mut last_option_name: Option<String> = None;
 
@@ -85,7 +85,6 @@ impl SpecProvider {
                 }
                 skip_next = false;
                 last_option_name = None;
-                _consumed = i + 1;
                 continue;
             }
 
@@ -102,20 +101,30 @@ impl SpecProvider {
                 current_subcommands = &sub.subcommands;
                 current_options = &sub.options;
                 current_args = &sub.args;
-                _consumed = i + 1;
+                positional_count = 0; // reset for new subcommand scope
             } else if token.starts_with('-') {
+                // Handle --option=value syntax
+                let (opt_name, has_inline_value) = if let Some(eq_pos) = token.find('=') {
+                    (&token[..eq_pos], true)
+                } else {
+                    (token.as_str(), false)
+                };
                 // Check if this option takes an arg — if so, skip the next token
-                if let Some(opt) = find_option(current_options, token) {
-                    if opt.takes_arg {
+                if let Some(opt) = find_option(current_options, opt_name) {
+                    if opt.takes_arg && !has_inline_value {
                         skip_next = true;
-                        last_option_name = Some(token.clone());
+                        last_option_name = Some(opt_name.to_string());
                     }
                 }
-                _consumed = i + 1;
             } else {
-                // Positional arg or partial token
-                _consumed = i;
-                break;
+                // Positional arg — count if this is a complete token
+                let is_last_incomplete = i == remaining_tokens.len() - 1 && !trailing_space;
+                if !is_last_incomplete {
+                    positional_count += 1;
+                }
+                if is_last_incomplete {
+                    break;
+                }
             }
         }
 
@@ -166,27 +175,48 @@ impl SpecProvider {
 
         // Complete options (when partial starts with '-' or we're completing after a space)
         if partial.starts_with('-') || (partial.is_empty() && suggestions.is_empty()) {
-            for opt in current_options {
-                if let Some(long) = &opt.long {
-                    if long.starts_with(partial) {
-                        let text = format!("{}{}", prefix, long);
-                        suggestions.push(spec_suggestion(
-                            text,
-                            prefix_confidence(0.5, 0.3, partial, long),
-                            opt.description.clone(),
-                            SuggestionKind::Option,
-                        ));
+            // Handle --option=value syntax: complete the value portion
+            if let Some(eq_pos) = partial.find('=') {
+                let opt_part = &partial[..eq_pos];
+                let val_part = &partial[eq_pos + 1..];
+                if let Some(opt) = find_option(current_options, opt_part) {
+                    if let Some(ref gen) = opt.arg_generator {
+                        let gen_results = store.run_generator(gen, cwd, spec.source).await;
+                        for item in gen_results {
+                            if item.starts_with(val_part) {
+                                suggestions.push(spec_suggestion(
+                                    format!("{}{}={}", prefix, opt_part, item),
+                                    prefix_confidence(0.65, 0.25, val_part, &item),
+                                    opt.description.clone(),
+                                    SuggestionKind::Argument,
+                                ));
+                            }
+                        }
                     }
                 }
-                if let Some(short) = &opt.short {
-                    if short.starts_with(partial) && partial.len() <= 2 {
-                        let text = format!("{}{}", prefix, short);
-                        suggestions.push(spec_suggestion(
-                            text,
-                            0.55,
-                            opt.description.clone(),
-                            SuggestionKind::Option,
-                        ));
+            } else {
+                for opt in current_options {
+                    if let Some(long) = &opt.long {
+                        if long.starts_with(partial) {
+                            let text = format!("{}{}", prefix, long);
+                            suggestions.push(spec_suggestion(
+                                text,
+                                prefix_confidence(0.5, 0.3, partial, long),
+                                opt.description.clone(),
+                                SuggestionKind::Option,
+                            ));
+                        }
+                    }
+                    if let Some(short) = &opt.short {
+                        if short.starts_with(partial) && partial.len() <= 2 {
+                            let text = format!("{}{}", prefix, short);
+                            suggestions.push(spec_suggestion(
+                                text,
+                                0.55,
+                                opt.description.clone(),
+                                SuggestionKind::Option,
+                            ));
+                        }
                     }
                 }
             }
@@ -214,8 +244,21 @@ impl SpecProvider {
         }
 
         // Complete arguments (generators, templates, static suggestions)
+        // Use positional_count to index into the correct arg spec.
+        // For variadic args, reuse the last arg spec.
         if !partial.starts_with('-') && !skip_next {
-            for arg in current_args {
+            let target_arg = if positional_count < current_args.len() {
+                Some(&current_args[positional_count])
+            } else if current_args.last().is_some_and(|a| a.variadic) {
+                current_args.last()
+            } else if current_args.is_empty() {
+                None
+            } else {
+                // Fallback: offer all arg specs
+                None
+            };
+
+            if let Some(arg) = target_arg {
                 let mut arg_suggestions = self
                     .resolve_arg_completions(arg, partial, cwd, spec.source, store)
                     .await;
@@ -223,6 +266,19 @@ impl SpecProvider {
                     s.text = format!("{}{}", prefix, s.text);
                 }
                 suggestions.extend(arg_suggestions);
+            } else if current_args.is_empty() {
+                // No arg specs — skip
+            } else {
+                // No specific arg spec matched — offer all
+                for arg in current_args {
+                    let mut arg_suggestions = self
+                        .resolve_arg_completions(arg, partial, cwd, spec.source, store)
+                        .await;
+                    for s in &mut arg_suggestions {
+                        s.text = format!("{}{}", prefix, s.text);
+                    }
+                    suggestions.extend(arg_suggestions);
+                }
             }
         }
 

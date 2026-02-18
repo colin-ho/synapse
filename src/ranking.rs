@@ -6,7 +6,12 @@ use crate::config::WeightsConfig;
 use crate::protocol::{SuggestionItem, SuggestionKind, SuggestionSource};
 use crate::providers::ProviderSuggestion;
 
-/// Position-dependent weights: [spec, filesystem, history, environment, workflow, llm, recency]
+/// Position-dependent weights: [spec, filesystem, history, environment, workflow, llm, recency].
+///
+/// When a [`CompletionContext`] is available (i.e. the cursor position is known),
+/// these position-specific weights override the static `[weights]` config section.
+/// Each position variant defines its own weight distribution tuned for that context.
+/// The static config weights are only used as a fallback when no context is available.
 type Weights = [f64; 7];
 
 fn weight_for_source(w: &Weights, source: SuggestionSource) -> f64 {
@@ -65,6 +70,13 @@ impl Ranker {
         Self {
             weights: weights.normalized(),
         }
+    }
+
+    pub fn update_weights(&self, _weights: WeightsConfig) {
+        // Ranker is cloned per-request, so updating the stored weights
+        // requires interior mutability. For now, config reload re-normalizes
+        // on the next Ranker construction; this is a no-op placeholder.
+        tracing::info!("Ranker weights update noted (effective on next restart)");
     }
 
     pub fn rank(

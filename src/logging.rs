@@ -62,6 +62,20 @@ impl InteractionLogger {
         });
     }
 
+    fn open_log_file(path: &PathBuf) -> Option<std::fs::File> {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(f) => Some(f),
+            Err(e) => {
+                tracing::warn!("Failed to open log file: {e}");
+                None
+            }
+        }
+    }
+
     async fn writer_task(
         mut rx: mpsc::UnboundedReceiver<InteractionLogEntry>,
         log_path: PathBuf,
@@ -76,6 +90,8 @@ impl InteractionLogger {
             }
         }
 
+        let mut file = Self::open_log_file(&log_path);
+
         while let Some(entry) = rx.recv().await {
             // Check rotation
             if let Ok(meta) = std::fs::metadata(&log_path) {
@@ -84,23 +100,24 @@ impl InteractionLogger {
                     if let Err(e) = std::fs::rename(&log_path, &rotated) {
                         tracing::warn!("Failed to rotate log: {e}");
                     }
+                    // Reopen after rotation
+                    file = Self::open_log_file(&log_path);
                 }
             }
 
-            match std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
-                Ok(mut file) => {
-                    if let Ok(json) = serde_json::to_string(&entry) {
-                        if let Err(e) = writeln!(file, "{json}") {
-                            tracing::warn!("Failed to write log entry: {e}");
-                        }
-                    }
+            let f = match file.as_mut() {
+                Some(f) => f,
+                None => {
+                    // Retry opening on next entry
+                    file = Self::open_log_file(&log_path);
+                    continue;
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to open log file: {e}");
+            };
+            if let Ok(json) = serde_json::to_string(&entry) {
+                if let Err(e) = writeln!(f, "{json}") {
+                    tracing::warn!("Failed to write log entry: {e}");
+                    // Reopen on write error
+                    file = Self::open_log_file(&log_path);
                 }
             }
         }

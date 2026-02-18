@@ -61,6 +61,10 @@ impl NlCache {
         self.cache.get(&key).await
     }
 
+    pub async fn invalidate_all(&self) {
+        self.cache.invalidate_all();
+    }
+
     pub async fn insert(&self, query: &str, cwd: &str, os: &str, entry: NlCacheEntry) {
         let key = NlCacheKey {
             normalized_query: Self::normalize_query(query),

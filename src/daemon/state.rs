@@ -6,6 +6,9 @@ use std::time::Duration;
 use futures_util::stream::SplitSink;
 use moka::future::Cache;
 use tokio_util::codec::{Framed, LinesCodec};
+use tokio_util::sync::CancellationToken;
+
+use regex::Regex;
 
 use crate::config::Config;
 use crate::llm::LlmClient;
@@ -40,6 +43,57 @@ pub(super) struct RuntimeState {
     pub(super) project_type_cache: Cache<PathBuf, Option<String>>,
     /// Cached available tools per PATH string.
     pub(super) tools_cache: Cache<String, Vec<String>>,
+    /// Pre-compiled blocklist patterns for command filtering.
+    /// Used by handler code via `CompiledBlocklist::new()` in spawned tasks;
+    /// stored here for potential future direct access.
+    #[allow(dead_code)]
+    pub(super) compiled_blocklist: CompiledBlocklist,
+    /// Cancellation token for graceful shutdown.
+    pub(super) shutdown_token: Option<CancellationToken>,
+}
+
+/// Pre-compiled blocklist patterns, built once at config load.
+pub(super) struct CompiledBlocklist {
+    patterns: Vec<CompiledBlockPattern>,
+}
+
+enum CompiledBlockPattern {
+    /// Plain substring match (no wildcards).
+    Substring(String),
+    /// Compiled regex from a wildcard pattern.
+    Regex(Regex),
+}
+
+impl CompiledBlocklist {
+    pub(super) fn new(raw_patterns: &[String]) -> Self {
+        let patterns = raw_patterns
+            .iter()
+            .filter_map(|p| {
+                let trimmed = p.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                if !trimmed.contains('*') && !trimmed.contains('?') {
+                    return Some(CompiledBlockPattern::Substring(trimmed.to_string()));
+                }
+                let regex_pattern = regex::escape(trimmed)
+                    .replace(r"\*", ".*")
+                    .replace(r"\?", ".");
+                match Regex::new(&regex_pattern) {
+                    Ok(re) => Some(CompiledBlockPattern::Regex(re)),
+                    Err(_) => Some(CompiledBlockPattern::Substring(trimmed.to_string())),
+                }
+            })
+            .collect();
+        Self { patterns }
+    }
+
+    pub(super) fn is_blocked(&self, command: &str) -> bool {
+        self.patterns.iter().any(|p| match p {
+            CompiledBlockPattern::Substring(s) => command.contains(s.as_str()),
+            CompiledBlockPattern::Regex(re) => re.is_match(command),
+        })
+    }
 }
 
 impl RuntimeState {
@@ -57,6 +111,7 @@ impl RuntimeState {
         nl_cache: NlCache,
     ) -> Self {
         let context_ttl = Duration::from_secs(300); // 5 min
+        let compiled_blocklist = CompiledBlocklist::new(&config.security.command_blocklist);
         Self {
             providers,
             phase2_providers,
@@ -82,6 +137,13 @@ impl RuntimeState {
                 .max_capacity(5)
                 .time_to_live(Duration::from_secs(600))
                 .build(),
+            compiled_blocklist,
+            shutdown_token: None,
         }
+    }
+
+    pub(super) fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
+        self.shutdown_token = Some(token);
+        self
     }
 }

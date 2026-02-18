@@ -60,6 +60,13 @@ impl FilesystemProvider {
             return true;
         }
 
+        // Fallback: activate for argument positions with no specific type
+        if matches!(ctx.position, Position::Argument { .. })
+            && matches!(ctx.expected_type, ExpectedType::Any)
+        {
+            return true;
+        }
+
         // Activate when the partial looks like a path
         let p = ctx.partial.as_str();
         p.starts_with('/')
@@ -260,7 +267,10 @@ impl FilesystemProvider {
                 .filter_map(|e| e.ok())
                 .map(|e| {
                     let name = e.file_name().to_string_lossy().to_string();
-                    let is_dir = e.path().is_dir();
+                    let is_dir = e
+                        .file_type()
+                        .map(|ft| ft.is_dir() || (ft.is_symlink() && e.path().is_dir()))
+                        .unwrap_or(false);
                     DirEntry { name, is_dir }
                 })
                 .collect::<Vec<_>>(),

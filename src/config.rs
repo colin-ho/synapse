@@ -24,6 +24,7 @@ pub struct GeneralConfig {
     pub max_suggestion_length: usize,
     pub accept_key: String,
     pub log_level: String,
+    pub ghost_text_color: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +152,7 @@ impl Default for GeneralConfig {
             max_suggestion_length: 200,
             accept_key: "right-arrow".into(),
             log_level: "warn".into(),
+            ghost_text_color: "fg=240".into(),
         }
     }
 }
@@ -235,11 +237,11 @@ impl Default for LoggingConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             provider: "openai".into(),
-            api_key_env: "LMSTUDIO_API_KEY".into(),
-            base_url: Some("http://127.0.0.1:1234".into()),
-            model: "qwen2.5-coder-7b-instruct-mlx".into(),
+            api_key_env: "OPENAI_API_KEY".into(),
+            base_url: None,
+            model: "gpt-4o-mini".into(),
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
             natural_language: true,
@@ -327,10 +329,12 @@ impl Config {
                         return config;
                     }
                     Err(e) => {
+                        eprintln!("[synapse] Failed to parse {}: {e}", config_path.display());
                         tracing::warn!("Failed to parse config: {e}, using defaults");
                     }
                 },
                 Err(e) => {
+                    eprintln!("[synapse] Failed to read {}: {e}", config_path.display());
                     tracing::warn!("Failed to read config: {e}, using defaults");
                 }
             }
@@ -423,10 +427,7 @@ mod tests {
         assert!(config.llm.contextual_args);
         assert_eq!(config.llm.arg_context_timeout_ms, 2_000);
         assert_eq!(config.llm.arg_max_context_tokens, 3_000);
-        assert_eq!(
-            config.llm.base_url,
-            Some("http://127.0.0.1:1234".to_string())
-        );
+        assert_eq!(config.llm.base_url, None);
     }
 
     #[test]
@@ -517,8 +518,9 @@ mod tests {
 
     #[test]
     fn test_discovery_provider_override_clears_base_url() {
-        let parent = super::LlmConfig::default();
-        // Parent has base_url = Some("http://127.0.0.1:1234")
+        let mut parent = super::LlmConfig::default();
+        // Set a base_url so we can test that provider override clears it
+        parent.base_url = Some("http://127.0.0.1:1234".into());
         assert!(parent.base_url.is_some());
         let discovery = LlmDiscoveryConfig {
             provider: Some("anthropic".into()),
