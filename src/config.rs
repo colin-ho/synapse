@@ -46,9 +46,9 @@ pub struct SpecConfig {
     pub enabled: bool,
     pub auto_generate: bool,
     pub max_list_results: NonZeroUsize,
-    /// Whether to run generator commands from project-level specs (.synapse/specs/).
-    /// Disabled by default for security: a malicious repo could include specs with
-    /// arbitrary shell commands that execute during completion.
+    /// Whether to trust and run project-built CLI tools during discovery.
+    /// Disabled by default for security: a malicious repo could include
+    /// binaries that execute arbitrary code when run with --help.
     pub trust_project_generators: bool,
     pub scan_depth: usize,
     /// Discover specs by running `command --help` for unknown commands

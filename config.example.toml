@@ -9,7 +9,7 @@ log_level = "warn"                      # "error" | "warn" | "info" | "debug" | 
 enabled = true
 auto_generate = true                   # auto-generate specs from project files
 max_list_results = 50                  # max items in dropdown list
-trust_project_generators = false       # allow .synapse/specs/ generators to run shell commands
+trust_project_generators = false       # trust project-built CLIs during discovery (requires discover_project_cli=true)
 scan_depth = 3                         # max levels to walk up for project files (ignored inside git repos)
 discover_from_help = true              # auto-discover specs by running --help on unknown commands
 discover_project_cli = false           # discover specs for project-built CLIs (requires trust_project_generators=true)

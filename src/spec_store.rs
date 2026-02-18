@@ -49,11 +49,9 @@ impl Expiry<(String, PathBuf), GeneratorCacheEntry> for GeneratorExpiry {
 
 /// Manages loading, caching, and resolution of command specs.
 ///
-/// The spec store handles two tiers of specs:
-/// 1. User project specs (`.synapse/specs/*.toml`) — highest priority
-/// 2. Project auto-generated specs (Makefile, package.json, etc.)
-///
-/// Discovery of unknown commands writes compsys files directly to the
+/// The spec store auto-generates specs from project files (Makefile,
+/// package.json, etc.) and discovers specs for unknown commands by
+/// running `--help`. Discovery writes compsys files directly to the
 /// completions directory — there is no intermediate TOML cache.
 pub struct SpecStore {
     discovering: RwLock<HashSet<String>>,
