@@ -13,6 +13,7 @@ use crate::providers::history::HistoryProvider;
 use crate::providers::llm_argument::LlmArgumentProvider;
 use crate::providers::spec::SpecProvider;
 use crate::providers::workflow::WorkflowProvider;
+use crate::providers::workflow_llm::WorkflowLlmProvider;
 use crate::providers::Provider;
 use crate::ranking::Ranker;
 use crate::session::SessionManager;
@@ -216,12 +217,8 @@ pub(super) async fn start_daemon(
 
     // Init workflow prediction
     let workflow_predictor = Arc::new(WorkflowPredictor::new());
-    let workflow_provider = WorkflowProvider::new(
-        workflow_predictor.clone(),
-        config.workflow.clone(),
-        llm_client.clone(),
-        config.llm.workflow_prediction,
-    );
+    let workflow_provider =
+        WorkflowProvider::new(workflow_predictor.clone(), config.workflow.clone());
     if config.workflow.enabled {
         tracing::info!("Workflow prediction enabled");
     }
@@ -245,6 +242,19 @@ pub(super) async fn start_daemon(
         } else if config.llm.enabled {
             tracing::warn!(
                 "LLM contextual args enabled but LLM client unavailable; phase 2 provider disabled"
+            );
+        }
+    }
+    if config.llm.workflow_prediction {
+        if let Some(client) = llm_client.clone() {
+            phase2_providers.push(Provider::WorkflowLlm(Arc::new(WorkflowLlmProvider::new(
+                workflow_predictor.clone(),
+                client,
+            ))));
+            tracing::info!("LLM workflow prediction enabled (phase 2)");
+        } else if config.llm.enabled {
+            tracing::warn!(
+                "LLM workflow prediction enabled but LLM client unavailable; workflow LLM provider disabled"
             );
         }
     }

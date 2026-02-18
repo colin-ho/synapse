@@ -4,6 +4,7 @@ pub mod history;
 pub mod llm_argument;
 pub mod spec;
 pub mod workflow;
+pub mod workflow_llm;
 
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -162,5 +163,6 @@ pub enum Provider {
     Filesystem(Arc<filesystem::FilesystemProvider>),
     Environment(Arc<environment::EnvironmentProvider>),
     Workflow(Arc<workflow::WorkflowProvider>),
+    WorkflowLlm(Arc<workflow_llm::WorkflowLlmProvider>),
     LlmArgument(Arc<llm_argument::LlmArgumentProvider>),
 }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +29,6 @@ pub(super) struct RuntimeState {
     pub(super) spec_store: Arc<SpecStore>,
     pub(super) ranker: Ranker,
     pub(super) workflow_predictor: Arc<WorkflowPredictor>,
-    pub(super) workflow_llm_inflight: Arc<tokio::sync::Mutex<HashSet<String>>>,
     pub(super) session_manager: SessionManager,
     pub(super) interaction_logger: InteractionLogger,
     pub(super) config: Config,
@@ -118,7 +117,6 @@ impl RuntimeState {
             spec_store,
             ranker,
             workflow_predictor,
-            workflow_llm_inflight: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             session_manager,
             interaction_logger,
             config,
