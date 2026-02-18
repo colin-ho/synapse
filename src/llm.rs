@@ -1274,7 +1274,7 @@ mod tests {
         let config = LlmConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.provider, "openai");
-        assert_eq!(config.base_url, None);
+        assert_eq!(config.base_url, Some("http://127.0.0.1:1234".to_string()));
         // Disabled config should return None
         assert!(LlmClient::from_config(&config, false).is_none());
     }

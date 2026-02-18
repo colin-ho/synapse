@@ -209,7 +209,7 @@ impl Default for LlmConfig {
             enabled: false,
             provider: "openai".into(),
             api_key_env: "OPENAI_API_KEY".into(),
-            base_url: None,
+            base_url: Some("http://127.0.0.1:1234".into()),
             model: "gpt-4o-mini".into(),
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
@@ -363,7 +363,10 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.history.max_entries, 50000);
         assert!(config.llm.contextual_args);
-        assert_eq!(config.llm.base_url, None);
+        assert_eq!(
+            config.llm.base_url,
+            Some("http://127.0.0.1:1234".to_string())
+        );
     }
 
     #[test]

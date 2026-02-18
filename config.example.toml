@@ -41,7 +41,7 @@ command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 enabled = false                        # enable LLM-powered features (spec discovery, NL, explain, contextual args)
 provider = "openai"                    # "anthropic" or "openai" (use "openai" for LM Studio / local endpoints)
 api_key_env = "OPENAI_API_KEY"         # env var name containing the API key
-# base_url = "http://127.0.0.1:1234"  # API base URL (uncomment for LM Studio / local endpoints)
+base_url = "http://127.0.0.1:1234"    # API base URL (default: LM Studio local endpoint)
 model = "gpt-4o-mini"                  # model to use
 timeout_ms = 10000                     # per-request timeout
 max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
