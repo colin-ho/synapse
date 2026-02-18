@@ -129,7 +129,11 @@ pub enum Response {
     SuggestionList(SuggestionListResponse),
     Pong,
     Ack,
-    Error { message: String },
+    /// Signals that all async results (e.g. NL translations) have been sent.
+    SuggestDone,
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,6 +238,7 @@ impl Response {
             }
             Response::Pong => "pong".to_string(),
             Response::Ack => "ack".to_string(),
+            Response::SuggestDone => "suggest_done".to_string(),
             Response::Error { message } => {
                 format!("error\t{}", sanitize_tsv(message))
             }

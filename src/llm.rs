@@ -1095,6 +1095,47 @@ pub(crate) fn scrub_home_paths(text: &str) -> String {
     }
 }
 
+/// Redact values of environment variables whose names match the configured
+/// `scrub_env_keys` glob patterns (e.g. `*_KEY`, `*_SECRET`).
+pub fn scrub_env_values(
+    env_hints: &std::collections::HashMap<String, String>,
+    scrub_patterns: &[String],
+) -> std::collections::HashMap<String, String> {
+    env_hints
+        .iter()
+        .map(|(key, value)| {
+            if env_key_matches(key, scrub_patterns) {
+                (key.clone(), "[REDACTED]".to_string())
+            } else {
+                (key.clone(), value.clone())
+            }
+        })
+        .collect()
+}
+
+fn env_key_matches(key: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|pattern| {
+        let trimmed = pattern.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if !trimmed.contains('*') && !trimmed.contains('?') {
+            return key == trimmed;
+        }
+        // Simple glob: * matches any span, ? matches one character
+        glob_matches(key, trimmed)
+    })
+}
+
+fn glob_matches(text: &str, pattern: &str) -> bool {
+    let regex_pattern = regex::escape(pattern)
+        .replace(r"\*", ".*")
+        .replace(r"\?", ".");
+    regex::Regex::new(&format!("^{regex_pattern}$"))
+        .map(|re| re.is_match(text))
+        .unwrap_or(false)
+}
+
 fn parse_argument_values(response: &str, max_values: usize) -> Vec<String> {
     let mut values = Vec::new();
     let mut in_fence = false;
@@ -1229,14 +1270,28 @@ mod tests {
     }
 
     #[test]
-    fn test_from_config_default_lmstudio() {
+    fn test_from_config_defaults() {
         let config = LlmConfig::default();
-        assert!(config.enabled);
+        assert!(!config.enabled);
         assert_eq!(config.provider, "openai");
         assert_eq!(config.base_url, Some("http://127.0.0.1:1234".to_string()));
+        // Disabled config should return None
+        assert!(LlmClient::from_config(&config, false).is_none());
+    }
+
+    #[test]
+    fn test_from_config_lmstudio() {
+        let config = LlmConfig {
+            enabled: true,
+            provider: "openai".into(),
+            api_key_env: "LMSTUDIO_API_KEY".into(),
+            base_url: Some("http://127.0.0.1:1234".into()),
+            model: "qwen2.5-coder-7b-instruct-mlx".into(),
+            ..Default::default()
+        };
         // Local endpoint should allow placeholder key
-        let client = LlmClient::from_config(&config, false)
-            .expect("default LM Studio config should create client");
+        let client =
+            LlmClient::from_config(&config, false).expect("LM Studio config should create client");
         assert_eq!(client.api_key, "lm-studio");
     }
 

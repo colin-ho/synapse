@@ -22,12 +22,46 @@ pub struct DiscoveredSpec {
     pub spec: CommandSpec,
 }
 
-/// Returns the directory where discovered specs are stored.
+/// Returns the directory where discovered specs are stored (XDG-compliant).
 pub fn specs_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+    dirs::cache_dir()
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(".cache")
+        })
         .join("synapse")
         .join("specs")
+}
+
+/// Migrate specs from the old `~/synapse/specs/` location to the XDG cache dir.
+/// Called once at startup; silently does nothing if the old dir doesn't exist.
+pub fn migrate_old_specs_dir() {
+    let old_dir = dirs::home_dir().map(|h| h.join("synapse").join("specs"));
+    let old_dir = match old_dir {
+        Some(d) if d.is_dir() => d,
+        _ => return,
+    };
+    let new_dir = specs_dir();
+    if new_dir.exists() {
+        // New dir already populated — don't overwrite
+        return;
+    }
+    if let Some(parent) = new_dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(&old_dir, &new_dir) {
+        Ok(()) => tracing::info!(
+            "Migrated spec cache from {} to {}",
+            old_dir.display(),
+            new_dir.display()
+        ),
+        Err(e) => tracing::warn!(
+            "Failed to migrate spec cache from {} to {}: {e}",
+            old_dir.display(),
+            new_dir.display()
+        ),
+    }
 }
 
 /// Load all discovered specs from disk.

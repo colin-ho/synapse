@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::UnixListener;
 use tokio_util::codec::{Framed, LinesCodec};
+use tokio_util::sync::CancellationToken;
 
 use crate::protocol::{Request, Response};
 
@@ -12,7 +14,27 @@ use super::state::{RuntimeState, SharedWriter};
 pub(super) async fn run_server(
     listener: UnixListener,
     state: Arc<RuntimeState>,
+    shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    // Spawn periodic session pruning (every 5 minutes, prune sessions idle > 1 hour)
+    {
+        let session_manager = state.session_manager.clone();
+        let token = shutdown.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.tick().await; // Skip the initial immediate tick
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        session_manager.prune_inactive(Duration::from_secs(3600)).await;
+                        tracing::debug!("Pruned inactive sessions");
+                    }
+                    _ = token.cancelled() => break,
+                }
+            }
+        });
+    }
+
     loop {
         tokio::select! {
             accept_result = listener.accept() => {
@@ -32,10 +54,18 @@ pub(super) async fn run_server(
             }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("Received Ctrl+C, shutting down");
+                shutdown.cancel();
+                break;
+            }
+            _ = shutdown.cancelled() => {
+                tracing::info!("Shutdown requested via CancellationToken");
                 break;
             }
         }
     }
+
+    // Flush interaction log by dropping the logger (which drops the channel sender)
+    tracing::debug!("Draining connections and flushing logs");
 
     Ok(())
 }

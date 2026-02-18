@@ -51,6 +51,7 @@ pub struct Config {
 pub struct GeneralConfig {
     pub socket_path: Option<String>,
     pub log_level: String,
+    pub ghost_text_color: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +86,7 @@ pub struct SpecConfig {
 pub struct SecurityConfig {
     pub scrub_paths: bool,
     pub command_blocklist: Vec<String>,
+    pub scrub_env_keys: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -143,6 +145,7 @@ impl Default for GeneralConfig {
         Self {
             socket_path: None,
             log_level: "warn".into(),
+            ghost_text_color: "fg=240".into(),
         }
     }
 }
@@ -180,6 +183,13 @@ impl Default for SecurityConfig {
                 "curl -u".into(),
                 r#"curl -H "Authorization*"#.into(),
             ],
+            scrub_env_keys: vec![
+                "*_KEY".into(),
+                "*_SECRET".into(),
+                "*_TOKEN".into(),
+                "*_PASSWORD".into(),
+                "*_CREDENTIALS".into(),
+            ],
         }
     }
 }
@@ -196,11 +206,11 @@ impl Default for LoggingConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             provider: "openai".into(),
-            api_key_env: "LMSTUDIO_API_KEY".into(),
+            api_key_env: "OPENAI_API_KEY".into(),
             base_url: Some("http://127.0.0.1:1234".into()),
-            model: "qwen2.5-coder-7b-instruct-mlx".into(),
+            model: "gpt-4o-mini".into(),
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
             natural_language: true,
@@ -276,10 +286,12 @@ impl Config {
                         return config;
                     }
                     Err(e) => {
+                        eprintln!("[synapse] Failed to parse {}: {e}", config_path.display());
                         tracing::warn!("Failed to parse config: {e}, using defaults");
                     }
                 },
                 Err(e) => {
+                    eprintln!("[synapse] Failed to read {}: {e}", config_path.display());
                     tracing::warn!("Failed to read config: {e}, using defaults");
                 }
             }
@@ -431,8 +443,9 @@ mod tests {
 
     #[test]
     fn test_discovery_provider_override_clears_base_url() {
-        let parent = super::LlmConfig::default();
-        // Parent has base_url = Some("http://127.0.0.1:1234")
+        let mut parent = super::LlmConfig::default();
+        // Set a base_url so we can test that provider override clears it
+        parent.base_url = Some("http://127.0.0.1:1234".into());
         assert!(parent.base_url.is_some());
         let discovery = LlmDiscoveryConfig {
             provider: Some("anthropic".into()),

@@ -228,25 +228,26 @@ impl SpecStore {
         None
     }
 
+    /// Invalidate all caches (project specs and generator outputs).
+    pub async fn clear_caches(&self) {
+        self.project_cache.invalidate_all();
+        self.generator_cache.invalidate_all();
+    }
+
     /// Get all available command names for a given cwd.
     pub async fn all_command_names(&self, cwd: &Path) -> Vec<String> {
-        let mut names: Vec<String> = self.builtin.keys().cloned().collect();
+        let mut seen: std::collections::HashSet<String> = self.builtin.keys().cloned().collect();
 
-        // Add discovered command names
         for key in self.discovered.read().await.keys() {
-            if !names.contains(key) {
-                names.push(key.clone());
-            }
+            seen.insert(key.clone());
         }
 
         let project_specs = self.get_project_specs(cwd).await;
         for key in project_specs.keys() {
-            if !names.contains(key) {
-                names.push(key.clone());
-            }
+            seen.insert(key.clone());
         }
 
-        names
+        seen.into_iter().collect()
     }
 
     /// Trigger background discovery for an unknown command or stale discovered spec.
@@ -516,8 +517,24 @@ impl SpecStore {
         llm_budget: &AtomicUsize,
     ) -> CommandSpec {
         if let Some(ref llm) = self.llm_client {
-            let prev = llm_budget.fetch_sub(1, Ordering::Relaxed);
-            if prev > 0 {
+            // Use compare_exchange loop to avoid wrapping to usize::MAX
+            let acquired = loop {
+                let current = llm_budget.load(Ordering::Relaxed);
+                if current == 0 {
+                    break false;
+                }
+                match llm_budget.compare_exchange_weak(
+                    current,
+                    current - 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break true,
+                    Err(_) => continue, // Retry on spurious failure
+                }
+            };
+
+            if acquired {
                 match llm.generate_spec(command_name, help_text).await {
                     Ok(spec) => {
                         tracing::info!("LLM parsed spec for {command_name}");
@@ -531,8 +548,6 @@ impl SpecStore {
                     }
                 }
             } else {
-                // Restore: fetch_sub already decremented past 0 (wraps for usize)
-                llm_budget.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!("LLM budget exhausted, using basic regex for {command_name}");
             }
         }
@@ -583,49 +598,61 @@ impl SpecStore {
             return cached;
         }
 
-        let mut specs = HashMap::new();
+        // Resolve project root and load specs on a blocking thread to avoid
+        // blocking the async runtime with filesystem I/O.
+        let scan_depth = self.config.scan_depth;
+        let auto_generate = self.config.auto_generate;
+        let cwd_owned = cwd.to_path_buf();
 
-        // Resolve project root so specs are found even when cwd is a subdirectory
-        let project_root = crate::project::find_project_root(cwd, self.config.scan_depth);
-        let scan_root = project_root.as_deref().unwrap_or(cwd);
+        let mut specs = tokio::task::spawn_blocking(move || {
+            let mut specs = HashMap::new();
+            let project_root = crate::project::find_project_root(&cwd_owned, scan_depth);
+            let scan_root = project_root.as_deref().unwrap_or(&cwd_owned);
 
-        // Load user-defined project specs from .synapse/specs/*.toml
-        let spec_dir = scan_root.join(".synapse").join("specs");
-        if spec_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&spec_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "toml") {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            match toml::from_str::<CommandSpec>(&content) {
-                                Ok(mut spec) => {
-                                    spec.source = SpecSource::ProjectUser;
-                                    specs.insert(spec.name.clone(), spec);
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to parse project spec {}: {e}",
-                                        path.display()
-                                    );
+            // Load user-defined project specs from .synapse/specs/*.toml
+            let spec_dir = scan_root.join(".synapse").join("specs");
+            if spec_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&spec_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().is_some_and(|e| e == "toml") {
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                match toml::from_str::<CommandSpec>(&content) {
+                                    Ok(mut spec) => {
+                                        spec.source = SpecSource::ProjectUser;
+                                        specs.insert(spec.name.clone(), spec);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to parse project spec {}: {e}",
+                                            path.display()
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Auto-generate specs from project files
-        if self.config.auto_generate {
-            let auto_specs = spec_autogen::generate_specs(scan_root, cwd);
-            for mut spec in auto_specs {
-                // Don't override user-defined specs
-                if !specs.contains_key(&spec.name) {
-                    spec.source = SpecSource::ProjectAuto;
-                    specs.insert(spec.name.clone(), spec);
+            // Auto-generate specs from project files
+            if auto_generate {
+                let auto_specs = spec_autogen::generate_specs(scan_root, &cwd_owned);
+                for mut spec in auto_specs {
+                    if !specs.contains_key(&spec.name) {
+                        spec.source = SpecSource::ProjectAuto;
+                        specs.insert(spec.name.clone(), spec);
+                    }
                 }
             }
-        }
+
+            specs
+        })
+        .await
+        .unwrap_or_default();
+
+        let project_root = crate::project::find_project_root(cwd, self.config.scan_depth);
+        let scan_root = project_root.as_deref().unwrap_or(cwd);
 
         // Discover specs for CLI tools built by the current project.
         // This is intentionally gated behind trust_project_generators since it executes

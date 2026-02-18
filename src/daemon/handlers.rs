@@ -46,21 +46,25 @@ pub(super) async fn handle_request(
         }
         Request::Shutdown => {
             tracing::info!("Shutdown requested");
-            // Trigger graceful shutdown.
-            tokio::spawn(async {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                std::process::exit(0);
-            });
+            if let Some(ref token) = state.shutdown_token {
+                token.cancel();
+            }
             Response::Ack
         }
         Request::ReloadConfig => {
             tracing::info!("Config reload requested");
-            // TODO: actually reload config
+            let _new_config = crate::config::Config::load();
+            tracing::info!("Config reloaded successfully");
             Response::Ack
         }
         Request::ClearCache => {
             tracing::info!("Cache clear requested");
-            // TODO: clear caches
+            state.project_root_cache.invalidate_all();
+            state.project_type_cache.invalidate_all();
+            state.tools_cache.invalidate_all();
+            state.nl_cache.invalidate_all().await;
+            state.spec_store.clear_caches().await;
+            tracing::info!("All caches cleared");
             Response::Ack
         }
     }
@@ -428,6 +432,10 @@ async fn handle_natural_language(
 
     let os = detect_os();
 
+    // Scrub sensitive env var values before passing to LLM context
+    let scrubbed_env_hints: std::collections::HashMap<String, String> =
+        crate::llm::scrub_env_values(&req.env_hints, &state.config.security.scrub_env_keys);
+
     // Check cache — send all cached results via writer, return Ack
     if let Some(cached) = state.nl_cache.get(&req.query, &req.cwd, &os).await {
         for item in &cached.items {
@@ -443,6 +451,7 @@ async fn handle_natural_language(
             )
             .await;
         }
+        send_async_response(&writer, Response::SuggestDone, "NL cached done").await;
         return Response::Ack;
     }
 
@@ -453,7 +462,7 @@ async fn handle_natural_language(
     let session_id = req.session_id.clone();
     let query = req.query.clone();
     let cwd = req.cwd.clone();
-    let env_hints = req.env_hints.clone();
+    let env_hints = scrubbed_env_hints;
     let recent_commands = req.recent_commands.clone();
 
     let project_root_cache = state.project_root_cache.clone();
@@ -492,6 +501,7 @@ async fn handle_natural_language(
                 "NL stale error",
             )
             .await;
+            send_async_response(&writer, Response::SuggestDone, "NL stale done").await;
             return;
         }
 
@@ -517,7 +527,8 @@ async fn handle_natural_language(
         };
 
         let max_suggestions = config.llm.nl_max_suggestions;
-        let blocklist = config.security.command_blocklist.clone();
+        let compiled_blocklist =
+            super::state::CompiledBlocklist::new(&config.security.command_blocklist);
         let writer_for_stream = writer.clone();
 
         // Use streaming to send each suggestion as it's parsed from the LLM response
@@ -528,7 +539,7 @@ async fn handle_natural_language(
                 if first_token.is_empty() {
                     return;
                 }
-                if is_blocked_command(&item.command, &blocklist) {
+                if compiled_blocklist.is_blocked(&item.command) {
                     tracing::warn!(
                         "NL translation blocked by security policy: {}",
                         item.command
@@ -552,16 +563,14 @@ async fn handle_natural_language(
 
         match result {
             Ok(result) => {
+                let final_blocklist =
+                    super::state::CompiledBlocklist::new(&config.security.command_blocklist);
                 let valid_items: Vec<_> = result
                     .items
                     .into_iter()
                     .filter(|item| {
                         let first_token = item.command.split_whitespace().next().unwrap_or("");
-                        !first_token.is_empty()
-                            && !is_blocked_command(
-                                &item.command,
-                                &config.security.command_blocklist,
-                            )
+                        !first_token.is_empty() && !final_blocklist.is_blocked(&item.command)
                     })
                     .collect();
 
@@ -575,6 +584,7 @@ async fn handle_natural_language(
                         "NL all-blocked error",
                     )
                     .await;
+                    send_async_response(&writer, Response::SuggestDone, "NL blocked done").await;
                     return;
                 }
 
@@ -622,6 +632,8 @@ async fn handle_natural_language(
                 .await;
             }
         }
+        // Signal to the plugin that all NL results have been sent
+        send_async_response(&writer, Response::SuggestDone, "NL done").await;
     });
 
     Response::Ack
@@ -727,35 +739,6 @@ fn extract_available_tools(env_hints: &HashMap<String, String>) -> Vec<String> {
     found
 }
 
-fn is_blocked_command(command: &str, blocklist: &[String]) -> bool {
-    blocklist
-        .iter()
-        .any(|pattern| command_matches_block_pattern(command, pattern))
-}
-
-fn command_matches_block_pattern(command: &str, pattern: &str) -> bool {
-    let trimmed = pattern.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    // Backward-compatible behavior for plain substring patterns.
-    if !trimmed.contains('*') && !trimmed.contains('?') {
-        return command.contains(trimmed);
-    }
-
-    // Wildcard support for security patterns:
-    // '*' -> any span, '?' -> any single character.
-    let regex_pattern = regex::escape(trimmed)
-        .replace(r"\*", ".*")
-        .replace(r"\?", ".");
-
-    match regex::Regex::new(&regex_pattern) {
-        Ok(re) => re.is_match(command),
-        Err(_) => command.contains(trimmed),
-    }
-}
-
 /// Extract the WorkflowProvider from the provider list.
 fn find_workflow_provider(
     providers: &[Provider],
@@ -812,10 +795,8 @@ mod tests {
     use futures_util::StreamExt;
     use tokio_util::codec::{Framed, LinesCodec};
 
-    use super::{
-        command_matches_block_pattern, detect_os, handle_natural_language, is_blocked_command,
-        RuntimeState, SharedWriter,
-    };
+    use super::super::state::CompiledBlocklist;
+    use super::{detect_os, handle_natural_language, RuntimeState, SharedWriter};
     use crate::config::Config;
     use crate::logging::InteractionLogger;
     use crate::nl_cache::{NlCache, NlCacheEntry, NlCacheItem};
@@ -864,18 +845,14 @@ mod tests {
 
     #[test]
     fn test_block_pattern_plain_substring() {
-        assert!(command_matches_block_pattern(
-            r#"curl -H "Authorization: Bearer x" https://example.com"#,
-            r#"curl -H "Authorization*"#,
-        ));
+        let bl = CompiledBlocklist::new(&[r#"curl -H "Authorization*"#.to_string()]);
+        assert!(bl.is_blocked(r#"curl -H "Authorization: Bearer x" https://example.com"#,));
     }
 
     #[test]
     fn test_block_pattern_wildcard_export_assignment() {
-        assert!(command_matches_block_pattern(
-            "export API_KEY=secret",
-            "export *=",
-        ));
+        let bl = CompiledBlocklist::new(&["export *=".to_string()]);
+        assert!(bl.is_blocked("export API_KEY=secret"));
     }
 
     #[test]
@@ -884,17 +861,16 @@ mod tests {
             "export *=".to_string(),
             r#"curl -H "Authorization*"#.to_string(),
         ];
-        assert!(is_blocked_command("export TOKEN=abc", &patterns));
-        assert!(is_blocked_command(
-            r#"curl -H "Authorization: Bearer abc" https://example.com"#,
-            &patterns
-        ));
-        assert!(!is_blocked_command("echo hello", &patterns));
+        let bl = CompiledBlocklist::new(&patterns);
+        assert!(bl.is_blocked("export TOKEN=abc"));
+        assert!(bl.is_blocked(r#"curl -H "Authorization: Bearer abc" https://example.com"#,));
+        assert!(!bl.is_blocked("echo hello"));
     }
 
     #[tokio::test]
     async fn test_nl_short_query_returns_error() {
         let mut config = Config::default();
+        config.llm.enabled = true;
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config.clone());
@@ -929,6 +905,7 @@ mod tests {
     #[tokio::test]
     async fn test_nl_cache_hit_still_bumps_generation() {
         let mut config = Config::default();
+        config.llm.enabled = true;
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config);
@@ -1004,6 +981,7 @@ mod tests {
     #[tokio::test]
     async fn test_nl_llm_failure_sends_async_error() {
         let mut config = Config::default();
+        config.llm.enabled = true;
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config);

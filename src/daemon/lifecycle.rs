@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::net::UnixListener;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
@@ -88,6 +89,9 @@ pub(super) async fn start_daemon(
     foreground: bool,
     socket_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    // Migrate spec cache from old ~/synapse/specs/ to XDG cache dir
+    crate::spec_cache::migrate_old_specs_dir();
+
     let config = Config::load().with_socket_override(socket_path);
 
     // Set up tracing
@@ -255,21 +259,26 @@ pub(super) async fn start_daemon(
 
     let nl_cache = crate::nl_cache::NlCache::new();
 
-    let state = Arc::new(RuntimeState::new(
-        providers,
-        phase2_providers,
-        spec_store,
-        ranker,
-        workflow_predictor,
-        session_manager,
-        interaction_logger,
-        config.clone(),
-        llm_client,
-        nl_cache,
-    ));
+    let shutdown = CancellationToken::new();
+
+    let state = Arc::new(
+        RuntimeState::new(
+            providers,
+            phase2_providers,
+            spec_store,
+            ranker,
+            workflow_predictor,
+            session_manager,
+            interaction_logger,
+            config.clone(),
+            llm_client,
+            nl_cache,
+        )
+        .with_shutdown_token(shutdown.clone()),
+    );
 
     // Main loop
-    let result = run_server(listener, state).await;
+    let result = run_server(listener, state, shutdown).await;
 
     // Cleanup
     tracing::info!("Shutting down");

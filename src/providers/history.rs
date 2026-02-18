@@ -67,105 +67,116 @@ impl HistoryProvider {
     }
 
     pub async fn load_history(&self) {
-        let histfile = std::env::var("HISTFILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".zsh_history"));
+        let max_entries = self.config.max_entries;
+        let result = tokio::task::spawn_blocking(move || load_history_blocking(max_entries)).await;
 
-        if !histfile.exists() {
-            tracing::warn!("History file not found: {}", histfile.display());
-            return;
-        }
-
-        // Read as bytes to handle potentially invalid UTF-8
-        let bytes = match std::fs::read(&histfile) {
-            Ok(b) => b,
+        match result {
+            Ok(Some((entries, max_epoch, max_freq))) => {
+                let count = entries.len();
+                *self.data.write().await = HistoryData {
+                    entries,
+                    max_epoch,
+                    max_freq,
+                };
+                tracing::info!("Loaded {count} history entries (max_freq={max_freq})");
+            }
+            Ok(None) => {} // Already logged inside
             Err(e) => {
-                tracing::error!("Failed to read history file: {e}");
-                return;
-            }
-        };
-
-        let content = String::from_utf8_lossy(&bytes);
-        let mut entries = BTreeMap::new();
-        let mut max_epoch: u64 = 0;
-        let mut counter: u64 = 0;
-        let mut continuation = String::new();
-
-        for line in content.lines() {
-            // Handle multi-line commands (lines ending with \)
-            if line.ends_with('\\') {
-                continuation.push_str(line.trim_end_matches('\\'));
-                continuation.push('\n');
-                continue;
-            }
-
-            let full_line = if continuation.is_empty() {
-                line.to_string()
-            } else {
-                let mut full = std::mem::take(&mut continuation);
-                full.push_str(line);
-                full
-            };
-
-            let (command, timestamp) = parse_history_line(&full_line);
-
-            if command.is_empty() {
-                continue;
-            }
-
-            // Only take first line for multi-line commands stored in history
-            let cmd = command
-                .lines()
-                .next()
-                .unwrap_or(&command)
-                .trim()
-                .to_string();
-            if cmd.is_empty() {
-                continue;
-            }
-
-            let ts = timestamp.unwrap_or_else(|| {
-                counter += 1;
-                counter
-            });
-            if ts > max_epoch {
-                max_epoch = ts;
-            }
-
-            let entry = entries.entry(cmd).or_insert(HistoryEntry {
-                frequency: 0,
-                last_used: 0,
-            });
-            entry.frequency += 1;
-            if ts > entry.last_used {
-                entry.last_used = ts;
+                tracing::error!("History load task panicked: {e}");
             }
         }
-
-        // Enforce max_entries: keep the most recently used
-        if entries.len() > self.config.max_entries {
-            let mut sorted: Vec<_> = entries.into_iter().collect();
-            sorted.sort_by(|a, b| b.1.last_used.cmp(&a.1.last_used));
-            sorted.truncate(self.config.max_entries);
-            entries = sorted.into_iter().collect();
-        }
-
-        // Track max frequency across all entries
-        let max_freq = entries
-            .values()
-            .map(|e| e.frequency)
-            .max()
-            .unwrap_or(1)
-            .max(1);
-
-        let count = entries.len();
-        *self.data.write().await = HistoryData {
-            entries,
-            max_epoch,
-            max_freq,
-        };
-        tracing::info!("Loaded {count} history entries (max_freq={max_freq})");
     }
+}
+
+/// Blocking history file read + parse, run on a blocking thread.
+fn load_history_blocking(max_entries: usize) -> Option<(BTreeMap<String, HistoryEntry>, u64, u32)> {
+    let histfile = std::env::var("HISTFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".zsh_history"));
+
+    if !histfile.exists() {
+        tracing::warn!("History file not found: {}", histfile.display());
+        return None;
+    }
+
+    let bytes = match std::fs::read(&histfile) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Failed to read history file: {e}");
+            return None;
+        }
+    };
+
+    let content = String::from_utf8_lossy(&bytes);
+    let mut entries = BTreeMap::new();
+    let mut max_epoch: u64 = 0;
+    let mut counter: u64 = 0;
+    let mut continuation = String::new();
+
+    for line in content.lines() {
+        if line.ends_with('\\') {
+            continuation.push_str(line.trim_end_matches('\\'));
+            continuation.push('\n');
+            continue;
+        }
+
+        let full_line = if continuation.is_empty() {
+            line.to_string()
+        } else {
+            let mut full = std::mem::take(&mut continuation);
+            full.push_str(line);
+            full
+        };
+
+        let (command, timestamp) = parse_history_line(&full_line);
+
+        if command.is_empty() {
+            continue;
+        }
+
+        let cmd = command
+            .lines()
+            .next()
+            .unwrap_or(&command)
+            .trim()
+            .to_string();
+        if cmd.is_empty() {
+            continue;
+        }
+
+        let ts = timestamp.unwrap_or_else(|| {
+            counter += 1;
+            counter
+        });
+        if ts > max_epoch {
+            max_epoch = ts;
+        }
+
+        let entry = entries.entry(cmd).or_insert(HistoryEntry {
+            frequency: 0,
+            last_used: 0,
+        });
+        entry.frequency += 1;
+        if ts > entry.last_used {
+            entry.last_used = ts;
+        }
+    }
+
+    if entries.len() > max_entries {
+        let mut sorted: Vec<_> = entries.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.last_used.cmp(&a.1.last_used));
+        sorted.truncate(max_entries);
+        entries = sorted.into_iter().collect();
+    }
+
+    let max_freq = entries
+        .values()
+        .map(|e| e.frequency)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    Some((entries, max_epoch, max_freq))
 }
 
 fn make_suggestion(command: &str, score: f64) -> ProviderSuggestion {
@@ -233,23 +244,56 @@ fn fuzzy_matches<'a>(
     };
 
     let mut results = Vec::new();
+
+    // Same-first-char scan (full penalty factor)
     for (cmd, entry) in data.entries.range(first_char.to_string()..) {
         if !cmd.starts_with(first_char) {
             break;
         }
-        if seen.contains(cmd.as_str()) {
-            continue;
-        }
-        let distance = levenshtein(query, &cmd[..query.len().min(cmd.len())]);
-        let max_distance = (query.len() as f64 * 0.2).ceil() as usize;
-        if distance <= max_distance && distance > 0 && cmd.len() > query.len() {
-            let base_score = compute_score(entry, data.max_epoch, data.max_freq);
-            let fuzzy_penalty = 1.0 - (distance as f64 / query.len() as f64);
-            let score = (base_score * fuzzy_penalty * 0.8).clamp(0.0, 1.0);
-            results.push((score, cmd.as_str()));
+        if let Some(r) = fuzzy_score_entry(query, cmd, entry, data, seen, 0.8) {
+            results.push(r);
         }
     }
+
+    // Cross-first-char scan for longer queries (slightly higher penalty)
+    if query.len() >= 6 {
+        let cap = 20;
+        let mut cross_count = 0;
+        for (cmd, entry) in &data.entries {
+            if cmd.starts_with(first_char) || cross_count >= cap {
+                continue;
+            }
+            if let Some(r) = fuzzy_score_entry(query, cmd, entry, data, seen, 0.7) {
+                results.push(r);
+                cross_count += 1;
+            }
+        }
+    }
+
     results
+}
+
+fn fuzzy_score_entry<'a>(
+    query: &str,
+    cmd: &'a str,
+    entry: &HistoryEntry,
+    data: &HistoryData,
+    seen: &HashSet<&str>,
+    penalty_factor: f64,
+) -> Option<(f64, &'a str)> {
+    if seen.contains(cmd) {
+        return None;
+    }
+    let distance = levenshtein(query, &cmd[..query.len().min(cmd.len())]);
+    let max_distance = (query.len() as f64 * 0.2).ceil() as usize;
+    if distance <= max_distance && distance > 0 && cmd.len() > query.len() {
+        let base_score = compute_score(entry, data.max_epoch, data.max_freq);
+        let fuzzy_penalty = 1.0 - (distance as f64 / query.len() as f64);
+        let score = (base_score * fuzzy_penalty * penalty_factor).clamp(0.0, 1.0);
+        Some((score, cmd))
+    } else {
+        None
+    }
 }
 
 #[async_trait]
