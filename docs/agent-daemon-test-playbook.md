@@ -104,7 +104,7 @@ Use `synapse probe` to confirm daemon-side behavior behind UX results:
 
 1. `ping`, `suggest`, `list_suggestions`, `interaction`, `command_executed`.
 2. malformed request handling and parser resilience.
-3. NL async follow-up capture via `--wait-for-update` or `--stdio --wait-ms` (while treating immediate non-`ack` responses as terminal).
+3. NL request validation via `--request` (single terminal response: `list` or `error`).
 
 Expected evidence:
 - output lines and frame types matching requests.
@@ -119,7 +119,7 @@ When a plugin-path scenario fails:
 3. If both fail:
    - classify as daemon/provider/protocol issue
 4. Record both repro commands in findings.
-5. For NL, if `probe --request` times out waiting for follow-up frames, retry with `probe --stdio --wait-ms 20000` before marking FAIL.
+5. For NL, treat the first response as terminal. If `probe --request` times out, classify as request/transport/provider failure (not follow-up timing).
 
 ## Scenario Breadth Matrix (Required)
 
@@ -163,13 +163,13 @@ Run a broad set of scenarios. Target at least 30 distinct scenarios total.
 
 ### E) LLM/NL Scenarios (When Environment Supports)
 
-1. NL query returns either a command `update` or explicit `error` (never silent/ack-only terminal behavior).
+1. NL query returns either a command `list` (with suggestions) or explicit `error` (never silent behavior).
 2. Safety/policy behavior on risky NL translation (expect explicit `error` when blocked).
 3. Timeout/degraded behavior when provider is slow.
 4. Probe timeout handling:
-   - validate LLM scenarios with `--stdio --wait-ms` or `--wait-for-update` to avoid false negatives from fixed short request timeouts.
+   - validate LLM scenarios with a sufficient `--first-response-timeout-ms` for slower backends.
 
-> **NL response contract:** `natural_language` can return (a) immediate `update` (cache hit), (b) immediate `error` (validation/config/policy), or (c) `ack` then async `update`/`error`. Do not require `ack` as the first frame.
+> **NL response contract:** `natural_language` returns one terminal response: `list` (suggestions) or `error` (validation/config/policy/provider failure). No async follow-up frame is required.
 
 If blocked by missing API key/env:
 - mark scenario as `BLOCKED`, include exact missing prerequisite.
@@ -210,9 +210,8 @@ synapse probe --socket-path "$SOCK" --request '{"type":"suggest","session_id":"s
 ### NL / Interaction probe examples
 
 ```bash
-# Natural language query (can be immediate update/error OR ack then async update/error).
-# --wait-for-update waits for a follow-up only when first frame is ack:
-synapse probe --socket-path "$SOCK" --request '{"type":"natural_language","session_id":"s1","query":"find all rust files modified today","cwd":"/tmp","recent_commands":[]}' --wait-for-update --first-response-timeout-ms 30000
+# Natural language query (single terminal response: list or error):
+synapse probe --socket-path "$SOCK" --request '{"type":"natural_language","session_id":"s1","query":"find all rust files modified today","cwd":"/tmp","recent_commands":[]}' --first-response-timeout-ms 30000
 
 # Interaction feedback (synchronous ack):
 synapse probe --socket-path "$SOCK" --request '{"type":"interaction","session_id":"s1","action":"accept","suggestion":"git status","source":"history","buffer_at_action":"git sta"}'
@@ -220,7 +219,7 @@ synapse probe --socket-path "$SOCK" --request '{"type":"interaction","session_id
 # Command executed feedback (synchronous ack):
 synapse probe --socket-path "$SOCK" --request '{"type":"command_executed","session_id":"s1","command":"git status"}'
 
-# Alternative: use --stdio --wait-ms for NL to capture all output including late updates:
+# Alternative streamed input mode still returns a single NL terminal response:
 echo '{"type":"natural_language","session_id":"s1","query":"list docker containers","cwd":"/tmp","recent_commands":[]}' | synapse probe --socket-path "$SOCK" --stdio --wait-ms 30000
 ```
 
@@ -259,7 +258,7 @@ At end of run, inspect daemon logs for parser and transport anomalies:
 
 ## Retry Policy For Non-Deterministic Scenarios
 
-For workflow/async/update-sensitive scenarios:
+For workflow/async/update-sensitive scenarios (excluding `natural_language`, which is synchronous):
 
 1. Retry up to 5 times before marking `BLOCKED`.
 2. Record each attempt count and observed response type.
