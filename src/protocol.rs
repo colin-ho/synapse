@@ -11,7 +11,6 @@ pub enum Request {
     Suggest(SuggestRequest),
     ListSuggestions(ListSuggestionsRequest),
     NaturalLanguage(NaturalLanguageRequest),
-    Explain(ExplainRequest),
     Interaction(InteractionReport),
     CommandExecuted(CommandExecutedReport),
     Ping,
@@ -81,12 +80,6 @@ pub struct NaturalLanguageRequest {
     pub recent_commands: Vec<String>,
     #[serde(default)]
     pub env_hints: HashMap<String, String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ExplainRequest {
-    pub session_id: String,
-    pub command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -487,19 +480,6 @@ mod tests {
                 assert!(nl.env_hints.is_empty());
             }
             _ => panic!("Expected NaturalLanguage request"),
-        }
-    }
-
-    #[test]
-    fn test_explain_request_deserialization() {
-        let json =
-            r#"{"type":"explain","session_id":"abc","command":"find . -type f -size +100M"}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
-        match req {
-            Request::Explain(ex) => {
-                assert_eq!(ex.command, "find . -type f -size +100M");
-            }
-            _ => panic!("Expected Explain request"),
         }
     }
 

@@ -404,21 +404,3 @@ fn test_natural_language_request_parsing() {
         other => panic!("Expected NaturalLanguage request, got: {other:?}"),
     }
 }
-
-#[test]
-fn test_explain_request_parsing() {
-    let json = r#"{
-        "type": "explain",
-        "session_id": "abc123",
-        "command": "find . -name '*.rs' -exec grep -l 'TODO' {} +"
-    }"#;
-
-    let req: Request = serde_json::from_str(json).unwrap();
-    match req {
-        Request::Explain(ex) => {
-            assert_eq!(ex.session_id, "abc123");
-            assert_eq!(ex.command, "find . -name '*.rs' -exec grep -l 'TODO' {} +");
-        }
-        other => panic!("Expected Explain request, got: {other:?}"),
-    }
-}
