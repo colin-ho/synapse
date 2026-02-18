@@ -971,7 +971,7 @@ _synapse_dropdown_open() {
     json="$(_synapse_build_list_request "$BUFFER" "$CURSOR" "$PWD" 50)"
 
     local response
-    response="$(_synapse_request "$json" "list")" || { zle .down-line-or-history; return; }
+    response="$(_synapse_request "$json" "list" 5.0)" || { zle .down-line-or-history; return; }
 
     # Parse response
     _synapse_parse_suggestion_list "$response"
