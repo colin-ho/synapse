@@ -74,7 +74,7 @@ enum Commands {
         first_response_timeout_ms: u64,
 
         /// After receiving an initial "ack" response, wait for one follow-up update
-        /// (useful for async NL/explain queries that return ack then update)
+        /// (useful for async NL queries that return ack then update)
         #[arg(long, default_value_t = false)]
         wait_for_update: bool,
     },

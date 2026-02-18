@@ -17,7 +17,7 @@ This playbook is for an agent testing Synapse as close to a real human user as p
 Goal: Test Synapse in a human-like way with full functionality enabled, covering many realistic user scenarios.
 
 Required approach:
-- Primary path: real zsh plugin interaction (typing, ghost text, dropdown, accept/dismiss, NL/explain when available).
+- Primary path: real zsh plugin interaction (typing, ghost text, dropdown, accept/dismiss, NL when available).
 - Secondary path: `synapse probe` for validation and diagnostics.
 - Do not disable functionality in config for convenience.
 
@@ -69,7 +69,6 @@ Test as a human user would at the prompt:
 5. Dropdown open/navigation/accept/dismiss via arrow keys.
 6. History navigation interactions with Synapse state.
 7. Natural-language mode (`? <query>`) if enabled (`Enter`/`Tab` triggers translation and dropdown/error rendering).
-8. Explain flow for LLM-sourced command (`Ctrl+E`) when available.
 
 Expected evidence:
 - terminal snippets showing visible behavior and accepted command results.
@@ -166,14 +165,11 @@ Run a broad set of scenarios. Target at least 30 distinct scenarios total.
 
 1. NL query returns either a command `update` or explicit `error` (never silent/ack-only terminal behavior).
 2. Safety/policy behavior on risky NL translation (expect explicit `error` when blocked).
-3. Explain command response quality and stability (`suggest` or `error`).
-4. Timeout/degraded behavior when provider is slow.
-5. Probe timeout handling:
+3. Timeout/degraded behavior when provider is slow.
+4. Probe timeout handling:
    - validate LLM scenarios with `--stdio --wait-ms` or `--wait-for-update` to avoid false negatives from fixed short request timeouts.
 
 > **NL response contract:** `natural_language` can return (a) immediate `update` (cache hit), (b) immediate `error` (validation/config/policy), or (c) `ack` then async `update`/`error`. Do not require `ack` as the first frame.
->
-> **Explain response contract:** `explain` is synchronous (`suggest` or `error`), not `ack` + async update.
 
 If blocked by missing API key/env:
 - mark scenario as `BLOCKED`, include exact missing prerequisite.
@@ -209,19 +205,14 @@ Pass criteria:
 ```bash
 synapse probe --socket-path "$SOCK" --request '{"type":"ping"}'
 synapse probe --socket-path "$SOCK" --request '{"type":"suggest","session_id":"s1","buffer":"git ch","cursor_pos":6,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}'
-# for slower local LLMs:
-synapse probe --socket-path "$SOCK" --request '{"type":"explain","session_id":"s1","command":"git rebase -i HEAD~3"}' --first-response-timeout-ms 30000
 ```
 
-### NL / Explain / Interaction probe examples
+### NL / Interaction probe examples
 
 ```bash
 # Natural language query (can be immediate update/error OR ack then async update/error).
 # --wait-for-update waits for a follow-up only when first frame is ack:
 synapse probe --socket-path "$SOCK" --request '{"type":"natural_language","session_id":"s1","query":"find all rust files modified today","cwd":"/tmp","recent_commands":[]}' --wait-for-update --first-response-timeout-ms 30000
-
-# Explain a command (synchronous: suggest or error):
-synapse probe --socket-path "$SOCK" --request '{"type":"explain","session_id":"s1","command":"git rebase -i HEAD~3"}' --first-response-timeout-ms 30000
 
 # Interaction feedback (synchronous ack):
 synapse probe --socket-path "$SOCK" --request '{"type":"interaction","session_id":"s1","action":"accept","suggestion":"git status","source":"history","buffer_at_action":"git sta"}'
@@ -229,7 +220,7 @@ synapse probe --socket-path "$SOCK" --request '{"type":"interaction","session_id
 # Command executed feedback (synchronous ack):
 synapse probe --socket-path "$SOCK" --request '{"type":"command_executed","session_id":"s1","command":"git status"}'
 
-# Alternative: use --stdio --wait-ms for NL/explain to capture all output including late updates:
+# Alternative: use --stdio --wait-ms for NL to capture all output including late updates:
 echo '{"type":"natural_language","session_id":"s1","query":"list docker containers","cwd":"/tmp","recent_commands":[]}' | synapse probe --socket-path "$SOCK" --stdio --wait-ms 30000
 ```
 

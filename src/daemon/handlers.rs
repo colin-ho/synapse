@@ -5,9 +5,9 @@ use std::sync::Arc;
 use futures_util::SinkExt;
 
 use crate::protocol::{
-    CommandExecutedReport, ExplainRequest, InteractionAction, InteractionReport,
-    ListSuggestionsRequest, NaturalLanguageRequest, Request, Response, SuggestRequest,
-    SuggestionListResponse, SuggestionResponse, SuggestionSource,
+    CommandExecutedReport, InteractionAction, InteractionReport, ListSuggestionsRequest,
+    NaturalLanguageRequest, Request, Response, SuggestRequest, SuggestionListResponse,
+    SuggestionResponse, SuggestionSource,
 };
 use crate::providers::{Provider, ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
@@ -37,7 +37,6 @@ pub(super) async fn handle_request(
         Request::Suggest(req) => handle_suggest(req, state).await.response,
         Request::ListSuggestions(req) => handle_list_suggestions(req, state).await,
         Request::NaturalLanguage(req) => handle_natural_language(req, state, writer).await,
-        Request::Explain(req) => handle_explain(req, state).await,
         Request::Interaction(report) => handle_interaction(report, state).await,
         Request::CommandExecuted(report) => handle_command_executed(report, state).await,
         Request::Ping => {
@@ -644,38 +643,6 @@ async fn send_async_response(writer: &SharedWriter, response: Response, context:
     let mut w = writer.lock().await;
     if let Err(e) = w.send(response_line).await {
         tracing::debug!("Failed to send {context}: {e}");
-    }
-}
-
-async fn handle_explain(req: ExplainRequest, state: &RuntimeState) -> Response {
-    tracing::debug!(
-        session = %req.session_id,
-        command = %req.command,
-        "Explain request"
-    );
-
-    let llm_client = match &state.llm_client {
-        Some(client) => client,
-        None => {
-            return Response::Error {
-                message: "LLM client not configured".into(),
-            };
-        }
-    };
-
-    match llm_client.explain_command(&req.command).await {
-        Ok(explanation) => Response::Suggestion(SuggestionResponse {
-            text: explanation,
-            source: SuggestionSource::Llm,
-            confidence: 1.0,
-            description: None,
-        }),
-        Err(e) => {
-            tracing::warn!("Explain failed: {e}");
-            Response::Error {
-                message: format!("Explanation failed: {e}"),
-            }
-        }
     }
 }
 

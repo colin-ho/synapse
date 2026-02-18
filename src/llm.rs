@@ -253,17 +253,6 @@ impl LlmClient {
         Ok(NlTranslationResult { items })
     }
 
-    /// Ask the LLM to explain a command.
-    pub async fn explain_command(&self, command: &str) -> Result<String, LlmError> {
-        let prompt = build_explain_prompt(command);
-        let text = self.request_completion(&prompt, 512).await?;
-        let explanation = text.trim().to_string();
-        if explanation.is_empty() {
-            return Err(LlmError::EmptyResponse);
-        }
-        Ok(explanation)
-    }
-
     /// Predict the next command based on recent command history and context.
     pub async fn predict_workflow(
         &self,
@@ -797,19 +786,6 @@ Rules:
             query = ctx.query,
         )
     }
-}
-
-fn build_explain_prompt(command: &str) -> String {
-    format!(
-        r#"Explain this shell command in 1-2 short sentences. Be concise and specific.
-
-Command: {command}
-
-Rules:
-- Explain what it does, not how to use it
-- Mention any potentially dangerous effects
-- Keep it under 100 words"#,
-    )
 }
 
 /// Extract the content of a markdown fenced code block, skipping the language tag.
@@ -1425,13 +1401,6 @@ ignored = true
             "# Here are the commands:\n1. find . -size +100M\n// another comment\n2. du -sh *";
         let cmds = extract_commands(response, 5);
         assert_eq!(cmds, vec!["find . -size +100M", "du -sh *"]);
-    }
-
-    #[test]
-    fn test_build_explain_prompt() {
-        let prompt = build_explain_prompt("find . -type f -size +100M");
-        assert!(prompt.contains("find . -type f -size +100M"));
-        assert!(prompt.contains("Explain"));
     }
 
     #[tokio::test]

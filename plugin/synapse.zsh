@@ -374,16 +374,6 @@ _synapse_build_nl_request() {
     echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${_sj_cwd}\",\"recent_commands\":${_sj_recent},\"env_hints\":${_sj_env}}"
 }
 
-# Build an explain request JSON
-_synapse_build_explain_request() {
-    local command="$1"
-
-    local escaped_command
-    escaped_command="$(_synapse_json_escape "$command")"
-
-    echo "{\"type\":\"explain\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"command\":\"${escaped_command}\"}"
-}
-
 # --- Ghost Text Rendering ---
 
 _synapse_show_suggestion() {
@@ -1000,32 +990,6 @@ _synapse_dismiss() {
     fi
 }
 
-# Explain the current NL-generated command (Alt+E)
-_synapse_explain() {
-    # Only works when viewing an LLM-generated command
-    if [[ -z "$_SYNAPSE_CURRENT_SUGGESTION" ]] || [[ "$_SYNAPSE_CURRENT_SOURCE" != "llm" ]] || [[ $_SYNAPSE_CONNECTED -ne 1 ]]; then
-        return
-    fi
-
-    local command="$_SYNAPSE_CURRENT_SUGGESTION"
-    local json
-    json="$(_synapse_build_explain_request "$command")"
-
-    local response
-    response="$(_synapse_request "$json" "suggest" 5.0)" || return
-
-    local -a _tsv_fields
-    IFS=$'\t' read -rA _tsv_fields <<< "$response"
-
-    if [[ "${_tsv_fields[1]}" == "suggest" ]] && [[ -n "${_tsv_fields[2]}" ]]; then
-        # Show command + explanation below the query
-        POSTDISPLAY=$'\n'"  > ${_SYNAPSE_CURRENT_SUGGESTION}"$'\n'"  ─────────────────────────────"$'\n'"  ${_tsv_fields[2]}"
-        local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
-        region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=14")
-        zle -R
-    fi
-}
-
 # --- History Navigation ---
 
 # Override up-arrow to track history browsing state
@@ -1252,7 +1216,6 @@ _synapse_init() {
     zle -N synapse-dropdown-dismiss _synapse_dropdown_dismiss
     zle -N synapse-dropdown-close-and-insert _synapse_dropdown_close_and_insert
     zle -N synapse-up-line-or-history _synapse_up_line_or_history
-    zle -N synapse-explain _synapse_explain
     zle -N synapse-nl-cancel _synapse_nl_cancel
     zle -N accept-line _synapse_accept_line
     zle -N zle-line-pre-redraw _synapse_line_pre_redraw
@@ -1284,7 +1247,6 @@ _synapse_init() {
     bindkey '\t' synapse-tab-accept       # Tab (accept suggestion or normal completion)
     bindkey '^[[1;5C' synapse-accept-word # Ctrl+Right arrow
     bindkey '^[' synapse-dismiss          # Escape
-    bindkey '^[e' synapse-explain          # Alt+E — explain NL-generated command
     for seq in '^[[' '^[O'; do
         bindkey "${seq}C" synapse-accept              # Right arrow
         bindkey "${seq}A" synapse-up-line-or-history   # Up arrow — history + flag

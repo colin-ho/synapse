@@ -23,7 +23,6 @@ It is built as:
   - user project overrides via `.synapse/specs/*.toml`
 - Optional LLM-powered features:
   - natural language to command translation (`? ...`)
-  - explain generated commands (`Ctrl+E`)
   - contextual argument suggestions
   - workflow prediction enrichment
 - Built-in probe tool for protocol-level debugging (`synapse probe`).
@@ -95,7 +94,6 @@ synapse probe --request '{"type":"ping"}'
 - `Ctrl+Right Arrow`: accept one word
 - `Esc`: dismiss suggestion
 - `Down Arrow`: open dropdown list
-- `Ctrl+E`: explain the current NL-generated command (when available)
 
 ## Configuration
 
@@ -107,7 +105,7 @@ Copy `config.example.toml` to your platform config location:
 Important sections:
 
 - `[spec]`: controls auto-generation, `--help` discovery, and generator behavior.
-- `[llm]`: provider/model/base URL, plus NL/explain/contextual args settings.
+- `[llm]`: provider/model/base URL, plus NL/contextual args settings.
 - `[workflow]`: bigram workflow prediction behavior.
 - `[security]`: path/env scrubbing and command blocklists.
 - `[logging]`: interaction log path and rotation size.
@@ -127,7 +125,6 @@ Core request types include:
 - `suggest`
 - `list_suggestions`
 - `natural_language`
-- `explain`
 - `interaction`
 - `command_executed`
 - `ping`

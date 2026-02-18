@@ -38,7 +38,7 @@ scrub_paths = true                      # redact home directory in API payloads
 command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 
 [llm]
-enabled = false                        # enable LLM-powered features (spec discovery, NL, explain, contextual args)
+enabled = false                        # enable LLM-powered features (spec discovery, NL, contextual args)
 provider = "openai"                    # only supported provider (also used for local OpenAI-compatible endpoints)
 api_key_env = "OPENAI_API_KEY"         # env var name containing the API key
 base_url = "http://127.0.0.1:1234"    # API base URL (default: LM Studio local endpoint)
