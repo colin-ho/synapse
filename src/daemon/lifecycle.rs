@@ -220,7 +220,7 @@ pub(super) async fn start_daemon(
         workflow_predictor.clone(),
         config.workflow.clone(),
         llm_client.clone(),
-        config.llm.clone(),
+        config.llm.workflow_prediction,
     );
     if config.workflow.enabled {
         tracing::info!("Workflow prediction enabled");
@@ -249,7 +249,7 @@ pub(super) async fn start_daemon(
         }
     }
 
-    let ranker = Ranker::new(config.weights.clone());
+    let ranker = Ranker::new();
 
     let session_manager = SessionManager::new();
     let interaction_logger = InteractionLogger::new(

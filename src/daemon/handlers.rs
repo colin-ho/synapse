@@ -53,8 +53,7 @@ pub(super) async fn handle_request(
         }
         Request::ReloadConfig => {
             tracing::info!("Config reload requested");
-            let new_config = crate::config::Config::load();
-            state.ranker.update_weights(new_config.weights.clone());
+            let _new_config = crate::config::Config::load();
             tracing::info!("Config reloaded successfully");
             Response::Ack
         }
@@ -101,8 +100,8 @@ pub(super) async fn handle_suggest(req: SuggestRequest, state: &RuntimeState) ->
     let (response, baseline_score, baseline_text, baseline_source) = match ranked {
         Some(r) => {
             let mut text = r.text;
-            if text.len() > state.config.general.max_suggestion_length {
-                text.truncate(state.config.general.max_suggestion_length);
+            if text.len() > crate::config::MAX_SUGGESTION_LENGTH {
+                text.truncate(crate::config::MAX_SUGGESTION_LENGTH);
             }
 
             let resp = SuggestionResponse {
@@ -203,7 +202,6 @@ pub(super) fn spawn_phase2_update(
 
     let ranker = state.ranker.clone();
     let session_manager = state.session_manager.clone();
-    let max_suggestion_length = state.config.general.max_suggestion_length;
     let workflow_llm_inflight = state.workflow_llm_inflight.clone();
 
     let Phase2UpdatePlan {
@@ -277,8 +275,8 @@ pub(super) fn spawn_phase2_update(
         }
 
         let mut text = best.text;
-        if text.len() > max_suggestion_length {
-            text.truncate(max_suggestion_length);
+        if text.len() > crate::config::MAX_SUGGESTION_LENGTH {
+            text.truncate(crate::config::MAX_SUGGESTION_LENGTH);
         }
 
         let update = SuggestionResponse {
@@ -423,11 +421,11 @@ async fn handle_natural_language(
     };
 
     // Check minimum query length
-    if req.query.len() < state.config.llm.nl_min_query_length {
+    if req.query.len() < crate::config::NL_MIN_QUERY_LENGTH {
         return Response::Error {
             message: format!(
                 "Natural language query too short (minimum {} characters)",
-                state.config.llm.nl_min_query_length
+                crate::config::NL_MIN_QUERY_LENGTH
             ),
         };
     }
@@ -473,7 +471,7 @@ async fn handle_natural_language(
 
     tokio::spawn(async move {
         // Overlap debounce sleep with context detection (both can run in parallel)
-        let debounce_ms = config.llm.nl_debounce_ms;
+        let debounce_ms = crate::config::NL_DEBOUNCE_MS;
         let scan_depth = config.spec.scan_depth;
         let cwd_for_cache = cwd.clone();
         let env_hints_for_cache = env_hints.clone();
@@ -808,6 +806,10 @@ mod tests {
     use crate::spec_store::SpecStore;
     use crate::workflow::WorkflowPredictor;
 
+    // NL minimum query length is now a hardcoded constant, so we define a
+    // local helper for the test that needs to exercise the "too short" path.
+    const TEST_NL_MIN_QUERY_LENGTH: usize = crate::config::NL_MIN_QUERY_LENGTH;
+
     fn test_runtime_state(config: Config) -> RuntimeState {
         let llm_client =
             crate::llm::LlmClient::from_config(&config.llm, config.security.scrub_paths)
@@ -825,7 +827,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Arc::new(SpecStore::new(config.spec.clone(), llm_client.clone())),
-            Ranker::new(config.weights.clone()),
+            Ranker::new(),
             Arc::new(WorkflowPredictor::new()),
             SessionManager::new(),
             InteractionLogger::new(log_path, 1),
@@ -869,12 +871,13 @@ mod tests {
     async fn test_nl_short_query_returns_error() {
         let mut config = Config::default();
         config.llm.enabled = true;
-        config.llm.nl_min_query_length = 20;
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config.clone());
         let writer = test_shared_writer();
 
+        // Query must be shorter than NL_MIN_QUERY_LENGTH (5) to trigger the error
+        assert!(TEST_NL_MIN_QUERY_LENGTH > 4, "test assumes min length > 4");
         let resp = handle_natural_language(
             NaturalLanguageRequest {
                 session_id: "sess-short".to_string(),

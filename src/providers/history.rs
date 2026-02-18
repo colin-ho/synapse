@@ -608,7 +608,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: false,
         });
@@ -631,7 +630,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: false,
         });
@@ -651,7 +649,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: false,
         });
@@ -671,7 +668,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: true,
         });
@@ -691,7 +687,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: false,
         });
@@ -709,7 +704,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: false,
         });
@@ -727,7 +721,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: false,
         });
@@ -757,7 +750,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 5,
             fuzzy: false,
         });
@@ -785,7 +777,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: false,
         });
@@ -813,7 +804,6 @@ mod tests {
         std::env::set_var("HISTFILE", file.path().to_str().unwrap());
 
         let provider = HistoryProvider::new(crate::config::HistoryConfig {
-            enabled: true,
             max_entries: 50000,
             fuzzy: false,
         });

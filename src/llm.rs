@@ -117,7 +117,7 @@ impl LlmClient {
             model: config.model.clone(),
             max_calls_per_discovery: config.max_calls_per_discovery,
             client,
-            rate_limit_duration: Duration::from_millis(config.rate_limit_ms),
+            rate_limit_duration: Duration::from_millis(crate::config::RATE_LIMIT_MS),
             rate_limiter: Mutex::new(Instant::now() - Duration::from_secs(1)),
             backoff_active: AtomicBool::new(false),
             backoff_until: Mutex::new(None),

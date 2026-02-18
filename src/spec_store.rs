@@ -267,7 +267,7 @@ impl SpecStore {
 
         // Skip fresh discovered specs; stale ones are eligible for refresh.
         if let Some(discovered) = self.discovered.read().await.get(&command) {
-            if !spec_cache::is_stale(discovered, self.config.discover_max_age_secs) {
+            if !spec_cache::is_stale(discovered, crate::config::DISCOVER_MAX_AGE_SECS) {
                 return;
             }
         }
@@ -297,7 +297,7 @@ impl SpecStore {
 
     /// Run the actual discovery process for a command.
     async fn discover_command_impl(&self, command: &str, cwd: Option<&Path>) {
-        let timeout = Duration::from_millis(self.config.discover_timeout_ms);
+        let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
         let args: Vec<String> = Vec::new();
 
         let help_text = match self.fetch_help_output(command, &args, timeout, cwd).await {
@@ -327,7 +327,7 @@ impl SpecStore {
         }
 
         // Recurse into subcommands if configured
-        if self.config.discover_max_depth > 0 && !spec.subcommands.is_empty() {
+        if crate::config::DISCOVER_MAX_DEPTH > 0 && !spec.subcommands.is_empty() {
             self.discover_subcommands(command, &mut spec, cwd, &llm_budget)
                 .await;
         }
@@ -453,7 +453,7 @@ impl SpecStore {
         cwd: Option<&Path>,
         llm_budget: &AtomicUsize,
     ) {
-        if depth > self.config.discover_max_depth {
+        if depth > crate::config::DISCOVER_MAX_DEPTH {
             return;
         }
 
@@ -462,7 +462,7 @@ impl SpecStore {
             return;
         }
 
-        let timeout = Duration::from_millis(self.config.discover_timeout_ms);
+        let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
 
         let mut args = parent_path.to_vec();
         args.push(subcommand.name.clone());
@@ -490,7 +490,7 @@ impl SpecStore {
             }
         }
 
-        if depth >= self.config.discover_max_depth || subcommand.subcommands.is_empty() {
+        if depth >= crate::config::DISCOVER_MAX_DEPTH || subcommand.subcommands.is_empty() {
             return;
         }
 
@@ -660,7 +660,7 @@ impl SpecStore {
         if self.config.discover_project_cli && self.config.trust_project_generators {
             let cli_specs = spec_autogen::discover_project_cli_specs(
                 scan_root,
-                self.config.discover_timeout_ms,
+                crate::config::DISCOVER_TIMEOUT_MS,
             )
             .await;
             for mut spec in cli_specs {
@@ -702,8 +702,11 @@ impl SpecStore {
             return cached;
         }
 
-        let timeout =
-            Duration::from_millis(generator.timeout_ms.min(self.config.generator_timeout_ms));
+        let timeout = Duration::from_millis(
+            generator
+                .timeout_ms
+                .min(crate::config::GENERATOR_TIMEOUT_MS),
+        );
 
         let result = match tokio::time::timeout(timeout, async {
             Command::new("sh")
