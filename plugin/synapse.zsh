@@ -923,21 +923,23 @@ _synapse_backward_delete_char() {
     _synapse_suggest_or_nl
 }
 
-# Accept one character from the suggestion (Fish-style right arrow)
+# Accept the next word from the suggestion (right arrow)
 _synapse_accept() {
     if [[ -n "$_SYNAPSE_CURRENT_SUGGESTION" ]] && [[ -n "$POSTDISPLAY" ]]; then
         local remaining="${_SYNAPSE_CURRENT_SUGGESTION#$BUFFER}"
         if [[ -n "$remaining" ]]; then
-            # Accept one character
-            BUFFER+="${remaining:0:1}"
+            # Extract next word (up to next space or end)
+            local next_word="${remaining%% *}"
+            if [[ "$remaining" == *" "* ]] && [[ "$next_word" != "$remaining" ]]; then
+                next_word+=" "
+            fi
+            BUFFER+="$next_word"
             CURSOR=${#BUFFER}
             if [[ "$BUFFER" == "$_SYNAPSE_CURRENT_SUGGESTION" ]]; then
-                # Last character accepted — full accept
                 _synapse_report_interaction "accept"
                 _synapse_reset_nl
                 _synapse_clear_suggestion
             else
-                # Re-render remaining ghost text
                 _synapse_show_suggestion "$_SYNAPSE_CURRENT_SUGGESTION" "$_SYNAPSE_CURRENT_SOURCE"
             fi
         fi
@@ -973,22 +975,6 @@ _synapse_tab_accept() {
     fi
 }
 
-# Accept the next word from the suggestion
-_synapse_accept_word() {
-    if [[ -n "$_SYNAPSE_CURRENT_SUGGESTION" ]] && [[ -n "$POSTDISPLAY" ]]; then
-        local remaining="${_SYNAPSE_CURRENT_SUGGESTION#$BUFFER}"
-        # Extract next word (up to next space or end)
-        local next_word="${remaining%% *}"
-        if [[ "$remaining" == *" "* ]] && [[ "$next_word" != "$remaining" ]]; then
-            next_word+=" "
-        fi
-        BUFFER+="$next_word"
-        CURSOR=${#BUFFER}
-        _synapse_show_suggestion "$_SYNAPSE_CURRENT_SUGGESTION"
-    else
-        zle .forward-word
-    fi
-}
 
 # Dismiss the current suggestion
 _synapse_dismiss() {
@@ -1242,7 +1228,6 @@ _synapse_init() {
     zle -N backward-delete-char _synapse_backward_delete_char
     zle -N bracketed-paste _synapse_bracketed_paste
     zle -N synapse-accept _synapse_accept
-    zle -N synapse-accept-word _synapse_accept_word
     zle -N synapse-dismiss _synapse_dismiss
     zle -N synapse-tab-accept _synapse_tab_accept
     zle -N synapse-dropdown-open _synapse_dropdown_open
@@ -1282,7 +1267,6 @@ _synapse_init() {
 
     # Main keymap bindings
     bindkey '\t' synapse-tab-accept       # Tab (accept suggestion or normal completion)
-    bindkey '^[[1;5C' synapse-accept-word # Ctrl+Right arrow
     bindkey '^[' synapse-dismiss          # Escape
     bindkey '^[e' synapse-explain          # Alt+E — explain NL-generated command
     for seq in '^[[' '^[O'; do
