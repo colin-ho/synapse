@@ -103,8 +103,8 @@ pub struct LlmConfig {
     pub provider: String,
     pub api_key_env: String,
     /// Optional API base URL override.
-    /// - OpenAI: uses {base_url}/v1/chat/completions (or {base_url}/chat/completions if base_url already ends in /v1)
-    /// - Anthropic: uses {base_url}/v1/messages (or {base_url}/messages if base_url already ends in /v1)
+    /// Uses {base_url}/v1/chat/completions (or {base_url}/chat/completions if
+    /// base_url already ends in /v1).
     pub base_url: Option<String>,
     pub model: String,
     pub timeout_ms: u64,
@@ -248,8 +248,8 @@ impl LlmDiscoveryConfig {
                 .clone()
                 .unwrap_or_else(|| parent.api_key_env.clone()),
             // If provider is overridden, don't inherit parent's base_url
-            // (e.g. switching from local OpenAI to Anthropic cloud — the local
-            // base_url would be wrong). Use discovery's base_url or None.
+            // (e.g. switching from local OpenAI endpoint to hosted OpenAI — the
+            // local base_url would be wrong). Use discovery's base_url or None.
             base_url: if provider_changed {
                 self.base_url.clone()
             } else {
@@ -412,16 +412,16 @@ mod tests {
     fn test_discovery_config_resolves_with_overrides() {
         let parent = super::LlmConfig::default();
         let discovery = LlmDiscoveryConfig {
-            provider: Some("anthropic".into()),
-            api_key_env: Some("ANTHROPIC_API_KEY".into()),
-            model: Some("claude-haiku-4-5-20251001".into()),
+            provider: Some("openai".into()),
+            api_key_env: Some("OPENAI_DISCOVERY_API_KEY".into()),
+            model: Some("gpt-4.1-mini".into()),
             timeout_ms: Some(30000),
             ..Default::default()
         };
         let resolved = discovery.resolve(&parent);
-        assert_eq!(resolved.provider, "anthropic");
-        assert_eq!(resolved.api_key_env, "ANTHROPIC_API_KEY");
-        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.api_key_env, "OPENAI_DISCOVERY_API_KEY");
+        assert_eq!(resolved.model, "gpt-4.1-mini");
         assert_eq!(resolved.timeout_ms, 30000);
         // Inherited from parent
         assert_eq!(
@@ -448,7 +448,7 @@ mod tests {
         parent.base_url = Some("http://127.0.0.1:1234".into());
         assert!(parent.base_url.is_some());
         let discovery = LlmDiscoveryConfig {
-            provider: Some("anthropic".into()),
+            provider: Some("openai".into()),
             // No base_url set — should NOT inherit parent's local endpoint
             ..Default::default()
         };
@@ -475,14 +475,14 @@ provider = "openai"
 model = "local-model"
 
 [llm.discovery]
-provider = "anthropic"
-api_key_env = "ANTHROPIC_API_KEY"
-model = "claude-haiku-4-5-20251001"
+provider = "openai"
+api_key_env = "OPENAI_DISCOVERY_API_KEY"
+model = "gpt-4.1-mini"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         let disc = config.llm.discovery.unwrap();
-        assert_eq!(disc.provider.unwrap(), "anthropic");
-        assert_eq!(disc.model.unwrap(), "claude-haiku-4-5-20251001");
-        assert_eq!(disc.api_key_env.unwrap(), "ANTHROPIC_API_KEY");
+        assert_eq!(disc.provider.unwrap(), "openai");
+        assert_eq!(disc.model.unwrap(), "gpt-4.1-mini");
+        assert_eq!(disc.api_key_env.unwrap(), "OPENAI_DISCOVERY_API_KEY");
     }
 }

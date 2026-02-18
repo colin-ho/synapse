@@ -33,9 +33,9 @@ Required outcomes:
 1. Record baseline environment:
    - `which synapse`
    - `synapse --help`
-   - `printenv | rg 'ANTHROPIC|OPENAI|SYNAPSE'` (or equivalent)
+   - `printenv | rg 'OPENAI|SYNAPSE'` (or equivalent)
 2. Check LLM prerequisites:
-   - If using hosted providers, verify required API env keys are present.
+   - If using hosted OpenAI, verify required API env keys are present.
    - If using a local OpenAI-compatible endpoint (LM Studio, Ollama OpenAI shim, etc.), verify endpoint health with `curl http://127.0.0.1:1234/v1/models` (or configured base URL).
    - Record the exact model ID used for the run.
 3. Confirm daemon log capture location before tests:

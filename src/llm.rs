@@ -41,14 +41,7 @@ pub struct NlTranslationResult {
     pub items: Vec<NlTranslationItem>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LlmProvider {
-    Anthropic,
-    OpenAI,
-}
-
 pub struct LlmClient {
-    provider: LlmProvider,
     api_key: String,
     base_url: Option<String>,
     model: String,
@@ -70,14 +63,13 @@ impl LlmClient {
             return None;
         }
 
-        let provider = match config.provider.as_str() {
-            "anthropic" => LlmProvider::Anthropic,
-            "openai" => LlmProvider::OpenAI,
-            other => {
-                tracing::warn!("Unknown LLM provider '{other}', disabling LLM");
-                return None;
-            }
-        };
+        if config.provider != "openai" {
+            tracing::warn!(
+                "Unsupported LLM provider '{}' (only 'openai' is supported), disabling LLM",
+                config.provider
+            );
+            return None;
+        }
 
         let base_url = config
             .base_url
@@ -90,9 +82,7 @@ impl LlmClient {
             Ok(v) if !v.is_empty() => v,
             _ => {
                 // For local OpenAI-compatible endpoints (LM Studio, etc.), allow a placeholder.
-                if provider == LlmProvider::OpenAI
-                    && base_url.as_deref().is_some_and(is_local_base_url)
-                {
+                if base_url.as_deref().is_some_and(is_local_base_url) {
                     tracing::info!(
                         "LLM key env {} missing; using placeholder key for local endpoint",
                         config.api_key_env
@@ -111,7 +101,6 @@ impl LlmClient {
             .ok()?;
 
         Some(Self {
-            provider,
             api_key,
             base_url,
             model: config.model.clone(),
@@ -133,9 +122,6 @@ impl LlmClient {
     /// If the configured model is in the list, keeps it. Otherwise switches to the first
     /// available model. Skips non-local endpoints entirely.
     pub async fn auto_detect_model(&mut self) -> Option<String> {
-        if self.provider != LlmProvider::OpenAI {
-            return None;
-        }
         let base = self.base_url.as_deref()?;
         if !is_local_base_url(base) {
             return None;
@@ -195,23 +181,17 @@ impl LlmClient {
         // For OpenAI-compatible endpoints, use GET /v1/models which is a standard
         // lightweight read-only endpoint. HEAD on /v1/chat/completions causes
         // spurious errors in LM Studio and similar local servers.
-        let url = match self.provider {
-            LlmProvider::OpenAI => url_with_v1_path(
-                self.base_url.as_deref().unwrap_or("https://api.openai.com"),
-                "models",
-            ),
-            LlmProvider::Anthropic => self.anthropic_messages_url(),
-        };
+        let url = url_with_v1_path(
+            self.base_url.as_deref().unwrap_or("https://api.openai.com"),
+            "models",
+        );
 
         let health_client = match Client::builder().timeout(Duration::from_secs(3)).build() {
             Ok(c) => c,
             Err(_) => return false,
         };
 
-        let result = match self.provider {
-            LlmProvider::OpenAI => health_client.get(&url).send().await,
-            LlmProvider::Anthropic => health_client.head(&url).send().await,
-        };
+        let result = health_client.get(&url).send().await;
 
         match result {
             Ok(_) => {
@@ -364,10 +344,7 @@ impl LlmClient {
         self.check_backoff().await?;
         self.rate_limit().await;
 
-        let result = match self.provider {
-            LlmProvider::Anthropic => self.call_anthropic(prompt, max_tokens).await,
-            LlmProvider::OpenAI => self.call_openai(prompt, max_tokens).await,
-        };
+        let result = self.call_openai(prompt, max_tokens).await;
 
         let should_backoff = result
             .as_ref()
@@ -426,34 +403,6 @@ impl LlmClient {
         Ok(resp.json().await?)
     }
 
-    async fn call_anthropic(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
-        let body = AnthropicRequest {
-            model: self.model.clone(),
-            max_tokens,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
-        };
-
-        let resp = self
-            .client
-            .post(self.anthropic_messages_url())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        let parsed: AnthropicResponse = Self::parse_api_response(resp).await?;
-        Ok(parsed
-            .content
-            .first()
-            .map(|c| c.text.clone())
-            .unwrap_or_default())
-    }
-
     async fn call_openai(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         let body = OpenAIRequest {
             model: self.model.clone(),
@@ -479,13 +428,6 @@ impl LlmClient {
             .first()
             .map(|c| c.message.content.clone())
             .unwrap_or_default())
-    }
-
-    fn anthropic_messages_url(&self) -> String {
-        match self.base_url.as_deref() {
-            Some(base) => url_with_v1_path(base, "messages"),
-            None => "https://api.anthropic.com/v1/messages".to_string(),
-        }
     }
 
     fn openai_chat_completions_url(&self) -> String {
@@ -611,74 +553,33 @@ impl LlmClient {
         Ok(NlTranslationResult { items: emitted })
     }
 
-    /// Start a streaming SSE request to the configured LLM provider.
+    /// Start a streaming SSE request to the configured OpenAI-compatible endpoint.
     async fn start_streaming_request(
         &self,
         prompt: &str,
         max_tokens: u32,
     ) -> Result<reqwest::Response, LlmError> {
-        match self.provider {
-            LlmProvider::Anthropic => {
-                let body = serde_json::json!({
-                    "model": self.model,
-                    "max_tokens": max_tokens,
-                    "stream": true,
-                    "messages": [{"role": "user", "content": prompt}]
-                });
-                Ok(self
-                    .client
-                    .post(self.anthropic_messages_url())
-                    .header("x-api-key", &self.api_key)
-                    .header("anthropic-version", "2023-06-01")
-                    .header("content-type", "application/json")
-                    .json(&body)
-                    .send()
-                    .await?)
-            }
-            LlmProvider::OpenAI => {
-                let body = serde_json::json!({
-                    "model": self.model,
-                    "max_tokens": max_tokens,
-                    "stream": true,
-                    "messages": [{"role": "user", "content": prompt}]
-                });
-                Ok(self
-                    .client
-                    .post(self.openai_chat_completions_url())
-                    .header("Authorization", format!("Bearer {}", self.api_key))
-                    .header("content-type", "application/json")
-                    .json(&body)
-                    .send()
-                    .await?)
-            }
-        }
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "stream": true,
+            "messages": [{"role": "user", "content": prompt}]
+        });
+        Ok(self
+            .client
+            .post(self.openai_chat_completions_url())
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?)
     }
 
-    /// Extract text content from an SSE data line (provider-specific JSON).
+    /// Extract text content from an OpenAI SSE data line.
     fn extract_sse_text(&self, data: &str) -> Option<String> {
-        match self.provider {
-            LlmProvider::Anthropic => {
-                let event: AnthropicStreamEvent = serde_json::from_str(data).ok()?;
-                event.delta?.text
-            }
-            LlmProvider::OpenAI => {
-                let chunk: OpenAIStreamChunk = serde_json::from_str(data).ok()?;
-                chunk.choices.first()?.delta.content.clone()
-            }
-        }
+        let chunk: OpenAIStreamChunk = serde_json::from_str(data).ok()?;
+        chunk.choices.first()?.delta.content.clone()
     }
-}
-
-// --- Anthropic streaming SSE types ---
-
-#[derive(Deserialize)]
-struct AnthropicStreamEvent {
-    delta: Option<AnthropicStreamDelta>,
-}
-
-#[derive(Deserialize)]
-struct AnthropicStreamDelta {
-    text: Option<String>,
 }
 
 // --- OpenAI streaming SSE types ---
@@ -696,31 +597,6 @@ struct OpenAIStreamChoice {
 #[derive(Deserialize)]
 struct OpenAIStreamDelta {
     content: Option<String>,
-}
-
-// --- Anthropic API types ---
-
-#[derive(Serialize)]
-struct AnthropicRequest {
-    model: String,
-    max_tokens: u32,
-    messages: Vec<AnthropicMessage>,
-}
-
-#[derive(Serialize)]
-struct AnthropicMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct AnthropicResponse {
-    content: Vec<AnthropicContent>,
-}
-
-#[derive(Deserialize)]
-struct AnthropicContent {
-    text: String,
 }
 
 // --- OpenAI API types ---
@@ -1576,26 +1452,6 @@ ignored = true
         assert!(result.is_none(), "should skip non-local endpoints");
 
         unsafe { std::env::remove_var("SYNAPSE_TEST_DETECT_KEY") };
-    }
-
-    #[tokio::test]
-    async fn test_auto_detect_model_skips_anthropic_provider() {
-        let _guard = LLM_ENV_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("SYNAPSE_TEST_DETECT_KEY2", "test-key") };
-
-        let config = LlmConfig {
-            enabled: true,
-            provider: "anthropic".into(),
-            api_key_env: "SYNAPSE_TEST_DETECT_KEY2".into(),
-            base_url: None,
-            ..LlmConfig::default()
-        };
-
-        let mut client = LlmClient::from_config(&config, false).unwrap();
-        let result = client.auto_detect_model().await;
-        assert!(result.is_none(), "should skip Anthropic provider");
-
-        unsafe { std::env::remove_var("SYNAPSE_TEST_DETECT_KEY2") };
     }
 
     #[tokio::test]

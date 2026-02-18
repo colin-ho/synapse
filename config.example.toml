@@ -39,7 +39,7 @@ command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 
 [llm]
 enabled = false                        # enable LLM-powered features (spec discovery, NL, explain, contextual args)
-provider = "openai"                    # "anthropic" or "openai" (use "openai" for LM Studio / local endpoints)
+provider = "openai"                    # only supported provider (also used for local OpenAI-compatible endpoints)
 api_key_env = "OPENAI_API_KEY"         # env var name containing the API key
 base_url = "http://127.0.0.1:1234"    # API base URL (default: LM Studio local endpoint)
 model = "gpt-4o-mini"                  # model to use
@@ -58,22 +58,15 @@ contextual_args = true                 # enable LLM contextual argument suggesti
 # base_url = "http://127.0.0.1:1234"
 # model = "qwen2.5-coder-7b-instruct-mlx"
 
-# Anthropic (hosted) example:
-# [llm]
-# enabled = true
-# provider = "anthropic"
-# api_key_env = "ANTHROPIC_API_KEY"
-# model = "claude-haiku-4-5-20251001"
-
 # Override LLM settings for spec discovery only.
 # Discovery runs asynchronously in the background (never blocks typing) and results
 # are cached for 1 week, so a slower but more capable cloud model is ideal here.
 # All fields are optional -- unset fields inherit from [llm].
 #
 # [llm.discovery]
-# provider = "anthropic"
-# api_key_env = "ANTHROPIC_API_KEY"
-# model = "claude-haiku-4-5-20251001"
+# provider = "openai"
+# api_key_env = "OPENAI_DISCOVERY_API_KEY"
+# model = "gpt-4.1-mini"
 # timeout_ms = 30000
 # max_calls_per_discovery = 30
 
