@@ -177,8 +177,32 @@ pub(super) async fn start_daemon(
         None
     };
 
+    // Init discovery LLM client (if configured separately from main LLM)
+    let discovery_llm_client = if let Some(ref discovery_config) = config.llm.discovery {
+        let resolved = discovery_config.resolve(&config.llm);
+        if let Some(mut client) =
+            crate::llm::LlmClient::from_config(&resolved, config.security.scrub_paths)
+        {
+            tracing::info!(
+                "Discovery LLM enabled (provider: {}, model: {})",
+                resolved.provider,
+                resolved.model
+            );
+            client.auto_detect_model().await;
+            client.probe_health().await;
+            Some(Arc::new(client))
+        } else {
+            tracing::warn!(
+                "Discovery LLM config present but client creation failed, using main LLM"
+            );
+            llm_client.clone()
+        }
+    } else {
+        llm_client.clone()
+    };
+
     // Init spec system (share LLM client with spec/workflow/NL handlers)
-    let spec_store = Arc::new(SpecStore::new(config.spec.clone(), llm_client.clone()));
+    let spec_store = Arc::new(SpecStore::new(config.spec.clone(), discovery_llm_client));
     let spec_provider = SpecProvider::new();
 
     // Init filesystem and environment providers

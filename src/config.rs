@@ -116,6 +116,23 @@ pub struct LlmConfig {
     pub nl_debounce_ms: u64,
     /// Minimum interval in ms between LLM API calls (default: 200ms)
     pub rate_limit_ms: u64,
+    /// Optional separate LLM config for spec discovery.
+    /// When set, a second LLM client is created for discovery only.
+    pub discovery: Option<LlmDiscoveryConfig>,
+}
+
+/// Optional overrides for the discovery LLM client.
+/// All fields are optional — unset fields inherit from the parent `[llm]` config.
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct LlmDiscoveryConfig {
+    pub provider: Option<String>,
+    pub api_key_env: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub max_calls_per_discovery: Option<usize>,
+    pub rate_limit_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -235,6 +252,7 @@ impl Default for LlmConfig {
             arg_max_context_tokens: 3_000,
             nl_debounce_ms: 50,
             rate_limit_ms: 200,
+            discovery: None,
         }
     }
 }
@@ -244,6 +262,51 @@ impl Default for WorkflowConfig {
         Self {
             enabled: true,
             min_probability: 0.15,
+        }
+    }
+}
+
+impl LlmDiscoveryConfig {
+    /// Produce a fully-resolved `LlmConfig` by overlaying discovery overrides
+    /// onto the parent config. Only connection/model fields are overridable;
+    /// NL/workflow/contextual-args settings are not relevant to discovery.
+    pub fn resolve(&self, parent: &LlmConfig) -> LlmConfig {
+        let provider_changed = self.provider.is_some();
+        LlmConfig {
+            enabled: parent.enabled,
+            provider: self
+                .provider
+                .clone()
+                .unwrap_or_else(|| parent.provider.clone()),
+            api_key_env: self
+                .api_key_env
+                .clone()
+                .unwrap_or_else(|| parent.api_key_env.clone()),
+            // If provider is overridden, don't inherit parent's base_url
+            // (e.g. switching from local OpenAI to Anthropic cloud — the local
+            // base_url would be wrong). Use discovery's base_url or None.
+            base_url: if provider_changed {
+                self.base_url.clone()
+            } else {
+                self.base_url.clone().or_else(|| parent.base_url.clone())
+            },
+            model: self.model.clone().unwrap_or_else(|| parent.model.clone()),
+            timeout_ms: self.timeout_ms.unwrap_or(parent.timeout_ms),
+            max_calls_per_discovery: self
+                .max_calls_per_discovery
+                .unwrap_or(parent.max_calls_per_discovery),
+            rate_limit_ms: self.rate_limit_ms.unwrap_or(parent.rate_limit_ms),
+            // Irrelevant for discovery — carry parent values for struct completeness
+            natural_language: parent.natural_language,
+            nl_min_query_length: parent.nl_min_query_length,
+            nl_max_suggestions: parent.nl_max_suggestions,
+            workflow_prediction: parent.workflow_prediction,
+            workflow_max_diff_tokens: parent.workflow_max_diff_tokens,
+            contextual_args: parent.contextual_args,
+            arg_context_timeout_ms: parent.arg_context_timeout_ms,
+            arg_max_context_tokens: parent.arg_max_context_tokens,
+            nl_debounce_ms: parent.nl_debounce_ms,
+            discovery: None,
         }
     }
 }
@@ -344,7 +407,7 @@ impl WeightsConfig {
 mod tests {
     use std::sync::Mutex;
 
-    use super::{Config, WeightsConfig};
+    use super::{Config, LlmDiscoveryConfig, WeightsConfig};
 
     static SOCKET_ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -416,5 +479,83 @@ mod tests {
         // Should fall through to default, not use empty string
         assert_ne!(config.socket_path(), std::path::PathBuf::from(""));
         unsafe { std::env::remove_var("SYNAPSE_SOCKET") };
+    }
+
+    #[test]
+    fn test_discovery_config_resolves_with_overrides() {
+        let parent = super::LlmConfig::default();
+        let discovery = LlmDiscoveryConfig {
+            provider: Some("anthropic".into()),
+            api_key_env: Some("ANTHROPIC_API_KEY".into()),
+            model: Some("claude-haiku-4-5-20251001".into()),
+            timeout_ms: Some(30000),
+            ..Default::default()
+        };
+        let resolved = discovery.resolve(&parent);
+        assert_eq!(resolved.provider, "anthropic");
+        assert_eq!(resolved.api_key_env, "ANTHROPIC_API_KEY");
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.timeout_ms, 30000);
+        // Inherited from parent
+        assert_eq!(
+            resolved.max_calls_per_discovery,
+            parent.max_calls_per_discovery
+        );
+        assert_eq!(resolved.rate_limit_ms, parent.rate_limit_ms);
+    }
+
+    #[test]
+    fn test_discovery_config_inherits_all_when_empty() {
+        let parent = super::LlmConfig::default();
+        let discovery = LlmDiscoveryConfig::default();
+        let resolved = discovery.resolve(&parent);
+        assert_eq!(resolved.provider, parent.provider);
+        assert_eq!(resolved.model, parent.model);
+        assert_eq!(resolved.base_url, parent.base_url);
+        assert_eq!(resolved.timeout_ms, parent.timeout_ms);
+    }
+
+    #[test]
+    fn test_discovery_provider_override_clears_base_url() {
+        let parent = super::LlmConfig::default();
+        // Parent has base_url = Some("http://127.0.0.1:1234")
+        assert!(parent.base_url.is_some());
+        let discovery = LlmDiscoveryConfig {
+            provider: Some("anthropic".into()),
+            // No base_url set — should NOT inherit parent's local endpoint
+            ..Default::default()
+        };
+        let resolved = discovery.resolve(&parent);
+        assert_eq!(resolved.base_url, None);
+    }
+
+    #[test]
+    fn test_discovery_absent_parses_as_none() {
+        let toml_str = r#"
+[llm]
+provider = "openai"
+model = "test-model"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.llm.discovery.is_none());
+    }
+
+    #[test]
+    fn test_discovery_config_parses_from_toml() {
+        let toml_str = r#"
+[llm]
+provider = "openai"
+model = "local-model"
+
+[llm.discovery]
+provider = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-haiku-4-5-20251001"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let disc = config.llm.discovery.unwrap();
+        assert_eq!(disc.provider.unwrap(), "anthropic");
+        assert_eq!(disc.model.unwrap(), "claude-haiku-4-5-20251001");
+        assert_eq!(disc.api_key_env.unwrap(), "ANTHROPIC_API_KEY");
     }
 }

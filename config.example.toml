@@ -69,6 +69,19 @@ rate_limit_ms = 200                    # minimum interval between LLM API calls 
 # api_key_env = "ANTHROPIC_API_KEY"
 # model = "claude-haiku-4-5-20251001"
 
+# Override LLM settings for spec discovery only.
+# Discovery runs asynchronously in the background (never blocks typing) and results
+# are cached for discover_max_age_secs (default: 1 week), so a slower but more capable
+# cloud model is ideal here. All fields are optional — unset fields inherit from [llm].
+#
+# [llm.discovery]
+# provider = "anthropic"
+# api_key_env = "ANTHROPIC_API_KEY"
+# model = "claude-haiku-4-5-20251001"
+# timeout_ms = 30000
+# max_calls_per_discovery = 30
+# rate_limit_ms = 100
+
 [workflow]
 enabled = true                         # enable workflow prediction (bigram-based)
 min_probability = 0.15                 # minimum bigram probability to suggest
