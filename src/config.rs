@@ -112,6 +112,10 @@ pub struct LlmConfig {
     pub contextual_args: bool,
     pub arg_context_timeout_ms: u64,
     pub arg_max_context_tokens: usize,
+    /// Debounce delay in ms for NL requests (default: 50ms)
+    pub nl_debounce_ms: u64,
+    /// Minimum interval in ms between LLM API calls (default: 200ms)
+    pub rate_limit_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -218,7 +222,7 @@ impl Default for LlmConfig {
             provider: "openai".into(),
             api_key_env: "LMSTUDIO_API_KEY".into(),
             base_url: Some("http://127.0.0.1:1234".into()),
-            model: "openai/gpt-oss-20b".into(),
+            model: "qwen2.5-coder-7b-instruct-mlx".into(),
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
             natural_language: true,
@@ -229,6 +233,8 @@ impl Default for LlmConfig {
             contextual_args: true,
             arg_context_timeout_ms: 2_000,
             arg_max_context_tokens: 3_000,
+            nl_debounce_ms: 50,
+            rate_limit_ms: 200,
         }
     }
 }

@@ -48,7 +48,7 @@ enabled = true                         # enable LLM-powered features (spec disco
 provider = "openai"                    # "anthropic" or "openai" (use "openai" for LM Studio / local endpoints)
 api_key_env = "LMSTUDIO_API_KEY"       # env var name containing the API key (optional for local endpoints)
 base_url = "http://127.0.0.1:1234"     # API base URL (default: LM Studio local endpoint)
-model = "openai/gpt-oss-20b"           # model to use
+model = "qwen2.5-coder-7b-instruct-mlx" # model to use (MLX for Apple Silicon)
 timeout_ms = 10000                     # per-request timeout
 max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
 natural_language = true                # enable ? prefix mode for NL → command translation
@@ -59,6 +59,8 @@ workflow_max_diff_tokens = 2000        # max tokens of git diff for commit messa
 contextual_args = true                 # enable LLM contextual argument suggestions (phase 2)
 arg_context_timeout_ms = 2000          # timeout for context gathering commands (git/docker/etc.)
 arg_max_context_tokens = 3000          # max context budget sent to the LLM
+nl_debounce_ms = 50                    # debounce delay for NL requests (ms)
+rate_limit_ms = 200                    # minimum interval between LLM API calls (ms)
 
 # Anthropic (hosted) example:
 # [llm]

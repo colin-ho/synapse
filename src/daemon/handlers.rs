@@ -457,9 +457,28 @@ async fn handle_natural_language(
     let env_hints = req.env_hints.clone();
     let recent_commands = req.recent_commands.clone();
 
+    let project_root_cache = state.project_root_cache.clone();
+    let project_type_cache = state.project_type_cache.clone();
+    let tools_cache = state.tools_cache.clone();
+
     tokio::spawn(async move {
-        // Debounce: wait 300ms, then check if a newer request arrived
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Overlap debounce sleep with context detection (both can run in parallel)
+        let debounce_ms = config.llm.nl_debounce_ms;
+        let scan_depth = config.spec.scan_depth;
+        let cwd_for_cache = cwd.clone();
+        let env_hints_for_cache = env_hints.clone();
+
+        let (_, project_root, available_tools) = tokio::join!(
+            tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)),
+            project_root_cache.get_with(cwd_for_cache, async {
+                crate::project::find_project_root(std::path::Path::new(&cwd), scan_depth)
+            }),
+            tools_cache.get_with(
+                env_hints_for_cache.get("PATH").cloned().unwrap_or_default(),
+                async { extract_available_tools(&env_hints_for_cache) }
+            ),
+        );
+
         let is_stale = {
             let gens = nl_gens.lock().unwrap();
             gens.get(&session_id).copied().unwrap_or(0) != gen
@@ -477,14 +496,17 @@ async fn handle_natural_language(
             return;
         }
 
-        // Detect project type
-        let project_root =
-            crate::project::find_project_root(std::path::Path::new(&cwd), config.spec.scan_depth);
-        let project_type = project_root
-            .as_ref()
-            .and_then(|r| crate::project::detect_project_type(r));
-
-        let available_tools = extract_available_tools(&env_hints);
+        let project_type = match project_root.as_ref() {
+            Some(root) => {
+                let root = root.clone();
+                project_type_cache
+                    .get_with(root.clone(), async {
+                        crate::project::detect_project_type(&root)
+                    })
+                    .await
+            }
+            None => None,
+        };
 
         let ctx = crate::llm::NlTranslationContext {
             query: query.clone(),
@@ -496,25 +518,51 @@ async fn handle_natural_language(
         };
 
         let max_suggestions = config.llm.nl_max_suggestions;
-        match llm_client.translate_command(&ctx, max_suggestions).await {
+        let blocklist = config.security.command_blocklist.clone();
+        let writer_for_stream = writer.clone();
+
+        // Use streaming to send each suggestion as it's parsed from the LLM response
+        let result = llm_client
+            .translate_command_streaming(&ctx, max_suggestions, move |item| {
+                // Validate: skip empty or blocked commands
+                let first_token = item.command.split_whitespace().next().unwrap_or("");
+                if first_token.is_empty() {
+                    return;
+                }
+                if is_blocked_command(&item.command, &blocklist) {
+                    tracing::warn!(
+                        "NL translation blocked by security policy: {}",
+                        item.command
+                    );
+                    return;
+                }
+
+                // Send update frame immediately (fire-and-forget from sync callback)
+                let w = writer_for_stream.clone();
+                let response = Response::Update(SuggestionResponse {
+                    text: item.command.clone(),
+                    source: SuggestionSource::Llm,
+                    confidence: 0.95,
+                    description: item.warning.clone(),
+                });
+                tokio::spawn(async move {
+                    send_async_response(&w, response, "NL streaming update").await;
+                });
+            })
+            .await;
+
+        match result {
             Ok(result) => {
-                // Filter: validate and security-check each item individually
                 let valid_items: Vec<_> = result
                     .items
                     .into_iter()
                     .filter(|item| {
                         let first_token = item.command.split_whitespace().next().unwrap_or("");
-                        if first_token.is_empty() {
-                            return false;
-                        }
-                        if is_blocked_command(&item.command, &config.security.command_blocklist) {
-                            tracing::warn!(
-                                "NL translation blocked by security policy: {}",
-                                item.command
-                            );
-                            return false;
-                        }
-                        true
+                        !first_token.is_empty()
+                            && !is_blocked_command(
+                                &item.command,
+                                &config.security.command_blocklist,
+                            )
                     })
                     .collect();
 
@@ -561,23 +609,6 @@ async fn handle_natural_language(
                         &cwd,
                         Some(&query),
                     );
-                }
-
-                // Send one Update frame per valid item
-                // (No post-LLM staleness check — if the task passed the debounce, its
-                // result is worth showing. The plugin overwrites with newer results.)
-                for item in valid_items {
-                    send_async_response(
-                        &writer,
-                        Response::Update(SuggestionResponse {
-                            text: item.command,
-                            source: SuggestionSource::Llm,
-                            confidence: 0.95,
-                            description: item.warning,
-                        }),
-                        "NL update",
-                    )
-                    .await;
                 }
             }
             Err(e) => {
@@ -638,6 +669,11 @@ async fn handle_explain(req: ExplainRequest, state: &RuntimeState) -> Response {
 }
 
 fn detect_os() -> String {
+    static OS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    OS.get_or_init(detect_os_inner).clone()
+}
+
+fn detect_os_inner() -> String {
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = std::process::Command::new("sw_vers")
