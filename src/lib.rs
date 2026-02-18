@@ -14,6 +14,7 @@ pub mod spec_autogen;
 pub mod spec_cache;
 pub mod spec_store;
 pub mod workflow;
+pub mod zsh_completion;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;

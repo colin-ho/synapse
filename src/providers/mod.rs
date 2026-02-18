@@ -52,7 +52,7 @@ impl std::fmt::Debug for ProviderRequest {
 }
 
 impl ProviderRequest {
-    async fn from_parts(
+    pub async fn from_parts(
         session_id: String,
         buffer: &str,
         cwd: String,

@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::path::Path;
 
 use futures_util::SinkExt;
 
+use crate::completion_context::{split_at_last_operator, tokenize};
 use crate::protocol::{
     CommandExecutedReport, InteractionAction, InteractionReport, ListSuggestionsRequest,
     NaturalLanguageRequest, Request, Response, SuggestRequest, SuggestionItem, SuggestionKind,
@@ -163,8 +165,38 @@ async fn handle_list_suggestions(req: ListSuggestionsRequest, state: &RuntimeSta
         "ListSuggestions request"
     );
 
+    // If the root command has no spec, wait for discovery before collecting suggestions.
+    // Also, when the buffer is just a bare command name (no trailing space), append a space
+    // so providers return argument/option completions instead of nothing.
+    let cwd = Path::new(&req.cwd);
+    let (_, segment) = split_at_last_operator(&req.buffer);
+    let tokens = tokenize(segment);
+    let mut buffer = req.buffer.clone();
+    if let Some(command) = tokens.first() {
+        if state.spec_store.lookup(command, cwd).await.is_none() {
+            let timeout = std::time::Duration::from_secs(3);
+            state
+                .spec_store
+                .discover_and_wait(command, Some(cwd), timeout)
+                .await;
+        }
+        // For the dropdown, treat a bare command name as ready for completions.
+        if tokens.len() == 1 && !segment.ends_with(' ') {
+            buffer.push(' ');
+        }
+    }
+
     let max = req.max_results.min(state.config.spec.max_list_results);
-    let provider_request = ProviderRequest::from_list_request(&req, state.spec_store.clone()).await;
+    let provider_request = ProviderRequest::from_parts(
+        req.session_id.clone(),
+        &buffer,
+        req.cwd.clone(),
+        req.recent_commands.clone(),
+        req.last_exit_code,
+        req.env_hints.clone(),
+        state.spec_store.clone(),
+    )
+    .await;
     let all_suggestions =
         collect_provider_suggestions(&state.providers, &provider_request, max, PHASE1_DEADLINE)
             .await;

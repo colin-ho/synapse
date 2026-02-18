@@ -8,7 +8,6 @@ pub enum SpecSource {
     Discovered,
     Builtin,
     ProjectAuto,
-    ProjectUser,
 }
 
 /// Root command specification
@@ -112,7 +111,7 @@ pub struct ArgSpec {
 }
 
 /// Dynamic value generator
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GeneratorSpec {
     pub command: String,
@@ -134,6 +133,18 @@ pub struct GeneratorSpec {
         skip_serializing_if = "is_default_generator_timeout"
     )]
     pub timeout_ms: u64,
+}
+
+impl Default for GeneratorSpec {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            split_on: default_split_on(),
+            strip_prefix: None,
+            cache_ttl_secs: default_cache_ttl(),
+            timeout_ms: default_generator_timeout(),
+        }
+    }
 }
 
 fn default_split_on() -> String {

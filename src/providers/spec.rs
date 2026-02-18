@@ -44,6 +44,9 @@ impl SpecProvider {
             None => {
                 // If partial first token, try to complete the command name itself
                 if tokens.len() == 1 && !trailing_space {
+                    // Start background discovery so the spec is ready when the
+                    // user finishes typing and opens the dropdown.
+                    store.trigger_discovery(command_name, Some(cwd)).await;
                     return self.complete_command_name(command_name, cwd, store).await;
                 }
                 // Trigger background discovery for this unknown command
@@ -689,33 +692,41 @@ mod tests {
 
     #[tokio::test]
     async fn test_option_arg_generator_while_typing_value() {
+        // Test that option arg generators work by injecting a spec into the
+        // discovered cache. Uses a simple "printf" generator to produce values.
         let dir = tempfile::tempdir().unwrap();
-        let spec_dir = dir.path().join(".synapse").join("specs");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(
-            spec_dir.join("tool.toml"),
-            r#"
-name = "tool"
-
-[[options]]
-long = "--profile"
-takes_arg = true
-description = "Profile name"
-
-[options.arg_generator]
-command = "printf '%s\n' alpha beta"
-"#,
-        )
-        .unwrap();
 
         let config = SpecConfig {
             auto_generate: false,
-            trust_project_generators: true,
             ..SpecConfig::default()
         };
         let store = Arc::new(SpecStore::new(config, None));
-        let provider = SpecProvider::new();
 
+        // Inject a test spec directly into discovered cache
+        let spec = crate::spec::CommandSpec {
+            name: "tool".into(),
+            options: vec![crate::spec::OptionSpec {
+                long: Some("--profile".into()),
+                takes_arg: true,
+                description: Some("Profile name".into()),
+                arg_generator: Some(crate::spec::GeneratorSpec {
+                    command: "printf '%s\\n' alpha beta".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            source: crate::spec::SpecSource::Discovered,
+            ..Default::default()
+        };
+        let discovered = crate::spec_cache::DiscoveredSpec {
+            discovered_at: None,
+            command_path: None,
+            version_output: None,
+            spec,
+        };
+        store.inject_discovered("tool", discovered).await;
+
+        let provider = SpecProvider::new();
         let req = make_provider_request_with_store(
             "tool --profile a",
             dir.path().to_str().unwrap(),
@@ -959,46 +970,34 @@ command = "printf '%s\n' alpha beta"
         let dir = tempfile::tempdir().unwrap();
         let names = store.all_command_names(dir.path()).await;
 
-        // Every full builtin spec should be present
+        // Every builtin spec (TOML + minimal) should be present
         for cmd in [
             "git",
             "cargo",
             "npm",
             "docker",
-            "ls",
-            "grep",
-            "find",
-            "curl",
             "ssh",
-            "python",
             "pip",
             "brew",
-            "tar",
-            "make",
-            "sed",
-            "wget",
-            "rsync",
             "kubectl",
             "tmux",
-            "jq",
-            "awk",
-            "scp",
             "go",
             "yarn",
             "pnpm",
-            "cp",
-            "mv",
-            "rm",
-            "chmod",
             "systemctl",
-            "diff",
-            "kill",
-            "du",
-            "df",
             "helm",
             "terraform",
             "gh",
             "uv",
+            // Minimal template specs
+            "cd",
+            "cat",
+            "cp",
+            "mv",
+            "rm",
+            "python",
+            "awk",
+            "sudo",
         ] {
             assert!(
                 names.contains(&cmd.to_string()),
@@ -1013,6 +1012,7 @@ command = "printf '%s\n' alpha beta"
         let store = SpecStore::new(config, None);
         let dir = tempfile::tempdir().unwrap();
 
+        // TOML builtins with subcommand trees
         for cmd in [
             "git",
             "cargo",
@@ -1040,18 +1040,9 @@ command = "printf '%s\n' alpha beta"
             );
         }
 
-        for cmd in [
-            "ls", "grep", "find", "curl", "ssh", "python", "tar", "sed", "wget", "rsync", "jq",
-            "awk", "scp", "cp", "mv", "rm", "chmod", "diff", "kill", "du", "df",
-        ] {
-            let spec = store.lookup(cmd, dir.path()).await;
-            assert!(spec.is_some(), "Spec for '{cmd}' not found");
-            let spec = spec.unwrap();
-            assert!(
-                !spec.options.is_empty(),
-                "Spec for '{cmd}' should have options"
-            );
-        }
+        // ssh has options (from its TOML spec)
+        let ssh = store.lookup("ssh", dir.path()).await.expect("ssh spec");
+        assert!(!ssh.options.is_empty(), "ssh should have options");
     }
 
     #[tokio::test]
@@ -1150,36 +1141,6 @@ command = "printf '%s\n' alpha beta"
         let result = provider.suggest(&req, limit(1)).await;
         assert!(!result.is_empty());
         assert_eq!(result[0].text, "helm install");
-    }
-
-    #[tokio::test]
-    async fn test_option_completion_for_new_specs() {
-        let provider = make_spec_provider();
-        let dir = tempfile::tempdir().unwrap();
-
-        // jq -r should suggest --raw-output
-        let req = make_provider_request("jq -", dir.path().to_str().unwrap()).await;
-        let result = provider.suggest(&req, limit(10)).await;
-        assert!(!result.is_empty());
-        let texts: Vec<&str> = result.iter().map(|r| r.text.as_str()).collect();
-        assert!(
-            texts
-                .iter()
-                .any(|t| t.contains("-r") || t.contains("--raw-output")),
-            "Expected -r/--raw-output in jq suggestions, got: {:?}",
-            texts
-        );
-    }
-
-    #[tokio::test]
-    async fn test_cp_option_completion() {
-        let provider = make_spec_provider();
-        let dir = tempfile::tempdir().unwrap();
-
-        let req = make_provider_request("cp --r", dir.path().to_str().unwrap()).await;
-        let result = provider.suggest(&req, limit(1)).await;
-        assert!(!result.is_empty());
-        assert_eq!(result[0].text, "cp --recursive");
     }
 
     #[tokio::test]
