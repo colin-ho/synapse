@@ -2,7 +2,7 @@
 name = "synapse"
 version = "0.1.0"
 edition = "2021"
-description = "Intelligent real-time Zsh command suggestions via ghost text"
+description = "Spec engine and NL translation layer for Zsh"
 license = "MIT"
 
 [lib]
@@ -19,20 +19,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
 clap = { version = "4", features = ["derive"] }
-notify = "8"
 moka = { version = "0.12", features = ["future"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 nix = { version = "0.31", features = ["signal", "fs", "user"] }
-uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
-async-trait = "0.1"
 anyhow = "1"
-enum_dispatch = "0.3.13"
-globset = "0.4"
-strsim = "0.11"
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
 futures-util = { version = "0.3", features = ["sink"] }
 cargo_toml = "0.22"

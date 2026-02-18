@@ -124,43 +124,6 @@ pub fn tokenize_with_operators(input: &str) -> Vec<Token> {
     tokens
 }
 
-/// Find the last command segment (after the last pipe/and/or/semicolon).
-/// Returns (words_in_last_segment, preceding_operator).
-pub(super) fn last_segment(tokens: &[Token]) -> (Vec<String>, Option<&Token>) {
-    let mut last_op_index = None;
-    for (i, tok) in tokens.iter().enumerate() {
-        match tok {
-            Token::Pipe | Token::And | Token::Or | Token::Semicolon | Token::Redirect(_) => {
-                last_op_index = Some(i);
-            }
-            Token::Word(_) => {}
-        }
-    }
-
-    match last_op_index {
-        Some(idx) => {
-            let words: Vec<String> = tokens[idx + 1..]
-                .iter()
-                .filter_map(|t| match t {
-                    Token::Word(w) => Some(w.clone()),
-                    _ => None,
-                })
-                .collect();
-            (words, Some(&tokens[idx]))
-        }
-        None => {
-            let words: Vec<String> = tokens
-                .iter()
-                .filter_map(|t| match t {
-                    Token::Word(w) => Some(w.clone()),
-                    _ => None,
-                })
-                .collect();
-            (words, None)
-        }
-    }
-}
-
 /// Split a buffer at the last unquoted shell operator (`&&`, `||`, `;`, `|`).
 /// Returns `(prefix, segment)` where `prefix` includes the operator and any
 /// trailing whitespace, and `segment` is the remaining command to complete.

@@ -4,15 +4,6 @@
 [general]
 # socket_path = "/tmp/synapse.sock"     # auto-detected if omitted
 log_level = "warn"                      # "error" | "warn" | "info" | "debug" | "trace"
-ghost_text_color = "fg=240"             # zsh region_highlight style for ghost text
-
-[history]
-max_entries = 50000
-fuzzy = true                            # enable fuzzy matching when prefix fails
-
-# [context]
-# Deprecated: context provider has been merged into the spec provider.
-# This section has no effect and can be removed.
 
 [spec]
 enabled = true
@@ -24,21 +15,12 @@ discover_from_help = true              # auto-discover specs by running --help o
 discover_project_cli = false           # discover specs for project-built CLIs (requires trust_project_generators=true)
 discover_blocklist = []                # commands to never auto-discover
 
-[weights]
-# Static weights — used when no completion context is available.
-# When the cursor position is known (command, subcommand, option, argument, etc.),
-# position-dependent weights in src/ranking.rs override these values.
-# Weights are normalized to sum to 1.0.
-history = 0.30
-spec = 0.50
-recency = 0.20
-
 [security]
 scrub_paths = true                      # redact home directory in API payloads
 command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 
 [llm]
-enabled = true                         # enable LLM-powered features (spec discovery, NL, contextual args)
+enabled = true                         # enable LLM-powered features (spec discovery, NL translation)
 provider = "openai"                    # only supported provider (also used for local OpenAI-compatible endpoints)
 api_key_env = "LMSTUDIO_API_KEY"       # env var name containing the API key (placeholder is accepted for local endpoints)
 base_url = "http://127.0.0.1:1234"    # API base URL (default: LM Studio local endpoint)
@@ -47,8 +29,6 @@ timeout_ms = 10000                     # per-request timeout
 max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
 natural_language = true                # enable ? prefix mode for NL -> command translation
 nl_max_suggestions = 3                 # number of alternative commands to generate for NL queries
-workflow_prediction = false            # enable LLM workflow predictions (predict next command)
-contextual_args = true                 # enable LLM contextual argument suggestions (phase 2)
 
 # LM Studio (local) example:
 # [llm]
@@ -70,9 +50,10 @@ contextual_args = true                 # enable LLM contextual argument suggesti
 # timeout_ms = 30000
 # max_calls_per_discovery = 30
 
-[workflow]
-enabled = true                         # enable workflow prediction (bigram-based)
-min_probability = 0.15                 # minimum bigram probability to suggest
+[completions]
+# output_dir = "~/.local/share/synapse/completions"  # override output directory
+gap_only = true                        # only generate for commands without existing compsys functions
+auto_regenerate = true                 # automatically regenerate when new specs are discovered
 
 [logging]
 interaction_log = "~/.local/share/synapse/interactions.jsonl"

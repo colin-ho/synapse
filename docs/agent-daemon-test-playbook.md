@@ -1,265 +1,257 @@
-# Agent Daemon Test Playbook (Human-Like, Full-Feature)
+# Agent Daemon Test Playbook
 
-This playbook is for an agent testing Synapse as close to a real human user as possible.
+This playbook is for an automated agent testing Synapse via `synapse probe` (protocol-level). Interactive zsh testing (Lane 1) is always BLOCKED in agent environments — all scenarios use the probe path.
 
 ## Non-Negotiable Rules
 
 1. Do not disable product functionality.
-2. Do not force `llm.enabled = false`, `workflow.enabled = false`, or other feature-off test configs.
-3. Prefer testing through the real zsh plugin flow first.
-4. Use protocol-level `synapse probe` as a secondary observability/check tool, not the primary UX path.
-5. If a capability depends on missing environment prerequisites (for example API keys), report that as a blocker; do not hide it by reconfiguring features off.
-6. Treat repeated daemon parse warnings as real findings, even if high-level scenarios appear to pass.
-
-## Prompt Template For Another Agent
-
-```text
-Goal: Test Synapse in a human-like way with full functionality enabled, covering many realistic user scenarios.
-
-Required approach:
-- Primary path: real zsh plugin interaction (typing, ghost text, dropdown, accept/dismiss, NL when available).
-- Secondary path: `synapse probe` for validation and diagnostics.
-- Do not disable functionality in config for convenience.
-
-Required outcomes:
-1) Validate normal user workflows end-to-end.
-2) Cover broad scenario variety (not just load volume).
-3) Identify regressions with exact repro and environment assumptions.
-4) Produce a pass/fail matrix with scenario evidence.
-```
-
-## Preflight (Run Before Scenarios)
-
-1. Record baseline environment:
-   - `which synapse`
-   - `synapse --help`
-   - `printenv | rg 'OPENAI|SYNAPSE'` (or equivalent)
-2. Check LLM prerequisites:
-   - If using hosted OpenAI, verify required API env keys are present.
-   - If using a local OpenAI-compatible endpoint (LM Studio, Ollama OpenAI shim, etc.), verify endpoint health with `curl http://127.0.0.1:1234/v1/models` (or configured base URL).
-   - Record the exact model ID used for the run.
-3. Confirm daemon log capture location before tests:
-   - all runs must preserve daemon logs for post-run parse-error inspection.
+2. Do not force `llm.enabled = false` or other feature-off test configs.
+3. If a capability depends on missing environment prerequisites (for example API keys), report that as a blocker; do not hide it by reconfiguring features off.
+4. Treat repeated daemon parse warnings as real findings, even if high-level scenarios appear to pass — but exclude parse errors caused by your own intentional malformed-request tests (see G3).
 
 ## Environment And Setup
 
-1. Build current code:
-   - `cargo build`
-2. Start Synapse in a user-like shell flow:
-   - Use a zsh session that sources `plugin/synapse.zsh` and points `SYNAPSE_BIN` to the built binary.
-3. Keep functionality enabled:
-   - Use current config/environment as-is.
-   - If keys are missing for LLM features, record blocked scenarios explicitly.
-   - On macOS, isolated config runs should set `HOME` and write config to `$HOME/Library/Application Support/synapse/config.toml` (not only `XDG_CONFIG_HOME`).
-4. Prepare a realistic test workspace:
-   - git repo
-   - files/directories including hidden files and spaces in names
-   - optional `package.json`, `Cargo.toml`, `docker-compose.yml`, `Justfile` to exercise providers
+### Preflight
 
-## Human-Like Test Lanes
+1. Build current code: `cargo build`
+2. Record baseline environment:
+   - `which synapse`, `synapse --help`
+   - `printenv | grep -E 'OPENAI|SYNAPSE'`
+3. Check LLM prerequisites:
+   - If using a local endpoint, verify health: `curl -s http://127.0.0.1:1234/v1/models`
+   - If using hosted OpenAI, verify API key is set.
+   - Record the model ID. Mark NL scenarios `BLOCKED` if no LLM is available.
 
-## Lane 1: Interactive UX (Primary)
+### Isolated Test Environment
 
-Test as a human user would at the prompt:
+Create an isolated workspace so tests don't interfere with the user's real config or daemon.
 
-1. Typing and ghost text appearance.
-2. Full accept (`Right` or `Tab`, depending config).
-3. Partial accept (`Ctrl+Right`).
-4. Dismiss (`Esc`).
-5. Dropdown open/navigation/accept/dismiss via arrow keys.
-6. History navigation interactions with Synapse state.
-7. Natural-language mode (`? <query>`) if enabled (`Enter`/`Tab` triggers translation and dropdown/error rendering).
+```bash
+BIN=./target/debug/synapse
+TESTDIR=$(mktemp -d /tmp/synapse-playbook.XXXXXX)
+SOCK="$TESTDIR/synapse-test.sock"
 
-Expected evidence:
-- terminal snippets showing visible behavior and accepted command results.
+# Git repo + project files for spec auto-generation
+cd "$TESTDIR" && git init -q
+cat > Cargo.toml <<'EOF'
+[package]
+name = "testproj"
+version = "0.1.0"
+edition = "2021"
+[[bin]]
+name = "testproj"
+path = "src/main.rs"
+EOF
+mkdir -p src && echo 'fn main() {}' > src/main.rs
 
-## Lane 1A: True ZLE Keypress (Preferred)
+cat > Makefile <<'EOF'
+build:
+	echo build
+test:
+	echo test
+clean:
+	echo clean
+EOF
 
-Use real keypress-driven behavior in an interactive zsh session:
+cat > package.json <<'EOF'
+{"name":"testproj","scripts":{"dev":"echo dev","build":"echo build","test":"echo test"}}
+EOF
 
-1. Type buffers manually.
-2. Use bound keys (`Right`, `Tab`, `Ctrl+Right`, `Esc`, arrows).
-3. Validate visible ghost text + dropdown behavior.
+cat > docker-compose.yml <<'EOF'
+services:
+  web:
+    image: nginx
+  db:
+    image: postgres
+EOF
 
-If environment limitations prevent reliable key injection, downgrade to Lane 1B and mark Lane 1A `BLOCKED` with reason.
+cat > Justfile <<'EOF'
+default:
+    echo default
+build:
+    echo build
+test:
+    echo test
+EOF
 
-> **Automated agents:** Lane 1A is always BLOCKED in non-interactive environments (CI, headless SSH, agent sandboxes). Proceed directly to Lane 1B and Lane 2.
+# Isolated config
+CONFDIR="$TESTDIR/config/synapse"
+mkdir -p "$CONFDIR"
+cat > "$CONFDIR/config.toml" <<'EOF'
+[llm]
+enabled = true
+natural_language = true
+provider = "openai"
+base_url = "http://127.0.0.1:1234/v1"
 
-## Lane 1B: Scripted Plugin Function Checks (Fallback)
+[spec]
+discover_from_help = true
 
-Use plugin functions directly (`_synapse_suggest`, `_synapse_request`, dropdown parse helpers) for deterministic validation.
+[completions]
+auto_regenerate = true
+gap_only = false
+EOF
 
-Important:
-- This is not equivalent to full keypress UX.
-- Report lane as `PASS (fallback)` and keep Lane 1A status explicit (`PASS`/`BLOCKED`).
+# Start daemon
+XDG_CONFIG_HOME="$TESTDIR/config" $BIN start --foreground \
+    --socket-path "$SOCK" -vv > "$TESTDIR/daemon.log" 2>&1 &
+DAEMON_PID=$!
 
-Automation hygiene for Lane 1B:
-1. Clear/normalize `_SYNAPSE_RECENT_COMMANDS` before request assertions.
-2. Avoid feeding control characters into shell command history.
-3. If parse errors appear, run triage (see below) before classifying product behavior.
+# Wait for socket
+for i in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
+[ -S "$SOCK" ] || { echo "FAIL: socket not created"; cat "$TESTDIR/daemon.log"; exit 1; }
+```
 
-## Lane 2: Protocol Verification (Secondary)
+All subsequent probe commands use `$BIN`, `$SOCK`, and `$TESTDIR` from this setup.
 
-Use `synapse probe` to confirm daemon-side behavior behind UX results:
+## How To Test
 
-1. `ping`, `suggest`, `list_suggestions`, `interaction`, `command_executed`.
-2. malformed request handling and parser resilience.
-3. NL async follow-up capture via `--wait-for-update` or `--stdio --wait-ms` (while treating immediate non-`ack` responses as terminal).
+Use `synapse probe` for all testing. Supported request types: `ping`, `command_executed`, `complete`, `natural_language`, `shutdown`, `reload_config`, `clear_cache`.
 
-Expected evidence:
-- output lines and frame types matching requests.
+Expected evidence: output lines and frame types matching requests.
 
 ## Failure Triage Rule (Mandatory)
 
-When a plugin-path scenario fails:
+When a scenario fails:
 
-1. Re-run equivalent request via `synapse probe`.
-2. If probe succeeds but plugin path fails:
-   - classify as plugin/path/harness issue
-3. If both fail:
-   - classify as daemon/provider/protocol issue
-4. Record both repro commands in findings.
-5. For NL, if `probe --request` times out waiting for follow-up frames, retry with `probe --stdio --wait-ms 20000` before marking FAIL.
+1. Retry the exact same probe command to rule out transient issues.
+2. For NL, if `probe --request` returns an error, retry once before marking FAIL (NL responses are synchronous).
+3. For discovery, wait at least 10 seconds and retry — discovery runs asynchronously.
+4. Record exact probe commands and responses in findings.
 
 ## Scenario Breadth Matrix (Required)
 
-Run a broad set of scenarios. Target at least 30 distinct scenarios total.
+Target at least 20 distinct scenarios.
 
-### A) Core Prompt UX Scenarios
+### A) Compsys Completion Scenarios
 
-1. Empty buffer (no noisy suggestion).
-2. Command prefix typing (`gi` -> `git ...`).
-3. Subcommand typing (`git ch`).
-4. Option typing (`git commit --am`).
-5. Argument typing (`cd ` / `cat `).
-6. Pipe target typing (`echo hi | gr`).
-7. Redirect target typing (`echo hi > out`).
+| # | Scenario | How to test |
+|---|---|---|
+| A1 | `generate-completions` produces files | Run `$BIN generate-completions --output-dir "$TESTDIR/completions"` from project cwd, count output files |
+| A2 | Project auto-spec (`npm run`, `make`, `just`) | `complete` with project `cwd` — expect targets from project files |
+| A3 | Gap-only mode | `generate-completions` output reports skipped commands with existing compsys functions |
 
-### B) Interaction Semantics
+### B) Complete Protocol
 
-1. Accept full suggestion.
-2. Accept by word.
-3. Dismiss suggestion.
-4. Ignore by typing alternate content.
-5. Dropdown select first item.
-6. Dropdown scroll and select non-first item.
-7. Dropdown dismiss and continue typing.
+| # | Scenario | How to test |
+|---|---|---|
+| B1 | Project command returns items | `complete` for `make` with project cwd — expect `complete_result` with count > 0 |
+| B2 | Unknown command returns empty | `complete` for `nonexistent_xyz` — expect `complete_result\t0` |
+| B3 | `cwd` affects results | `complete` for `make` with project cwd vs `/tmp` — expect different counts (project targets vs none) |
 
-### C) History Learning
+### C) Spec System
 
-1. Execute new command, verify future suggestion improvement.
-2. Recency effect (recent command outranks older one).
-3. Frequency effect (repeated command becomes stronger).
-4. Typo/fuzzy-ish recovery behavior.
-5. Multi-line command handling.
+| # | Scenario | How to test |
+|---|---|---|
+| C1 | Project auto-specs | `complete` for `make`/`npm`/`just` with project cwd — expect targets from project files |
+| C2 | Discovery triggers on `command_executed` | See Discovery Testing below |
+| C3 | Discovered specs persist as compsys files | After discovery, check completions dir for generated `_<cmd>` file |
 
-### D) Provider Diversity
+#### Discovery Testing
 
-1. Spec: builtin completion trees (`git`, `cargo`, `docker`).
-2. Filesystem: hidden files, spaced paths, dir/file distinction.
-3. Environment: PATH command name completion.
-4. Workflow provider sequence behavior.
-5. LLM contextual arg suggestion when available.
+Discovery only triggers for commands that have **no existing zsh compsys function AND no previously generated compsys file**. Commands like `git`, `cargo`, `rg`, `ls` typically already have zsh completions and will be skipped. To test discovery:
 
-### E) LLM/NL Scenarios (When Environment Supports)
+1. Find a candidate: pick an installed command that lacks a zsh completion file (e.g. `fzf`, `delta`, `hyperfine`).
+2. Trigger: send `command_executed` with that command name.
+3. Wait: discovery runs `--help` parsing asynchronously. **Wait at least 10 seconds** before checking.
+4. Verify: check the completions dir (`~/.local/share/synapse/completions/`) for a generated `_<cmd>` file. Also check daemon logs for `Wrote compsys completion for <cmd>`.
 
-1. NL query returns either a command `update` or explicit `error` (never silent/ack-only terminal behavior).
-2. Safety/policy behavior on risky NL translation (expect explicit `error` when blocked).
-3. Timeout/degraded behavior when provider is slow.
-4. Probe timeout handling:
-   - validate LLM scenarios with `--stdio --wait-ms` or `--wait-for-update` to avoid false negatives from fixed short request timeouts.
+### D) NL Scenarios (When Environment Supports)
 
-> **NL response contract:** `natural_language` can return (a) immediate `update` (cache hit), (b) immediate `error` (validation/config/policy), or (c) `ack` then async `update`/`error`. Do not require `ack` as the first frame.
+| # | Scenario | How to test |
+|---|---|---|
+| D1 | NL returns suggestions | `natural_language` query — expect `list` frame with count > 0 |
+| D2 | Short query rejected | `natural_language` with query `"hi"` — expect `error` with "too short" |
+| D3 | Cache hit | Send same NL query twice — second should return identical `list` immediately |
+| D4 | Risky command handling | `natural_language` with destructive query — expect `list` with warning descriptions, or `error` if blocked by `security.command_blocklist` |
 
-If blocked by missing API key/env:
-- mark scenario as `BLOCKED`, include exact missing prerequisite.
+> **NL response contract:** `natural_language` always returns synchronously with either (a) immediate `list` (cache hit or LLM success), or (b) immediate `error` (validation/config/policy/API failure). The `list` frame is TSV: `list\t<count>\t<cmd1>\t<source1>\t<desc1>\t<kind1>\t...`
 
-### E2) Request Escaping Robustness
+If blocked by missing API key/env, mark all D scenarios as `BLOCKED`.
 
-Verify shell-originated request payload safety:
+### E) Request Escaping Robustness
 
-1. Recent-command strings containing quotes, tabs, and control-like content.
-2. Ensure request frames remain valid JSON (no daemon parse errors caused by client encoding).
+| # | Scenario | How to test |
+|---|---|---|
+| E1 | Quotes in command | `command_executed` with `echo "hello" \| grep 'world'` — expect `ack` |
+| E2 | Special chars in context | `complete` with `context:["git","log","--format=%H"]` — expect `complete_result` |
 
-Pass criteria:
-- no parser errors attributable to request construction/escaping
+Pass criteria: no parser errors in daemon logs attributable to these requests.
 
 ### F) Session And Context Isolation
 
-1. Two shells/sessions open simultaneously.
-2. Session A activity should not corrupt Session B state.
-3. Different cwd contexts produce context-appropriate suggestions.
-4. Rapid switching between projects.
+| # | Scenario | How to test |
+|---|---|---|
+| F1 | Multi-session | Send `command_executed` with different `session_id` values — both return `ack` |
+| F2 | cwd isolation | `complete` for `make` with project cwd vs `/tmp` — different results |
+| F3 | Concurrent connections | Fire 5 `ping` requests in parallel — all return `pong` |
 
 ### G) Resilience And Recovery
 
-1. Daemon restart while shell remains open.
-2. Temporary socket unavailability and reconnect behavior.
-3. Malformed requests do not break later valid requests.
-4. Shutdown/start cycle preserves operability.
+| # | Scenario | How to test |
+|---|---|---|
+| G1 | Malformed request recovery | Send `{"type":"bogus"}` then `{"type":"ping"}` — expect `error` then `pong` |
+| G2 | Invalid JSON recovery | Send `{broken` then `{"type":"ping"}` — expect `error` then `pong` |
+| G3 | Shutdown/restart cycle | Send `shutdown`, wait 1s, restart daemon, `ping` — expect `pong` |
+| G4 | Sequential reconnect | 5 sequential `ping` requests — all return `pong` |
 
-## Optional Scenario Helper Commands
-
-### Probe quick checks
-
-```bash
-synapse probe --socket-path "$SOCK" --request '{"type":"ping"}'
-synapse probe --socket-path "$SOCK" --request '{"type":"suggest","session_id":"s1","buffer":"git ch","cursor_pos":6,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}'
-```
-
-### NL / Interaction probe examples
+## Probe Reference
 
 ```bash
-# Natural language query (can be immediate update/error OR ack then async update/error).
-# --wait-for-update waits for a follow-up only when first frame is ack:
-synapse probe --socket-path "$SOCK" --request '{"type":"natural_language","session_id":"s1","query":"find all rust files modified today","cwd":"/tmp","recent_commands":[]}' --wait-for-update --first-response-timeout-ms 30000
+# Ping
+$BIN probe --socket-path "$SOCK" --request '{"type":"ping"}'
 
-# Interaction feedback (synchronous ack):
-synapse probe --socket-path "$SOCK" --request '{"type":"interaction","session_id":"s1","action":"accept","suggestion":"git status","source":"history","buffer_at_action":"git sta"}'
+# Complete (project-aware — use a cwd with project files)
+$BIN probe --socket-path "$SOCK" --request \
+  '{"type":"complete","command":"make","context":[],"cwd":"'"$TESTDIR"'"}'
 
-# Command executed feedback (synchronous ack):
-synapse probe --socket-path "$SOCK" --request '{"type":"command_executed","session_id":"s1","command":"git status"}'
+# Command executed (triggers discovery for unknown commands)
+$BIN probe --socket-path "$SOCK" --request \
+  '{"type":"command_executed","session_id":"s1","command":"make build","cwd":"'"$TESTDIR"'"}'
 
-# Alternative: use --stdio --wait-ms for NL to capture all output including late updates:
-echo '{"type":"natural_language","session_id":"s1","query":"list docker containers","cwd":"/tmp","recent_commands":[]}' | synapse probe --socket-path "$SOCK" --stdio --wait-ms 30000
-```
+# NL (with async wait)
+$BIN probe --socket-path "$SOCK" --request \
+  '{"type":"natural_language","session_id":"s1","query":"find rust files","cwd":"/tmp"}'
 
-> **Note:** The `? prefix` syntax is plugin-only (handled by the zsh widget). At the daemon protocol level, use `"type": "natural_language"` instead.
-
-### Streamed sequence
-
-```bash
-cat <<'EOF' | synapse probe --socket-path "$SOCK" --stdio --wait-ms 300
+# Streamed sequence
+cat <<EOF | $BIN probe --socket-path "$SOCK" --stdio --wait-ms 500
 {"type":"ping"}
-{"type":"command_executed","session_id":"s1","command":"git status"}
-{"type":"list_suggestions","session_id":"s1","buffer":"git ch","cursor_pos":6,"cwd":"/tmp","max_results":8,"last_exit_code":0,"recent_commands":[]}
+{"type":"command_executed","session_id":"s1","command":"make build","cwd":"$TESTDIR"}
+{"type":"complete","command":"make","context":[],"cwd":"$TESTDIR"}
 EOF
 ```
 
+> **Note:** The `? prefix` NL syntax is plugin-only. At the protocol level, use `"type": "natural_language"`.
+
 ## Reporting Contract (Mandatory)
 
-1. Findings ordered by severity:
-   - `severity | scenario | evidence | repro`
-2. Scenario matrix:
-   - `PASS` / `FAIL` / `BLOCKED`
-3. Environment prerequisites detected:
-   - present/missing keys and tools affecting coverage
-4. Exact commands run
-5. Key output snippets
-6. Final verdict:
-   - `PASS` only if all non-blocked critical scenarios pass
+1. Findings ordered by severity: `severity | scenario | evidence | repro`
+2. Scenario matrix: `PASS` / `FAIL` / `BLOCKED` for each scenario ID (A1–G4)
+3. Environment prerequisites: present/missing keys and tools affecting coverage
+4. Exact probe commands run and key output snippets
+5. Final verdict: `PASS` only if all non-blocked scenarios pass
 
 ## Required Log Inspection
 
-At end of run, inspect daemon logs for parser and transport anomalies:
+At end of run, inspect daemon logs for anomalies:
 
 1. Count lines matching `Parse error:`.
-2. If count > 0, add finding with sample lines and likely source (daemon input vs plugin serialization).
-3. Do not silently ignore parse warnings even when scenario assertions pass.
+2. **Subtract** parse errors caused by your own intentional malformed-request tests (G1, G2). These are expected.
+3. If remaining count > 0, add finding with sample lines and likely source.
+4. Check for `ERROR`-level lines. Any unexpected errors are findings.
+5. Do not silently ignore warnings even when scenario assertions pass.
 
-## Retry Policy For Non-Deterministic Scenarios
+## Cleanup
 
-For workflow/async/update-sensitive scenarios:
+```bash
+$BIN probe --socket-path "$SOCK" --request '{"type":"shutdown"}'
+rm -rf "$TESTDIR"
+```
+
+## Retry Policy
+
+For discovery-sensitive scenarios:
 
 1. Retry up to 5 times before marking `BLOCKED`.
-2. Record each attempt count and observed response type.
+2. For discovery, use increasing waits (5s, 10s, 15s).
+3. Record each attempt count and observed response type.

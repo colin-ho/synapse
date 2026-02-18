@@ -1,33 +1,13 @@
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 use std::path::Path;
 
-use futures_util::SinkExt;
-
-use crate::completion_context::{split_at_last_operator, tokenize};
 use crate::protocol::{
-    CommandExecutedReport, InteractionAction, InteractionReport, ListSuggestionsRequest,
-    NaturalLanguageRequest, Request, Response, SuggestRequest, SuggestionItem, SuggestionKind,
-    SuggestionListResponse, SuggestionResponse, SuggestionSource,
+    CommandExecutedReport, CompleteRequest, CompleteResultItem, CompleteResultResponse,
+    NaturalLanguageRequest, Request, Response, SuggestionItem, SuggestionKind,
+    SuggestionListResponse, SuggestionSource,
 };
-use crate::providers::{Provider, ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
 use super::state::{RuntimeState, SharedWriter};
-
-pub(super) struct SuggestHandling {
-    pub(super) response: Response,
-    pub(super) phase2_plan: Option<Phase2UpdatePlan>,
-}
-
-pub(super) struct Phase2UpdatePlan {
-    provider_request: ProviderRequest,
-    phase1_suggestions: Vec<ProviderSuggestion>,
-    session_id: String,
-    buffer_snapshot: String,
-    baseline_score: f64,
-    baseline_text: Option<String>,
-    baseline_source: Option<SuggestionSource>,
-}
 
 pub(super) async fn handle_request(
     request: Request,
@@ -35,11 +15,9 @@ pub(super) async fn handle_request(
     writer: SharedWriter,
 ) -> Response {
     match request {
-        Request::Suggest(req) => handle_suggest(req, state).await.response,
-        Request::ListSuggestions(req) => handle_list_suggestions(req, state).await,
         Request::NaturalLanguage(req) => handle_natural_language(req, state, writer).await,
-        Request::Interaction(report) => handle_interaction(report, state).await,
         Request::CommandExecuted(report) => handle_command_executed(report, state).await,
+        Request::Complete(req) => handle_complete(req, state).await,
         Request::Ping => {
             tracing::trace!("Ping");
             Response::Pong
@@ -70,291 +48,6 @@ pub(super) async fn handle_request(
     }
 }
 
-pub(super) async fn handle_suggest(req: SuggestRequest, state: &RuntimeState) -> SuggestHandling {
-    tracing::debug!(
-        session = %req.session_id,
-        buffer = %req.buffer,
-        "Suggest request"
-    );
-
-    state.session_manager.update_from_request(&req).await;
-
-    let provider_request =
-        ProviderRequest::from_suggest_request(&req, state.spec_store.clone()).await;
-
-    // Phase 1: Immediate - query all providers concurrently.
-    let phase1_suggestions = collect_provider_suggestions(
-        &state.providers,
-        &provider_request,
-        NonZeroUsize::new(1).unwrap(),
-        PHASE1_DEADLINE,
-    )
-    .await;
-
-    // Rank immediate results.
-    let ranked = state.ranker.rank(
-        phase1_suggestions.clone(),
-        &provider_request.recent_commands,
-        Some(provider_request.completion()),
-    );
-
-    let (response, baseline_score, baseline_text, baseline_source) = match ranked {
-        Some(r) => {
-            let mut text = r.text;
-            if text.len() > crate::config::MAX_SUGGESTION_LENGTH {
-                text.truncate(crate::config::MAX_SUGGESTION_LENGTH);
-            }
-
-            let resp = SuggestionResponse {
-                text: text.clone(),
-                source: r.source,
-                confidence: r.score.min(1.0),
-                description: None,
-            };
-
-            state
-                .session_manager
-                .record_suggestion(&req.session_id, resp.clone())
-                .await;
-
-            (
-                Response::Suggestion(resp),
-                r.score,
-                Some(text),
-                Some(r.source),
-            )
-        }
-        None => (
-            Response::Suggestion(SuggestionResponse {
-                text: String::new(),
-                source: SuggestionSource::History,
-                confidence: 0.0,
-                description: None,
-            }),
-            0.0,
-            None,
-            None,
-        ),
-    };
-
-    let phase2_plan = if state.phase2_providers.is_empty() {
-        None
-    } else {
-        Some(Phase2UpdatePlan {
-            provider_request,
-            phase1_suggestions,
-            session_id: req.session_id.clone(),
-            buffer_snapshot: req.buffer.clone(),
-            baseline_score,
-            baseline_text,
-            baseline_source,
-        })
-    };
-
-    SuggestHandling {
-        response,
-        phase2_plan,
-    }
-}
-
-async fn handle_list_suggestions(req: ListSuggestionsRequest, state: &RuntimeState) -> Response {
-    tracing::debug!(
-        session = %req.session_id,
-        buffer = %req.buffer,
-        max_results = req.max_results,
-        "ListSuggestions request"
-    );
-
-    // If the root command has no spec, wait for discovery before collecting suggestions.
-    // Also, when the buffer is just a bare command name (no trailing space), append a space
-    // so providers return argument/option completions instead of nothing.
-    let cwd = Path::new(&req.cwd);
-    let (_, segment) = split_at_last_operator(&req.buffer);
-    let tokens = tokenize(segment);
-    let mut buffer = req.buffer.clone();
-    if let Some(command) = tokens.first() {
-        if state.spec_store.lookup(command, cwd).await.is_none() {
-            let timeout = std::time::Duration::from_secs(3);
-            state
-                .spec_store
-                .discover_and_wait(command, Some(cwd), timeout)
-                .await;
-        }
-        // For the dropdown, treat a bare command name as ready for completions.
-        if tokens.len() == 1 && !segment.ends_with(' ') {
-            buffer.push(' ');
-        }
-    }
-
-    let max = req.max_results.min(state.config.spec.max_list_results);
-    let provider_request = ProviderRequest::from_parts(
-        req.session_id.clone(),
-        &buffer,
-        req.cwd.clone(),
-        req.recent_commands.clone(),
-        req.last_exit_code,
-        req.env_hints.clone(),
-        state.spec_store.clone(),
-    )
-    .await;
-    let all_suggestions =
-        collect_provider_suggestions(&state.providers, &provider_request, max, PHASE1_DEADLINE)
-            .await;
-
-    let ranked = state.ranker.rank_multi(
-        all_suggestions,
-        &provider_request.recent_commands,
-        max,
-        Some(provider_request.completion()),
-    );
-
-    let items = ranked.iter().map(|r| r.to_suggestion_item()).collect();
-
-    Response::SuggestionList(SuggestionListResponse { suggestions: items })
-}
-
-pub(super) fn spawn_phase2_update(
-    plan: Phase2UpdatePlan,
-    state: &RuntimeState,
-    writer: SharedWriter,
-) {
-    let phase2_providers = state.phase2_providers.clone();
-    let ranker = state.ranker.clone();
-    let session_manager = state.session_manager.clone();
-
-    let Phase2UpdatePlan {
-        provider_request,
-        mut phase1_suggestions,
-        session_id,
-        buffer_snapshot,
-        baseline_score,
-        baseline_text,
-        baseline_source,
-    } = plan;
-
-    tokio::spawn(async move {
-        let phase2_suggestions = collect_provider_suggestions(
-            &phase2_providers,
-            &provider_request,
-            NonZeroUsize::new(1).unwrap(),
-            PHASE2_DEADLINE,
-        )
-        .await;
-
-        if phase2_suggestions.is_empty() {
-            return;
-        }
-
-        phase1_suggestions.extend(phase2_suggestions);
-        let Some(best) = ranker.rank(
-            phase1_suggestions,
-            &provider_request.recent_commands,
-            Some(provider_request.completion()),
-        ) else {
-            return;
-        };
-
-        // Require meaningful improvement before pushing a visual update
-        const PHASE2_MIN_MARGIN: f64 = 0.05;
-        if best.score <= baseline_score + PHASE2_MIN_MARGIN {
-            return;
-        }
-        if baseline_text.as_deref() == Some(best.text.as_str())
-            && baseline_source == Some(best.source)
-        {
-            return;
-        }
-
-        if session_manager
-            .get_last_buffer(&session_id)
-            .await
-            .as_deref()
-            != Some(buffer_snapshot.as_str())
-        {
-            return;
-        }
-
-        let mut text = best.text;
-        if text.len() > crate::config::MAX_SUGGESTION_LENGTH {
-            text.truncate(crate::config::MAX_SUGGESTION_LENGTH);
-        }
-
-        let update = SuggestionResponse {
-            text,
-            source: best.source,
-            confidence: best.score.min(1.0),
-            description: best.description,
-        };
-        session_manager
-            .record_suggestion(&session_id, update.clone())
-            .await;
-
-        let response_line = Response::Update(update).to_tsv();
-        let mut sink = writer.lock().await;
-        if let Err(error) = sink.send(response_line).await {
-            tracing::debug!("Failed to send async update: {error}");
-        }
-    });
-}
-
-async fn handle_interaction(report: InteractionReport, state: &RuntimeState) -> Response {
-    tracing::debug!(
-        session = %report.session_id,
-        action = ?report.action,
-        "Interaction report"
-    );
-
-    // Record workflow transition on Accept.
-    if report.action == InteractionAction::Accept {
-        if let Some(prev) = state
-            .session_manager
-            .get_last_accepted(&report.session_id)
-            .await
-        {
-            let exit_code = state
-                .session_manager
-                .get_last_exit_code(&report.session_id)
-                .await;
-            let project_type = state
-                .session_manager
-                .get_cwd(&report.session_id)
-                .await
-                .and_then(|cwd| {
-                    let path = std::path::Path::new(&cwd);
-                    let root = crate::project::find_project_root(path, 3)?;
-                    crate::project::detect_project_type(&root)
-                });
-
-            state
-                .workflow_predictor
-                .record_with_context(
-                    &prev,
-                    &report.suggestion,
-                    exit_code,
-                    project_type.as_deref(),
-                )
-                .await;
-        }
-        state
-            .session_manager
-            .record_accepted(&report.session_id, report.suggestion.clone())
-            .await;
-    }
-
-    state.interaction_logger.log_interaction(
-        &report.session_id,
-        report.action,
-        &report.buffer_at_action,
-        &report.suggestion,
-        report.source,
-        0.0,
-        "",
-        None,
-    );
-
-    Response::Ack
-}
-
 async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeState) -> Response {
     tracing::debug!(
         session = %report.session_id,
@@ -362,24 +55,134 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
         "Command executed"
     );
 
-    for provider in &state.providers {
-        if let Provider::History(hp) = provider {
-            hp.record_command(&report.command).await;
-            break;
-        }
-    }
-
     // Trigger spec discovery for the command name (first token)
     let command_name = report.command.split_whitespace().next().unwrap_or("");
     if !command_name.is_empty() {
-        let cwd = state.session_manager.get_cwd(&report.session_id).await;
+        let cwd = if report.cwd.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(&report.cwd))
+        };
         state
             .spec_store
-            .trigger_discovery(command_name, cwd.as_deref().map(std::path::Path::new))
+            .trigger_discovery(command_name, cwd.as_deref())
             .await;
     }
 
     Response::Ack
+}
+
+async fn handle_complete(req: CompleteRequest, state: &RuntimeState) -> Response {
+    tracing::debug!(
+        command = %req.command,
+        context = ?req.context,
+        cwd = %req.cwd,
+        "Complete request"
+    );
+
+    let cwd = if req.cwd.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&req.cwd))
+    };
+    let cwd_ref = cwd.as_deref();
+
+    // Look up the spec for the command
+    let spec = match state
+        .spec_store
+        .lookup(&req.command, cwd_ref.unwrap_or(Path::new("/")))
+        .await
+    {
+        Some(spec) => spec,
+        None => {
+            return Response::CompleteResult(CompleteResultResponse { values: Vec::new() });
+        }
+    };
+
+    // Walk the subcommand path using the context
+    let mut current_options = &spec.options;
+    let mut current_args = &spec.args;
+    let mut current_subs = &spec.subcommands;
+
+    for ctx_part in &req.context {
+        if ctx_part == "target" || ctx_part == "subcommand" {
+            // Return subcommand names
+            let values = current_subs
+                .iter()
+                .map(|s| CompleteResultItem {
+                    value: s.name.clone(),
+                    description: s.description.clone(),
+                })
+                .collect();
+            return Response::CompleteResult(CompleteResultResponse { values });
+        }
+
+        // Try to find a matching subcommand to walk into
+        if let Some(sub) = current_subs
+            .iter()
+            .find(|s| s.name == *ctx_part || s.aliases.iter().any(|a| a == ctx_part))
+        {
+            current_options = &sub.options;
+            current_args = &sub.args;
+            current_subs = &sub.subcommands;
+        }
+    }
+
+    // If there are subcommands at current level, return them
+    if !current_subs.is_empty() {
+        let values = current_subs
+            .iter()
+            .map(|s| CompleteResultItem {
+                value: s.name.clone(),
+                description: s.description.clone(),
+            })
+            .collect();
+        return Response::CompleteResult(CompleteResultResponse { values });
+    }
+
+    // Otherwise return arg completions
+    let mut values = Vec::new();
+
+    // Add option completions
+    for opt in current_options {
+        if let Some(ref long) = opt.long {
+            values.push(CompleteResultItem {
+                value: long.clone(),
+                description: opt.description.clone(),
+            });
+        }
+        if let Some(ref short) = opt.short {
+            values.push(CompleteResultItem {
+                value: short.clone(),
+                description: opt.description.clone(),
+            });
+        }
+    }
+
+    // Run generators for args
+    for arg in current_args {
+        if let Some(ref generator) = arg.generator {
+            let gen_values = state
+                .spec_store
+                .run_generator(generator, cwd_ref.unwrap_or(Path::new("/")), spec.source)
+                .await;
+            for val in gen_values {
+                values.push(CompleteResultItem {
+                    value: val,
+                    description: None,
+                });
+            }
+        } else if !arg.suggestions.is_empty() {
+            for s in &arg.suggestions {
+                values.push(CompleteResultItem {
+                    value: s.clone(),
+                    description: None,
+                });
+            }
+        }
+    }
+
+    Response::CompleteResult(CompleteResultResponse { values })
 }
 
 async fn handle_natural_language(
@@ -618,48 +421,6 @@ fn extract_available_tools(env_hints: &HashMap<String, String>) -> Vec<String> {
     found
 }
 
-/// Deadline for Phase 1 provider suggestions (fast, local providers).
-const PHASE1_DEADLINE: std::time::Duration = std::time::Duration::from_millis(50);
-
-/// Deadline for Phase 2 provider suggestions (LLM-backed, async providers).
-const PHASE2_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
-
-async fn collect_provider_suggestions(
-    providers: &[Provider],
-    request: &ProviderRequest,
-    max: NonZeroUsize,
-    timeout: std::time::Duration,
-) -> Vec<ProviderSuggestion> {
-    let mut task_set = tokio::task::JoinSet::new();
-
-    for provider in providers {
-        let provider = provider.clone();
-        let request = request.clone();
-        task_set.spawn(async move { provider.suggest(&request, max).await });
-    }
-
-    let mut all_suggestions = Vec::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-
-    loop {
-        match tokio::time::timeout_at(deadline, task_set.join_next()).await {
-            Ok(Some(Ok(mut suggestions))) => all_suggestions.append(&mut suggestions),
-            Ok(Some(Err(error))) => tracing::debug!("Provider task failed: {error}"),
-            Ok(None) => break, // All tasks completed
-            Err(_) => {
-                tracing::debug!(
-                    "Provider timeout ({timeout:?}): returning {} suggestions from {} providers",
-                    all_suggestions.len(),
-                    providers.len()
-                );
-                break;
-            }
-        }
-    }
-
-    all_suggestions
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -674,13 +435,9 @@ mod tests {
     use crate::logging::InteractionLogger;
     use crate::nl_cache::{NlCache, NlCacheEntry, NlCacheItem};
     use crate::protocol::{NaturalLanguageRequest, Response};
-    use crate::ranking::Ranker;
     use crate::session::SessionManager;
     use crate::spec_store::SpecStore;
-    use crate::workflow::WorkflowPredictor;
 
-    // NL minimum query length is now a hardcoded constant, so we define a
-    // local helper for the test that needs to exercise the "too short" path.
     const TEST_NL_MIN_QUERY_LENGTH: usize = crate::config::NL_MIN_QUERY_LENGTH;
 
     fn test_runtime_state(config: Config) -> RuntimeState {
@@ -697,11 +454,7 @@ mod tests {
         ));
 
         RuntimeState::new(
-            Vec::new(),
-            Vec::new(),
             Arc::new(SpecStore::new(config.spec.clone(), llm_client.clone())),
-            Ranker::new(),
-            Arc::new(WorkflowPredictor::new()),
             SessionManager::new(),
             InteractionLogger::new(log_path, 1),
             config,
@@ -749,7 +502,6 @@ mod tests {
         let state = test_runtime_state(config.clone());
         let writer = test_shared_writer();
 
-        // Query must be shorter than NL_MIN_QUERY_LENGTH (5) to trigger the error
         assert!(TEST_NL_MIN_QUERY_LENGTH > 4, "test assumes min length > 4");
         let resp = handle_natural_language(
             NaturalLanguageRequest {

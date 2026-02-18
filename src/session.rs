@@ -2,18 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::protocol::{SuggestRequest, SuggestionResponse};
-
 #[derive(Debug, Clone)]
 pub struct SessionState {
     #[allow(dead_code)]
     pub id: String,
     pub cwd: String,
-    pub last_buffer: String,
-    pub last_suggestion: Option<SuggestionResponse>,
-    pub recent_commands: Vec<String>,
-    pub last_accepted: Option<String>,
-    pub last_exit_code: i32,
     #[allow(dead_code)]
     pub connected_at: std::time::Instant,
     pub last_activity: std::time::Instant,
@@ -25,11 +18,6 @@ impl SessionState {
         Self {
             id,
             cwd: String::new(),
-            last_buffer: String::new(),
-            last_suggestion: None,
-            recent_commands: Vec::new(),
-            last_accepted: None,
-            last_exit_code: 0,
             connected_at: now,
             last_activity: now,
         }
@@ -54,75 +42,22 @@ impl SessionManager {
         }
     }
 
-    #[allow(dead_code)]
-    pub async fn get_or_create(&self, session_id: &str) -> SessionState {
-        let mut sessions = self.sessions.write().await;
-        sessions
-            .entry(session_id.to_string())
-            .or_insert_with(|| SessionState::new(session_id.to_string()))
-            .clone()
-    }
-
-    pub async fn update_from_request(&self, request: &SuggestRequest) {
+    pub async fn update_cwd(&self, session_id: &str, cwd: &str) {
         let mut sessions = self.sessions.write().await;
         let session = sessions
-            .entry(request.session_id.clone())
-            .or_insert_with(|| SessionState::new(request.session_id.clone()));
-
-        session.cwd = request.cwd.clone();
-        session.last_buffer = request.buffer.clone();
-        session.recent_commands = request.recent_commands.clone();
-        session.last_exit_code = request.last_exit_code;
+            .entry(session_id.to_string())
+            .or_insert_with(|| SessionState::new(session_id.to_string()));
+        session.cwd = cwd.to_string();
         session.last_activity = std::time::Instant::now();
     }
 
-    pub async fn record_suggestion(&self, session_id: &str, suggestion: SuggestionResponse) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get_mut(session_id) {
-            session.last_suggestion = Some(suggestion);
-        }
-    }
-
-    async fn read_field<T>(
-        &self,
-        session_id: &str,
-        f: impl FnOnce(&SessionState) -> T,
-    ) -> Option<T> {
-        self.sessions.read().await.get(session_id).map(f)
-    }
-
     pub async fn get_cwd(&self, session_id: &str) -> Option<String> {
-        self.read_field(session_id, |s| s.cwd.clone())
+        self.sessions
+            .read()
             .await
+            .get(session_id)
+            .map(|s| s.cwd.clone())
             .filter(|cwd| !cwd.is_empty())
-    }
-
-    pub async fn get_last_buffer(&self, session_id: &str) -> Option<String> {
-        self.read_field(session_id, |s| s.last_buffer.clone()).await
-    }
-
-    pub async fn get_last_accepted(&self, session_id: &str) -> Option<String> {
-        self.read_field(session_id, |s| s.last_accepted.clone())
-            .await
-            .flatten()
-    }
-
-    pub async fn get_last_exit_code(&self, session_id: &str) -> i32 {
-        self.read_field(session_id, |s| s.last_exit_code)
-            .await
-            .unwrap_or(0)
-    }
-
-    pub async fn record_accepted(&self, session_id: &str, command: String) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get_mut(session_id) {
-            session.last_accepted = Some(command);
-        }
-    }
-
-    pub async fn remove(&self, session_id: &str) {
-        let mut sessions = self.sessions.write().await;
-        sessions.remove(session_id);
     }
 
     pub async fn prune_inactive(&self, max_idle: std::time::Duration) {

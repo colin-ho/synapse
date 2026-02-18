@@ -9,12 +9,6 @@ pub const MAX_SUGGESTION_LENGTH: usize = 200;
 pub const NL_DEBOUNCE_MS: u64 = 50;
 /// Minimum interval in ms between LLM API calls.
 pub const RATE_LIMIT_MS: u64 = 200;
-/// Timeout in ms for context gathering commands (git/docker/etc.).
-pub const ARG_CONTEXT_TIMEOUT_MS: u64 = 2_000;
-/// Max context budget (~tokens) sent to the LLM for argument suggestions.
-pub const ARG_MAX_CONTEXT_TOKENS: usize = 3_000;
-/// Max tokens of git diff for commit message generation.
-pub const WORKFLOW_MAX_DIFF_TOKENS: usize = 2_000;
 /// Minimum characters for NL queries.
 pub const NL_MIN_QUERY_LENGTH: usize = 5;
 /// Max time in ms for generator commands (safety cap for spec-defined timeouts).
@@ -26,22 +20,15 @@ pub const DISCOVER_MAX_AGE_SECS: u64 = 604_800;
 /// Maximum recursion depth for subcommand discovery.
 pub const DISCOVER_MAX_DEPTH: usize = 1;
 
-// --- Ranking weights (previously configurable) ---
-
-pub const WEIGHT_HISTORY: f64 = 0.30;
-pub const WEIGHT_SPEC: f64 = 0.50;
-pub const WEIGHT_RECENCY: f64 = 0.20;
-
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
-    pub history: HistoryConfig,
     pub spec: SpecConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
     pub llm: LlmConfig,
-    pub workflow: WorkflowConfig,
+    pub completions: CompletionsConfig,
     #[serde(skip)]
     cli_socket_override: Option<String>,
 }
@@ -51,14 +38,6 @@ pub struct Config {
 pub struct GeneralConfig {
     pub socket_path: Option<String>,
     pub log_level: String,
-    pub ghost_text_color: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct HistoryConfig {
-    pub max_entries: usize,
-    pub fuzzy: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,8 +90,6 @@ pub struct LlmConfig {
     pub max_calls_per_discovery: usize,
     pub natural_language: bool,
     pub nl_max_suggestions: usize,
-    pub workflow_prediction: bool,
-    pub contextual_args: bool,
     /// Optional separate LLM config for spec discovery.
     /// When set, a second LLM client is created for discovery only.
     pub discovery: Option<LlmDiscoveryConfig>,
@@ -133,9 +110,13 @@ pub struct LlmDiscoveryConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
-pub struct WorkflowConfig {
-    pub enabled: bool,
-    pub min_probability: f64,
+pub struct CompletionsConfig {
+    /// Override the output directory for generated completions
+    pub output_dir: Option<String>,
+    /// Only generate for commands without existing compsys functions
+    pub gap_only: bool,
+    /// Automatically regenerate when new specs are discovered
+    pub auto_regenerate: bool,
 }
 
 // --- Defaults ---
@@ -145,16 +126,6 @@ impl Default for GeneralConfig {
         Self {
             socket_path: None,
             log_level: "warn".into(),
-            ghost_text_color: "fg=240".into(),
-        }
-    }
-}
-
-impl Default for HistoryConfig {
-    fn default() -> Self {
-        Self {
-            max_entries: 50000,
-            fuzzy: true,
         }
     }
 }
@@ -215,18 +186,17 @@ impl Default for LlmConfig {
             max_calls_per_discovery: 20,
             natural_language: true,
             nl_max_suggestions: 3,
-            workflow_prediction: false,
-            contextual_args: true,
             discovery: None,
         }
     }
 }
 
-impl Default for WorkflowConfig {
+impl Default for CompletionsConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            min_probability: 0.15,
+            output_dir: None,
+            gap_only: true,
+            auto_regenerate: true,
         }
     }
 }
@@ -234,7 +204,7 @@ impl Default for WorkflowConfig {
 impl LlmDiscoveryConfig {
     /// Produce a fully-resolved `LlmConfig` by overlaying discovery overrides
     /// onto the parent config. Only connection/model fields are overridable;
-    /// NL/workflow/contextual-args settings are not relevant to discovery.
+    /// NL settings are not relevant to discovery.
     pub fn resolve(&self, parent: &LlmConfig) -> LlmConfig {
         let provider_changed = self.provider.is_some();
         LlmConfig {
@@ -260,11 +230,8 @@ impl LlmDiscoveryConfig {
             max_calls_per_discovery: self
                 .max_calls_per_discovery
                 .unwrap_or(parent.max_calls_per_discovery),
-            // Irrelevant for discovery — carry parent values for struct completeness
             natural_language: parent.natural_language,
             nl_max_suggestions: parent.nl_max_suggestions,
-            workflow_prediction: parent.workflow_prediction,
-            contextual_args: parent.contextual_args,
             discovery: None,
         }
     }
@@ -361,8 +328,7 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let config = Config::default();
-        assert_eq!(config.history.max_entries, 50000);
-        assert!(config.llm.contextual_args);
+        assert!(config.llm.natural_language);
         assert_eq!(
             config.llm.base_url,
             Some("http://127.0.0.1:1234".to_string())

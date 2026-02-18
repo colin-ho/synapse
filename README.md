@@ -1,30 +1,21 @@
 # Synapse
 
-Synapse is an intelligent Zsh completion daemon that renders real-time ghost text suggestions and an on-demand dropdown in your shell.
+Synapse is an intelligent Zsh completion daemon that auto-discovers CLI specs and exports them as compsys completion functions, with built-in natural language to command translation.
 
 It is built as:
-- A Rust daemon (`src/`) that handles completion requests over a Unix socket.
-- A Zsh plugin (`plugin/synapse.zsh`) that captures prompt input and renders suggestions.
+- A Rust daemon (`src/`) that discovers specs, generates compsys completions, and handles NL translation over a Unix socket.
+- A Zsh plugin (`plugin/synapse.zsh`) that provides NL translation mode, command execution reporting, and daemon lifecycle management.
 
 ## Features
 
-- Real-time ghost text suggestions while typing in Zsh.
-- Dropdown suggestion list with keyboard navigation.
-- Multi-provider completions from:
-  - command history
-  - CLI specs
-  - filesystem paths
-  - environment/PATH commands
-  - workflow prediction from recent command transitions
+- Compsys completion generation from CLI specs (gap-filling for commands without existing zsh completions).
+- Natural language to command translation (`? query` prefix).
 - Spec system with:
-  - built-in specs (`specs/builtin/*.toml`)
-  - project auto-generated specs
-  - optional command discovery from `--help`
+  - project auto-generated specs (Makefile, package.json, Cargo.toml, docker-compose, Justfile)
+  - command discovery from `--help` (writes compsys files directly)
   - user project overrides via `.synapse/specs/*.toml`
 - Optional LLM-powered features:
   - natural language to command translation (`? ...`)
-  - contextual argument suggestions
-  - workflow prediction enrichment
 - Built-in probe tool for protocol-level debugging (`synapse probe`).
 
 ## Requirements
@@ -70,6 +61,8 @@ synapse start [--foreground] [-v|-vv|-vvv] [--log-file PATH] [--socket-path PATH
 synapse status [--socket-path PATH]
 synapse stop [--socket-path PATH]
 synapse install
+synapse generate-completions [--output-dir PATH] [--force] [--no-gap-check]
+synapse complete <command> [context...] [--cwd PATH]
 synapse probe --request '<json>' [--socket-path PATH]
 synapse probe --stdio [--socket-path PATH]
 ```
@@ -87,13 +80,24 @@ synapse status
 synapse probe --request '{"type":"ping"}'
 ```
 
-## Default Key Bindings
+## Key Bindings
 
-- `Tab`: accept suggestion (or fall back to normal completion)
-- `Right Arrow`: accept full suggestion
-- `Ctrl+Right Arrow`: accept one word
-- `Esc`: dismiss suggestion
-- `Down Arrow`: open dropdown list
+In NL mode (after typing `? query`):
+
+- `Enter`: translate query and show results dropdown
+- `Up/Down Arrow`: navigate NL results
+- `Enter/Tab`: accept selected result
+- `Esc`: dismiss dropdown
+
+Tab completion uses standard zsh compsys bindings (works with fzf-tab, zsh-autocomplete, etc.).
+
+### Recommended Companion Tools
+
+Synapse is designed to complement these tools:
+
+- **[zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions)** — inline ghost text suggestions from history
+- **[fzf-tab](https://github.com/Aloxaf/fzf-tab)** — fuzzy Tab completion menu (works with Synapse's generated completions)
+- **[Atuin](https://atuin.sh/)** — enhanced shell history with cross-machine sync
 
 ## Configuration
 
@@ -105,8 +109,8 @@ Copy `config.example.toml` to your platform config location:
 Important sections:
 
 - `[spec]`: controls auto-generation, `--help` discovery, and generator behavior.
-- `[llm]`: provider/model/base URL, plus NL/contextual args settings.
-- `[workflow]`: bigram workflow prediction behavior.
+- `[llm]`: provider/model/base URL, plus NL settings.
+- `[completions]`: output directory, gap-only mode.
 - `[security]`: path/env scrubbing and command blocklists.
 - `[logging]`: interaction log path and rotation size.
 
@@ -116,29 +120,26 @@ Security note:
 ## Architecture Overview
 
 1. The Zsh plugin sends newline-delimited JSON requests over a Unix socket.
-2. The daemon fans out requests across providers concurrently.
-3. Suggestions are ranked and returned immediately as TSV protocol frames.
-4. Optional phase-2 providers can send async `update` frames when they find a better result.
+2. The daemon resolves specs and returns results as TSV protocol frames.
 
-Core request types include:
+Core request types:
 
-- `suggest`
-- `list_suggestions`
 - `natural_language`
-- `interaction`
 - `command_executed`
+- `complete`
 - `ping`
+- `shutdown`
+- `reload_config`
+- `clear_cache`
 
 ## Specs and Discovery
 
-Spec resolution priority:
+Spec resolution priority (for the `Complete` handler):
 
-1. project user specs (`.synapse/specs/*.toml`)
-2. project auto-generated specs
-3. built-in specs (`specs/builtin/*.toml`)
-4. discovered specs
+1. User project specs (`.synapse/specs/*.toml`)
+2. Project auto-generated specs (Makefile, package.json, etc.)
 
-Discovered specs are persisted under `~/synapse/specs/`.
+Discovery of unknown commands (triggered by `command_executed`) writes compsys completion files directly to `~/.local/share/synapse/completions/`. The compsys file IS the persistent cache.
 
 ## Development
 
@@ -148,7 +149,7 @@ Discovered specs are persisted under `~/synapse/specs/`.
 cargo build
 cargo build --release
 cargo test
-cargo test --test spec_tests
+cargo test --test integration_tests
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
@@ -165,9 +166,8 @@ cargo fmt --check
 
 ## Repository Layout
 
-- `src/`: Rust daemon, protocol, providers, ranking, specs, workflow logic.
+- `src/`: Rust daemon, protocol, spec engine, compsys export, NL translation.
 - `plugin/synapse.zsh`: Zsh integration and keybindings.
-- `specs/builtin/`: built-in command specs.
 - `tests/`: integration and behavior tests.
 - `docs/`: operational and testing playbooks.
 - `config.example.toml`: full configuration reference.

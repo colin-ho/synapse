@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Synapse is an intelligent Zsh command suggestion daemon that provides real-time ghost text completions and an on-demand dropdown menu (like GitHub Copilot for the terminal). It consists of a Rust daemon communicating over a Unix domain socket with a Zsh plugin.
+Synapse is a **spec engine + NL translation layer** for Zsh. It discovers/generates CLI specs (from `--help` parsing, project files, and user TOML) and exports them as compsys `_arguments` completion functions. It also provides natural language to command translation via the `? query` prefix. Synapse integrates with the existing zsh ecosystem (zsh-autosuggestions for ghost text, fzf-tab for fuzzy menus, Atuin for history search).
+
+It consists of a Rust daemon communicating over a Unix domain socket with a thin Zsh plugin.
 
 ## Build & Development Commands
 
@@ -13,7 +15,7 @@ cargo build                          # Debug build
 cargo build --release                # Release build
 cargo test                           # Run all tests
 cargo test test_name                 # Run a single test by name
-cargo test --test spec_tests         # Run a specific test file
+cargo test --test integration_tests   # Run a specific test file
 cargo test -- --nocapture            # Run tests with stdout visible
 cargo clippy                         # Lint
 cargo fmt                            # Format
@@ -38,8 +40,13 @@ Running from `target/` auto-detects dev mode and creates a unique per-workspace 
 | Command | Description |
 |---|---|
 | `synapse` | If run in a terminal: install to `~/.zshrc`. If piped: output shell init code. |
+| `synapse start` | Start the daemon (with `--foreground`, `-v`/`-vv`/`-vvv`, `--log-file`, `--socket-path`) |
 | `synapse stop` | Stop the daemon |
 | `synapse status` | Show daemon status |
+| `synapse install` | Add `eval "$(synapse)"` to `~/.zshrc` |
+| `synapse generate-completions` | Generate compsys completion files from known specs |
+| `synapse complete <cmd> [ctx...]` | Query daemon for dynamic completion values |
+| `synapse probe` | Protocol-level debugging (with `--request`, `--stdio`) |
 
 ## Setup
 
@@ -52,51 +59,45 @@ Install pre-commit hooks (runs `cargo fmt --check` and `cargo clippy` before eac
 
 ### Two-Process Model
 
-1. **Zsh Plugin** (`plugin/synapse.zsh`) — Thin shell layer using `zle` widgets to capture keystrokes, render ghost text and dropdown menu via `POSTDISPLAY` + `region_highlight`, and communicate with the daemon over a Unix socket. Parses JSON responses with regex (no `jq` dependency). Dropdown uses `recursive-edit` with a custom `synapse-dropdown` keymap for modal navigation.
+1. **Zsh Plugin** (`plugin/synapse.zsh`) — Thin shell layer providing NL translation mode (`? query` prefix), command execution reporting (triggers spec discovery), connection management, and daemon lifecycle. Uses `recursive-edit` with a `synapse-dropdown` keymap for NL result navigation.
 
 2. **Rust Daemon** (`src/main.rs`) — Single long-running Tokio async process serving all terminal sessions concurrently over a Unix domain socket at `$XDG_RUNTIME_DIR/synapse.sock`.
 
-### Suggestion Pipeline (4-Layer Cascade)
+### Core Capabilities
 
-All providers implement the `SuggestionProvider` trait (`src/providers/mod.rs`) with `suggest()` (single best) and `suggest_multi()` (top N for dropdown):
-
-- **History** (`src/providers/history.rs`) — BTreeMap prefix search + Levenshtein fuzzy matching. Target: <5ms.
-- **Spec** (`src/providers/spec.rs`) — Structured CLI completions from TOML specs and auto-generated project specs. Tokenizes buffer, walks spec tree, completes subcommands/options/arguments. Target: <10ms.
-- **Filesystem** (`src/providers/filesystem.rs`) — File and directory completions with quoting/escaping support.
-- **Environment** (`src/providers/environment.rs`) — PATH and virtualenv executable suggestions.
+1. **Spec Engine** — Discovers/generates CLI specs and exports them as compsys `_arguments` completion functions. Generated files go to `~/.local/share/synapse/completions/` and are added to `fpath` by shell init.
+2. **NL Translator** — `? query` prefix translates natural language to shell commands via LLM.
+3. **Background Tasks** — Spec discovery on unknown commands, compsys regeneration on discovery, dynamic completion serving.
 
 ### Spec System
 
 - **Data model** (`src/spec.rs`) — `CommandSpec`, `SubcommandSpec`, `OptionSpec`, `ArgSpec`, `GeneratorSpec`, `ArgTemplate`. All spec structs derive `Serialize` for TOML round-tripping.
-- **Spec store** (`src/spec_store.rs`) — Loads built-in specs (embedded via `include_str!`), caches project specs per-cwd (5min TTL), runs generators with timeout and caching (30s TTL). Also manages background spec discovery and the discovered specs tier.
-- **Auto-generation** (`src/spec_autogen.rs`) — Generates specs from project files (Makefile targets, package.json scripts, Cargo.toml, docker-compose services, Justfile recipes, Python tools). Also discovers specs for CLI tools built by the current project (Rust/clap, Go/cobra, Python/click).
-- **Spec cache** (`src/spec_cache.rs`) — Persistent disk cache for discovered specs at `~/.cache/synapse/specs/*.toml` (XDG cache dir). Supports staleness detection via timestamps.
-- **Built-in specs** (`specs/builtin/*.toml`) — 38 commands including git, cargo, npm, docker, kubectl, terraform, gh, brew, and more.
-- **Discovered specs** — Auto-generated by running `--help` on unknown commands. Triggered on command execution and unknown command suggestions. Persisted to `~/.cache/synapse/specs/`.
+- **Spec store** (`src/spec_store.rs`) — Caches project specs per-cwd (5min TTL), runs generators with timeout and caching. Manages background spec discovery and writes compsys completion files directly.
+- **Compsys export** (`src/compsys_export.rs`) — Converts `CommandSpec` into zsh `_arguments` completion functions. Handles options, subcommands, args, generators, templates, aliases, and recursive commands.
+- **Auto-generation** (`src/spec_autogen.rs`) — Generates specs from project files (Makefile targets, package.json scripts, Cargo.toml, docker-compose services, Justfile recipes, Python tools).
+- **Discovered specs** — Auto-generated by running `--help` on unknown commands. Triggered on command execution. Written directly as compsys files to `~/.local/share/synapse/completions/`.
 - **User specs** — `.synapse/specs/*.toml` in project root (highest priority).
 
-**Spec resolution (4-tier priority):**
-1. Project user specs (highest)
-2. Project auto-generated specs
-3. Built-in specs
-4. Discovered specs (lowest)
+**Spec resolution (2-tier priority):**
+1. User project specs (`.synapse/specs/*.toml`) — highest
+2. Project auto-generated specs (Makefile, package.json, etc.)
 
-### Response Flow
-
-All providers run concurrently per request, are ranked, and the best suggestion is returned immediately.
+Discovery writes compsys files directly — the compsys file IS the persistent cache.
 
 ### Key Subsystems
 
-- **Ranking** (`src/ranking.rs`) — Weighted score merging (history: 0.30, spec: 0.50, recency: 0.20). Position-dependent weights adjust per cursor context. `rank_multi()` for dropdown: scores, deduplicates by text, sorts, truncates.
 - **Security** — Path scrubbing in `src/llm.rs` (`scrub_env_values`), command blocklist in `src/daemon/state.rs` (`CompiledBlocklist`).
-- **Caching** — Providers and spec store use `moka::future::Cache` with TTL for hot paths.
-- **Sessions** (`src/session.rs`) — Per-session state (cwd, recent commands, last buffer) identified by 12-char hex IDs.
-- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON. Request types: Suggest, ListSuggestions, Interaction, Ping, Shutdown, ReloadConfig, ClearCache. Response types: Suggestion, SuggestionList, Pong, Ack, Error. Suggestion sources: History, Spec, Filesystem, Environment. Suggestion kinds: Command, Subcommand, Option, Argument, File, History.
+- **Caching** — Spec store uses `moka::future::Cache` with TTL for hot paths.
+- **Sessions** (`src/session.rs`) — Per-session state (cwd tracking) identified by 12-char hex IDs.
+- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON requests, TSV responses. Request types: NaturalLanguage, CommandExecuted, Complete, Ping, Shutdown, ReloadConfig, ClearCache. Response types: SuggestionList, CompleteResult, Pong, Ack, Error.
 - **Logging** (`src/logging.rs`) — Append-only JSONL interaction log at `~/.local/share/synapse/interactions.jsonl` with rotation at 50MB.
+- **Zsh completion scanner** (`src/zsh_completion.rs`) — Gap detection: scans fpath for existing compsys functions to avoid generating duplicates.
 
 ### Config
 
 User config at `~/.config/synapse/config.toml`. See `config.example.toml` for all options. Parsed in `src/config.rs`.
+
+Sections: `[general]`, `[spec]`, `[security]`, `[llm]`, `[completions]`, `[logging]`.
 
 ## Testing Patterns
 
@@ -105,7 +106,3 @@ User config at `~/.config/synapse/config.toml`. See `config.example.toml` for al
 - Daemon lifecycle tests create in-process `UnixListener` instances.
 - `tempfile::TempDir` and `tempfile::NamedTempFile` are used for isolated test directories.
 - Spec tests create temp directories with project files (Cargo.toml, Makefile) to test auto-generation and completion.
-
-## Design Reference
-
-See `CLAUDE.md` above for architecture overview, protocol details, and key subsystems.
