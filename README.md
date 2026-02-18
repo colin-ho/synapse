@@ -61,6 +61,8 @@ synapse start [--foreground] [-v|-vv|-vvv] [--log-file PATH] [--socket-path PATH
 synapse status [--socket-path PATH]
 synapse stop [--socket-path PATH]
 synapse install
+synapse generate-completions [--output-dir PATH] [--force] [--no-gap-check]
+synapse complete <command> [context...] [--cwd PATH]
 synapse probe --request '<json>' [--socket-path PATH]
 synapse probe --stdio [--socket-path PATH]
 ```
@@ -147,7 +149,7 @@ Discovery of unknown commands (triggered by `command_executed`) writes compsys c
 cargo build
 cargo build --release
 cargo test
-cargo test --test spec_tests
+cargo test --test integration_tests
 cargo clippy -- -D warnings
 cargo fmt --check
 ```

@@ -15,7 +15,7 @@ cargo build                          # Debug build
 cargo build --release                # Release build
 cargo test                           # Run all tests
 cargo test test_name                 # Run a single test by name
-cargo test --test spec_tests         # Run a specific test file
+cargo test --test integration_tests   # Run a specific test file
 cargo test -- --nocapture            # Run tests with stdout visible
 cargo clippy                         # Lint
 cargo fmt                            # Format
@@ -40,10 +40,13 @@ Running from `target/` auto-detects dev mode and creates a unique per-workspace 
 | Command | Description |
 |---|---|
 | `synapse` | If run in a terminal: install to `~/.zshrc`. If piped: output shell init code. |
+| `synapse start` | Start the daemon (with `--foreground`, `-v`/`-vv`/`-vvv`, `--log-file`, `--socket-path`) |
 | `synapse stop` | Stop the daemon |
 | `synapse status` | Show daemon status |
+| `synapse install` | Add `eval "$(synapse)"` to `~/.zshrc` |
 | `synapse generate-completions` | Generate compsys completion files from known specs |
 | `synapse complete <cmd> [ctx...]` | Query daemon for dynamic completion values |
+| `synapse probe` | Protocol-level debugging (with `--request`, `--stdio`) |
 
 ## Setup
 

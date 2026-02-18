@@ -115,7 +115,7 @@ Expected evidence: output lines and frame types matching requests.
 When a scenario fails:
 
 1. Retry the exact same probe command to rule out transient issues.
-2. For NL, if `probe --request` times out, retry with `probe --stdio --wait-ms 20000` before marking FAIL.
+2. For NL, if `probe --request` returns an error, retry once before marking FAIL (NL responses are synchronous).
 3. For discovery, wait at least 10 seconds and retry — discovery runs asynchronously.
 4. Record exact probe commands and responses in findings.
 
@@ -165,9 +165,7 @@ Discovery only triggers for commands that have **no existing zsh compsys functio
 | D3 | Cache hit | Send same NL query twice — second should return identical `list` immediately |
 | D4 | Risky command handling | `natural_language` with destructive query — expect `list` with warning descriptions, or `error` if blocked by `security.command_blocklist` |
 
-> **NL response contract:** `natural_language` can return (a) immediate `list` (cache hit), (b) immediate `error` (validation/config/policy), or (c) `ack` then async `list`/`error`. Do not require `ack` as the first frame. The `list` frame is TSV: `list\t<count>\t<cmd1>\t<source1>\t<desc1>\t<kind1>\t...`
-
-Use `--wait-for-update --first-response-timeout-ms 30000` to handle the async case.
+> **NL response contract:** `natural_language` always returns synchronously with either (a) immediate `list` (cache hit or LLM success), or (b) immediate `error` (validation/config/policy/API failure). The `list` frame is TSV: `list\t<count>\t<cmd1>\t<source1>\t<desc1>\t<kind1>\t...`
 
 If blocked by missing API key/env, mark all D scenarios as `BLOCKED`.
 
@@ -213,8 +211,7 @@ $BIN probe --socket-path "$SOCK" --request \
 
 # NL (with async wait)
 $BIN probe --socket-path "$SOCK" --request \
-  '{"type":"natural_language","session_id":"s1","query":"find rust files","cwd":"/tmp"}' \
-  --wait-for-update --first-response-timeout-ms 30000
+  '{"type":"natural_language","session_id":"s1","query":"find rust files","cwd":"/tmp"}'
 
 # Streamed sequence
 cat <<EOF | $BIN probe --socket-path "$SOCK" --stdio --wait-ms 500
@@ -253,7 +250,7 @@ rm -rf "$TESTDIR"
 
 ## Retry Policy
 
-For NL/async/discovery-sensitive scenarios:
+For discovery-sensitive scenarios:
 
 1. Retry up to 5 times before marking `BLOCKED`.
 2. For discovery, use increasing waits (5s, 10s, 15s).
