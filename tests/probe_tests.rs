@@ -47,12 +47,10 @@ async fn stop_child(child: &mut Child) {
 }
 
 #[tokio::test]
-async fn test_probe_end_to_end_history_roundtrip() {
+async fn test_probe_end_to_end_ping_and_command_executed() {
     let bin = synapse_bin();
     let temp = tempfile::tempdir().unwrap();
     let socket_path = temp.path().join("probe.sock");
-    let history_path = temp.path().join("history.zsh");
-    std::fs::write(&history_path, "").unwrap();
 
     let config_home = temp.path().join("config");
     let config_dir = config_home.join("synapse");
@@ -63,14 +61,9 @@ async fn test_probe_end_to_end_history_roundtrip() {
 [llm]
 enabled = false
 natural_language = false
-workflow_prediction = false
-contextual_args = false
 
 [spec]
 discover_from_help = false
-
-[workflow]
-enabled = false
 "#,
     )
     .unwrap();
@@ -80,7 +73,6 @@ enabled = false
         .arg("--foreground")
         .arg("--socket-path")
         .arg(&socket_path)
-        .env("HISTFILE", &history_path)
         .env("XDG_CONFIG_HOME", &config_home)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -90,38 +82,36 @@ enabled = false
 
     wait_for_socket(&socket_path).await;
 
-    let session_id = "probe-session";
-    let cwd = temp.path().to_string_lossy().to_string();
+    // Ping
+    let ping = serde_json::json!({"type": "ping"}).to_string();
+    let pong = run_probe_request(&bin, &socket_path, ping).await;
+    assert_eq!(pong.trim(), "pong");
 
+    // Command executed
     let command_executed = serde_json::json!({
         "type": "command_executed",
-        "session_id": session_id,
+        "session_id": "probe-session",
         "command": "echo hello-agent",
+        "cwd": temp.path().to_string_lossy(),
     })
     .to_string();
 
     let ack = run_probe_request(&bin, &socket_path, command_executed).await;
     assert_eq!(ack.trim(), "ack");
 
-    let suggest_request = serde_json::json!({
-        "type": "suggest",
-        "session_id": session_id,
-        "buffer": "echo he",
-        "cursor_pos": 7,
-        "cwd": cwd,
-        "last_exit_code": 0,
-        "recent_commands": [],
+    // Complete request (should return empty since no specs match "echo")
+    let complete = serde_json::json!({
+        "type": "complete",
+        "command": "echo",
+        "context": [],
+        "cwd": temp.path().to_string_lossy(),
     })
     .to_string();
 
-    let suggestion = run_probe_request(&bin, &socket_path, suggest_request).await;
+    let result = run_probe_request(&bin, &socket_path, complete).await;
     assert!(
-        suggestion.starts_with("suggest\t"),
-        "Expected suggest frame, got: {suggestion}"
-    );
-    assert!(
-        suggestion.contains("echo hello-agent"),
-        "Expected history suggestion, got: {suggestion}"
+        result.trim().starts_with("complete_result\t"),
+        "Expected complete_result frame, got: {result}"
     );
 
     stop_child(&mut daemon).await;

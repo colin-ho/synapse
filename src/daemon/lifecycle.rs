@@ -7,18 +7,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::logging::InteractionLogger;
-use crate::providers::environment::EnvironmentProvider;
-use crate::providers::filesystem::FilesystemProvider;
-use crate::providers::history::HistoryProvider;
-use crate::providers::llm_argument::LlmArgumentProvider;
-use crate::providers::spec::SpecProvider;
-use crate::providers::workflow::WorkflowProvider;
-use crate::providers::workflow_llm::WorkflowLlmProvider;
-use crate::providers::Provider;
-use crate::ranking::Ranker;
 use crate::session::SessionManager;
 use crate::spec_store::SpecStore;
-use crate::workflow::WorkflowPredictor;
 
 use super::server::run_server;
 use super::state::RuntimeState;
@@ -90,9 +80,6 @@ pub(super) async fn start_daemon(
     foreground: bool,
     socket_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    // Migrate spec cache from old ~/synapse/specs/ to XDG cache dir
-    crate::spec_cache::migrate_old_specs_dir();
-
     let config = Config::load().with_socket_override(socket_path);
 
     // Set up tracing
@@ -161,10 +148,6 @@ pub(super) async fn start_daemon(
     let listener = UnixListener::bind(&socket_path)?;
     tracing::info!("Listening on {}", socket_path.display());
 
-    // Init components
-    let history_provider = HistoryProvider::new(config.history.clone());
-    history_provider.load_history().await;
-
     // Init LLM client (if configured)
     let llm_client = if let Some(mut client) =
         crate::llm::LlmClient::from_config(&config.llm, config.security.scrub_paths)
@@ -206,60 +189,20 @@ pub(super) async fn start_daemon(
         llm_client.clone()
     };
 
-    // Init spec system (share LLM client with spec/workflow/NL handlers)
-    let spec_store = Arc::new(SpecStore::new(config.spec.clone(), discovery_llm_client));
-    let spec_provider = SpecProvider::new();
-
-    // Init filesystem and environment providers
-    let filesystem_provider = FilesystemProvider::new();
-    let environment_provider = EnvironmentProvider::new();
-    environment_provider.scan_path().await;
-
-    // Init workflow prediction
-    let workflow_predictor = Arc::new(WorkflowPredictor::new());
-    let workflow_provider =
-        WorkflowProvider::new(workflow_predictor.clone(), config.workflow.clone());
-    if config.workflow.enabled {
-        tracing::info!("Workflow prediction enabled");
-    }
-
-    let providers = vec![
-        Provider::History(Arc::new(history_provider)),
-        Provider::Spec(Arc::new(spec_provider)),
-        Provider::Filesystem(Arc::new(filesystem_provider)),
-        Provider::Environment(Arc::new(environment_provider)),
-        Provider::Workflow(Arc::new(workflow_provider)),
-    ];
-    let mut phase2_providers = Vec::new();
-    if config.llm.contextual_args {
-        if let Some(client) = llm_client.clone() {
-            phase2_providers.push(Provider::LlmArgument(Arc::new(LlmArgumentProvider::new(
-                client,
-                &config.llm,
-                config.security.scrub_paths,
-            ))));
-            tracing::info!("LLM contextual argument suggestions enabled");
-        } else if config.llm.enabled {
-            tracing::warn!(
-                "LLM contextual args enabled but LLM client unavailable; phase 2 provider disabled"
-            );
-        }
-    }
-    if config.llm.workflow_prediction {
-        if let Some(client) = llm_client.clone() {
-            phase2_providers.push(Provider::WorkflowLlm(Arc::new(WorkflowLlmProvider::new(
-                workflow_predictor.clone(),
-                client,
-            ))));
-            tracing::info!("LLM workflow prediction enabled (phase 2)");
-        } else if config.llm.enabled {
-            tracing::warn!(
-                "LLM workflow prediction enabled but LLM client unavailable; workflow LLM provider disabled"
-            );
-        }
-    }
-
-    let ranker = Ranker::new();
+    // Init spec system
+    let completions_dir = config
+        .completions
+        .output_dir
+        .as_ref()
+        .map(|s| {
+            PathBuf::from(s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()))
+        })
+        .unwrap_or_else(crate::compsys_export::completions_dir);
+    let spec_store = Arc::new(SpecStore::with_completions_dir(
+        config.spec.clone(),
+        discovery_llm_client,
+        completions_dir,
+    ));
 
     let session_manager = SessionManager::new();
     let interaction_logger = InteractionLogger::new(
@@ -273,11 +216,7 @@ pub(super) async fn start_daemon(
 
     let state = Arc::new(
         RuntimeState::new(
-            providers,
-            phase2_providers,
             spec_store,
-            ranker,
-            workflow_predictor,
             session_manager,
             interaction_logger,
             config.clone(),
@@ -296,4 +235,165 @@ pub(super) async fn start_daemon(
     let _ = std::fs::remove_file(config.pid_path());
 
     result
+}
+
+pub(super) async fn generate_completions(
+    output_dir: Option<PathBuf>,
+    force: bool,
+    no_gap_check: bool,
+) -> anyhow::Result<()> {
+    let config = Config::load();
+    let output = output_dir.unwrap_or_else(|| {
+        config
+            .completions
+            .output_dir
+            .as_ref()
+            .map(|s| {
+                PathBuf::from(
+                    s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()),
+                )
+            })
+            .unwrap_or_else(crate::compsys_export::completions_dir)
+    });
+
+    let gap_only = !no_gap_check && !force;
+    let existing = if gap_only {
+        crate::zsh_completion::scan_available_commands()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    // If force, remove existing generated files first
+    if force && output.exists() {
+        for entry in std::fs::read_dir(&output)?.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+
+    // Collect project specs for the current working directory
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let spec_store = SpecStore::new(config.spec.clone(), None);
+    let project_specs: Vec<_> = spec_store.lookup_all_project_specs(&cwd).await;
+
+    let report = crate::compsys_export::generate_all(&project_specs, &existing, &output, gap_only)?;
+
+    println!(
+        "Generated {} completions in {}",
+        report.generated.len(),
+        output.display()
+    );
+    if !report.skipped_existing.is_empty() {
+        println!(
+            "Skipped {} commands with existing compsys functions",
+            report.skipped_existing.len()
+        );
+    }
+    for name in &report.generated {
+        println!("  _{name}");
+    }
+
+    Ok(())
+}
+
+pub(super) async fn run_complete_query(
+    command: String,
+    context: Vec<String>,
+    cwd: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let config = Config::load();
+    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+
+    // Try to connect to running daemon first
+    let socket_path = config.socket_path();
+    if socket_path.exists() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
+            let request = serde_json::json!({
+                "type": "complete",
+                "command": command,
+                "context": context,
+                "cwd": cwd.to_string_lossy(),
+            });
+            let mut request_line = serde_json::to_string(&request)?;
+            request_line.push('\n');
+            stream.write_all(request_line.as_bytes()).await?;
+
+            let (reader, _) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+            let timeout = std::time::Duration::from_secs(5);
+            match tokio::time::timeout(timeout, reader.read_line(&mut line)).await {
+                Ok(Ok(n)) if n > 0 => {
+                    let line = line.trim();
+                    // Parse TSV: complete_result\tN\tval1\tdesc1\tval2\tdesc2...
+                    let fields: Vec<&str> = line.split('\t').collect();
+                    if fields.first() == Some(&"complete_result") {
+                        let count: usize = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                        for i in 0..count {
+                            let val = fields.get(2 + i * 2).unwrap_or(&"");
+                            let desc = fields.get(3 + i * 2).unwrap_or(&"");
+                            if desc.is_empty() {
+                                println!("{val}");
+                            } else {
+                                println!("{val}\t{desc}");
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+                _ => {
+                    // Daemon didn't respond, fall through to offline mode
+                }
+            }
+        }
+    }
+
+    // Offline fallback: use spec store directly
+    let spec_store = SpecStore::new(config.spec.clone(), None);
+    if let Some(spec) = spec_store.lookup(&command, &cwd).await {
+        // Walk context to find the right level
+        let mut current_subs = &spec.subcommands;
+        let mut current_args = &spec.args;
+
+        for ctx_part in &context {
+            if ctx_part == "target" || ctx_part == "subcommand" {
+                for sub in current_subs {
+                    if let Some(ref desc) = sub.description {
+                        println!("{}\t{desc}", sub.name);
+                    } else {
+                        println!("{}", sub.name);
+                    }
+                }
+                return Ok(());
+            }
+            if let Some(sub) = current_subs
+                .iter()
+                .find(|s| s.name == *ctx_part || s.aliases.iter().any(|a| a == ctx_part))
+            {
+                current_subs = &sub.subcommands;
+                current_args = &sub.args;
+            }
+        }
+
+        // Return subcommands if at current level
+        if !current_subs.is_empty() {
+            for sub in current_subs {
+                if let Some(ref desc) = sub.description {
+                    println!("{}\t{desc}", sub.name);
+                } else {
+                    println!("{}", sub.name);
+                }
+            }
+        }
+
+        // Return static suggestions from args
+        for arg in current_args {
+            for s in &arg.suggestions {
+                println!("{s}");
+            }
+        }
+    }
+
+    Ok(())
 }

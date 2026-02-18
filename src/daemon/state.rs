@@ -13,21 +13,14 @@ use crate::config::Config;
 use crate::llm::LlmClient;
 use crate::logging::InteractionLogger;
 use crate::nl_cache::NlCache;
-use crate::providers::Provider;
-use crate::ranking::Ranker;
 use crate::session::SessionManager;
 use crate::spec_store::SpecStore;
-use crate::workflow::WorkflowPredictor;
 
 pub(super) type SharedWriter =
     Arc<tokio::sync::Mutex<SplitSink<Framed<tokio::net::UnixStream, LinesCodec>, String>>>;
 
 pub(super) struct RuntimeState {
-    pub(super) providers: Vec<Provider>,
-    pub(super) phase2_providers: Vec<Provider>,
     pub(super) spec_store: Arc<SpecStore>,
-    pub(super) ranker: Ranker,
-    pub(super) workflow_predictor: Arc<WorkflowPredictor>,
     pub(super) session_manager: SessionManager,
     pub(super) interaction_logger: InteractionLogger,
     pub(super) config: Config,
@@ -40,8 +33,6 @@ pub(super) struct RuntimeState {
     /// Cached available tools per PATH string.
     pub(super) tools_cache: Cache<String, Vec<String>>,
     /// Pre-compiled blocklist patterns for command filtering.
-    /// Used by handler code via `CompiledBlocklist::new()` in spawned tasks;
-    /// stored here for potential future direct access.
     #[allow(dead_code)]
     pub(super) compiled_blocklist: CompiledBlocklist,
     /// Cancellation token for graceful shutdown.
@@ -93,13 +84,8 @@ impl CompiledBlocklist {
 }
 
 impl RuntimeState {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
-        providers: Vec<Provider>,
-        phase2_providers: Vec<Provider>,
         spec_store: Arc<SpecStore>,
-        ranker: Ranker,
-        workflow_predictor: Arc<WorkflowPredictor>,
         session_manager: SessionManager,
         interaction_logger: InteractionLogger,
         config: Config,
@@ -109,11 +95,7 @@ impl RuntimeState {
         let context_ttl = Duration::from_secs(300); // 5 min
         let compiled_blocklist = CompiledBlocklist::new(&config.security.command_blocklist);
         Self {
-            providers,
-            phase2_providers,
             spec_store,
-            ranker,
-            workflow_predictor,
             session_manager,
             interaction_logger,
             config,

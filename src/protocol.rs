@@ -1,18 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 
 // --- Requests (Zsh → Daemon) ---
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    Suggest(SuggestRequest),
-    ListSuggestions(ListSuggestionsRequest),
     NaturalLanguage(NaturalLanguageRequest),
-    Interaction(InteractionReport),
     CommandExecuted(CommandExecutedReport),
+    Complete(CompleteRequest),
     Ping,
     Shutdown,
     ReloadConfig,
@@ -20,55 +17,20 @@ pub enum Request {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SuggestRequest {
-    pub session_id: String,
-    pub buffer: String,
-    #[allow(dead_code)]
-    pub cursor_pos: usize,
-    pub cwd: String,
-    #[serde(default)]
-    pub last_exit_code: i32,
-    #[serde(default)]
-    pub recent_commands: Vec<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub env_hints: HashMap<String, String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListSuggestionsRequest {
-    pub session_id: String,
-    pub buffer: String,
-    pub cursor_pos: usize,
-    pub cwd: String,
-    #[serde(default = "default_max_results")]
-    pub max_results: NonZeroUsize,
-    #[serde(default)]
-    pub last_exit_code: i32,
-    #[serde(default)]
-    pub recent_commands: Vec<String>,
-    #[serde(default)]
-    pub env_hints: HashMap<String, String>,
-}
-
-fn default_max_results() -> NonZeroUsize {
-    NonZeroUsize::new(50).unwrap()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InteractionReport {
-    pub session_id: String,
-    pub action: InteractionAction,
-    pub suggestion: String,
-    pub source: SuggestionSource,
-    #[serde(default)]
-    pub buffer_at_action: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct CommandExecutedReport {
     pub session_id: String,
     pub command: String,
+    #[serde(default)]
+    pub cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompleteRequest {
+    pub command: String,
+    #[serde(default)]
+    pub context: Vec<String>,
+    #[serde(default)]
+    pub cwd: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,18 +48,11 @@ pub struct NaturalLanguageRequest {
 #[serde(rename_all = "snake_case")]
 pub enum InteractionAction {
     Accept,
-    Dismiss,
-    Ignore,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SuggestionSource {
-    History,
-    Spec,
-    Filesystem,
-    Environment,
-    Workflow,
     Llm,
 }
 
@@ -105,11 +60,6 @@ pub enum SuggestionSource {
 #[serde(rename_all = "snake_case")]
 pub enum SuggestionKind {
     Command,
-    Subcommand,
-    Option,
-    Argument,
-    File,
-    History,
 }
 
 // --- Responses (Daemon → Zsh) ---
@@ -117,23 +67,21 @@ pub enum SuggestionKind {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
-    Suggestion(SuggestionResponse),
-    Update(SuggestionResponse),
     SuggestionList(SuggestionListResponse),
+    CompleteResult(CompleteResultResponse),
     Pong,
     Ack,
-    /// Signals that all async results (e.g. NL translations) have been sent.
-    SuggestDone,
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct SuggestionResponse {
-    pub text: String,
-    pub source: SuggestionSource,
-    pub confidence: f64,
+pub struct CompleteResultResponse {
+    pub values: Vec<CompleteResultItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CompleteResultItem {
+    pub value: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -156,11 +104,6 @@ pub struct SuggestionItem {
 impl SuggestionSource {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::History => "history",
-            Self::Spec => "spec",
-            Self::Filesystem => "filesystem",
-            Self::Environment => "environment",
-            Self::Workflow => "workflow",
             Self::Llm => "llm",
         }
     }
@@ -176,11 +119,6 @@ impl SuggestionKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Command => "command",
-            Self::Subcommand => "subcommand",
-            Self::Option => "option",
-            Self::Argument => "argument",
-            Self::File => "file",
-            Self::History => "history",
         }
     }
 }
@@ -196,24 +134,9 @@ fn sanitize_tsv(s: &str) -> Cow<'_, str> {
 }
 
 impl Response {
-    fn to_tsv_suggestion(prefix: &str, suggestion: &SuggestionResponse) -> String {
-        let mut line = format!(
-            "{prefix}\t{}\t{}",
-            sanitize_tsv(&suggestion.text),
-            suggestion.source.as_str()
-        );
-        if let Some(ref desc) = suggestion.description {
-            line.push('\t');
-            line.push_str(&sanitize_tsv(desc));
-        }
-        line
-    }
-
     /// Serialize this response as a single TSV line (no trailing newline).
     pub fn to_tsv(&self) -> String {
         match self {
-            Response::Suggestion(s) => Self::to_tsv_suggestion("suggest", s),
-            Response::Update(s) => Self::to_tsv_suggestion("update", s),
             Response::SuggestionList(list) => {
                 let mut out = format!("list\t{}", list.suggestions.len());
                 for item in &list.suggestions {
@@ -229,9 +152,18 @@ impl Response {
                 }
                 out
             }
+            Response::CompleteResult(result) => {
+                let mut out = format!("complete_result\t{}", result.values.len());
+                for item in &result.values {
+                    out.push('\t');
+                    out.push_str(&sanitize_tsv(&item.value));
+                    out.push('\t');
+                    out.push_str(&sanitize_tsv(item.description.as_deref().unwrap_or("")));
+                }
+                out
+            }
             Response::Pong => "pong".to_string(),
             Response::Ack => "ack".to_string(),
-            Response::SuggestDone => "suggest_done".to_string(),
             Response::Error { message } => {
                 format!("error\t{}", sanitize_tsv(message))
             }
@@ -241,34 +173,15 @@ impl Response {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
-
     use super::{
-        Request, Response, SuggestionItem, SuggestionKind, SuggestionListResponse,
-        SuggestionResponse, SuggestionSource,
+        Request, Response, SuggestionItem, SuggestionKind, SuggestionListResponse, SuggestionSource,
     };
 
     #[test]
     fn test_protocol_serialization() {
-        // Test that ping request parses correctly
         let req: Request = serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
         assert!(matches!(req, Request::Ping));
 
-        // Test suggest request
-        let req: Request = serde_json::from_str(
-            r#"{"type":"suggest","session_id":"abc","buffer":"git","cursor_pos":3,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}"#,
-        )
-        .unwrap();
-        assert!(matches!(req, Request::Suggest(_)));
-
-        // Test interaction report
-        let req: Request = serde_json::from_str(
-            r#"{"type":"interaction","session_id":"abc","action":"accept","suggestion":"git status","source":"history","buffer_at_action":"git"}"#,
-        )
-        .unwrap();
-        assert!(matches!(req, Request::Interaction(_)));
-
-        // Test command_executed report
         let req: Request = serde_json::from_str(
             r#"{"type":"command_executed","session_id":"abc","command":"git status"}"#,
         )
@@ -281,17 +194,6 @@ mod tests {
         let resp = Response::Pong;
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{"type":"pong"}"#);
-
-        let resp = Response::Suggestion(SuggestionResponse {
-            text: "git status".into(),
-            source: SuggestionSource::History,
-            confidence: 0.92,
-            description: None,
-        });
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("suggestion"));
-        assert!(json.contains("git status"));
-        assert!(json.contains("history"));
     }
 
     #[test]
@@ -300,17 +202,17 @@ mod tests {
             suggestions: vec![
                 SuggestionItem {
                     text: "git commit".into(),
-                    source: SuggestionSource::Spec,
+                    source: SuggestionSource::Llm,
                     confidence: 0.9,
                     description: Some("Record changes to the repository".into()),
-                    kind: SuggestionKind::Subcommand,
+                    kind: SuggestionKind::Command,
                 },
                 SuggestionItem {
                     text: "git checkout".into(),
-                    source: SuggestionSource::Spec,
+                    source: SuggestionSource::Llm,
                     confidence: 0.85,
                     description: Some("Switch branches".into()),
-                    kind: SuggestionKind::Subcommand,
+                    kind: SuggestionKind::Command,
                 },
             ],
         });
@@ -319,37 +221,8 @@ mod tests {
         assert!(json.contains("suggestion_list"));
         assert!(json.contains("git commit"));
         assert!(json.contains("git checkout"));
-        assert!(json.contains("\"kind\":\"subcommand\""));
-        assert!(json.contains("\"source\":\"spec\""));
-    }
-
-    #[test]
-    fn test_list_suggestions_request_deserialization() {
-        let json = r#"{"type":"list_suggestions","session_id":"abc123","buffer":"git co","cursor_pos":6,"cwd":"/tmp","max_results":5}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
-
-        match req {
-            Request::ListSuggestions(ls) => {
-                assert_eq!(ls.session_id, "abc123");
-                assert_eq!(ls.buffer, "git co");
-                assert_eq!(ls.cursor_pos, 6);
-                assert_eq!(ls.max_results, NonZeroUsize::new(5).unwrap());
-            }
-            _ => panic!("Expected ListSuggestions request"),
-        }
-    }
-
-    #[test]
-    fn test_list_suggestions_default_max_results() {
-        let json = r#"{"type":"list_suggestions","session_id":"abc","buffer":"git ","cursor_pos":4,"cwd":"/tmp"}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
-
-        match req {
-            Request::ListSuggestions(ls) => {
-                assert_eq!(ls.max_results, NonZeroUsize::new(50).unwrap());
-            }
-            _ => panic!("Expected ListSuggestions request"),
-        }
+        assert!(json.contains("\"kind\":\"command\""));
+        assert!(json.contains("\"source\":\"llm\""));
     }
 
     #[test]
@@ -357,26 +230,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&SuggestionKind::Command).unwrap(),
             "\"command\""
-        );
-        assert_eq!(
-            serde_json::to_string(&SuggestionKind::Subcommand).unwrap(),
-            "\"subcommand\""
-        );
-        assert_eq!(
-            serde_json::to_string(&SuggestionKind::Option).unwrap(),
-            "\"option\""
-        );
-        assert_eq!(
-            serde_json::to_string(&SuggestionKind::Argument).unwrap(),
-            "\"argument\""
-        );
-        assert_eq!(
-            serde_json::to_string(&SuggestionKind::File).unwrap(),
-            "\"file\""
-        );
-        assert_eq!(
-            serde_json::to_string(&SuggestionKind::History).unwrap(),
-            "\"history\""
         );
     }
 
@@ -399,73 +252,37 @@ mod tests {
     }
 
     #[test]
-    fn test_to_tsv_suggestion() {
-        let resp = Response::Suggestion(SuggestionResponse {
-            text: "git status".into(),
-            source: SuggestionSource::History,
-            confidence: 0.9,
-            description: None,
-        });
-        assert_eq!(resp.to_tsv(), "suggest\tgit status\thistory");
-    }
-
-    #[test]
-    fn test_to_tsv_update() {
-        let resp = Response::Update(SuggestionResponse {
-            text: "git status --verbose".into(),
-            source: SuggestionSource::Spec,
-            confidence: 0.87,
-            description: None,
-        });
-        assert_eq!(resp.to_tsv(), "update\tgit status --verbose\tspec");
-    }
-
-    #[test]
     fn test_to_tsv_suggestion_list() {
         let resp = Response::SuggestionList(SuggestionListResponse {
             suggestions: vec![
                 SuggestionItem {
                     text: "git status".into(),
-                    source: SuggestionSource::History,
+                    source: SuggestionSource::Llm,
                     confidence: 0.9,
                     description: None,
                     kind: SuggestionKind::Command,
                 },
                 SuggestionItem {
                     text: "git stash".into(),
-                    source: SuggestionSource::Spec,
+                    source: SuggestionSource::Llm,
                     confidence: 0.88,
                     description: Some("Stash changes".into()),
-                    kind: SuggestionKind::Subcommand,
+                    kind: SuggestionKind::Command,
                 },
             ],
         });
         assert_eq!(
             resp.to_tsv(),
-            "list\t2\tgit status\thistory\t\tcommand\tgit stash\tspec\tStash changes\tsubcommand"
+            "list\t2\tgit status\tllm\t\tcommand\tgit stash\tllm\tStash changes\tcommand"
         );
     }
 
     #[test]
     fn test_to_tsv_sanitizes_tabs_and_newlines() {
-        let resp = Response::Suggestion(SuggestionResponse {
-            text: "echo\thello\nworld".into(),
-            source: SuggestionSource::History,
-            confidence: 0.5,
-            description: None,
-        });
-        assert_eq!(resp.to_tsv(), "suggest\techo    hello world\thistory");
-    }
-
-    #[test]
-    fn test_to_tsv_empty_suggestion() {
-        let resp = Response::Suggestion(SuggestionResponse {
-            text: String::new(),
-            source: SuggestionSource::History,
-            confidence: 0.0,
-            description: None,
-        });
-        assert_eq!(resp.to_tsv(), "suggest\t\thistory");
+        let resp = Response::Error {
+            message: "bad\trequest\nwith newline".into(),
+        };
+        assert_eq!(resp.to_tsv(), "error\tbad    request with newline");
     }
 
     #[test]
@@ -484,45 +301,29 @@ mod tests {
     }
 
     #[test]
-    fn test_to_tsv_suggestion_with_description() {
-        let resp = Response::Suggestion(SuggestionResponse {
-            text: "rm -rf /tmp/old".into(),
-            source: SuggestionSource::Llm,
-            confidence: 0.95,
-            description: Some("deletes files".into()),
-        });
-        assert_eq!(
-            resp.to_tsv(),
-            "suggest\trm -rf /tmp/old\tllm\tdeletes files"
-        );
-    }
-
-    #[test]
     fn test_to_tsv_suggestion_list_empty_descriptions_preserve_field_count() {
-        // Regression: the Zsh plugin splits TSV with a stride of 4 fields per item.
-        // Empty descriptions MUST produce an empty field (\t\t) so the stride stays aligned.
         let resp = Response::SuggestionList(SuggestionListResponse {
             suggestions: vec![
                 SuggestionItem {
                     text: "daft-sync".into(),
-                    source: SuggestionSource::History,
+                    source: SuggestionSource::Llm,
                     confidence: 0.9,
                     description: None,
-                    kind: SuggestionKind::History,
+                    kind: SuggestionKind::Command,
                 },
                 SuggestionItem {
                     text: "daft-sync stop".into(),
-                    source: SuggestionSource::History,
+                    source: SuggestionSource::Llm,
                     confidence: 0.8,
                     description: None,
-                    kind: SuggestionKind::History,
+                    kind: SuggestionKind::Command,
                 },
                 SuggestionItem {
                     text: "daft-sync watch".into(),
-                    source: SuggestionSource::History,
+                    source: SuggestionSource::Llm,
                     confidence: 0.7,
                     description: None,
-                    kind: SuggestionKind::History,
+                    kind: SuggestionKind::Command,
                 },
             ],
         });
@@ -534,42 +335,53 @@ mod tests {
         assert_eq!(fields[0], "list");
         assert_eq!(fields[1], "3");
 
-        // Each item must have exactly 4 fields: text, source, desc, kind
         for i in 0..3 {
             let base = 2 + i * 4;
             assert!(
                 !fields[base].is_empty(),
                 "item {i} text should not be empty"
             );
-            assert_eq!(fields[base + 1], "history", "item {i} source");
+            assert_eq!(fields[base + 1], "llm", "item {i} source");
             assert_eq!(fields[base + 2], "", "item {i} desc should be empty");
-            assert_eq!(fields[base + 3], "history", "item {i} kind");
+            assert_eq!(fields[base + 3], "command", "item {i} kind");
         }
     }
 
     #[test]
     fn test_as_str_matches_serde() {
-        for source in [
-            SuggestionSource::History,
-            SuggestionSource::Spec,
-            SuggestionSource::Filesystem,
-            SuggestionSource::Environment,
-            SuggestionSource::Workflow,
-            SuggestionSource::Llm,
-        ] {
+        for source in [SuggestionSource::Llm] {
             let serde_str = serde_json::to_string(&source).unwrap();
             assert_eq!(format!("\"{}\"", source.as_str()), serde_str);
         }
-        for kind in [
-            SuggestionKind::Command,
-            SuggestionKind::Subcommand,
-            SuggestionKind::Option,
-            SuggestionKind::Argument,
-            SuggestionKind::File,
-            SuggestionKind::History,
-        ] {
+        for kind in [SuggestionKind::Command] {
             let serde_str = serde_json::to_string(&kind).unwrap();
             assert_eq!(format!("\"{}\"", kind.as_str()), serde_str);
+        }
+    }
+
+    #[test]
+    fn test_command_executed_with_cwd() {
+        let json = r#"{"type":"command_executed","session_id":"abc","command":"git status","cwd":"/home/user/project"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::CommandExecuted(report) => {
+                assert_eq!(report.command, "git status");
+                assert_eq!(report.cwd, "/home/user/project");
+            }
+            _ => panic!("Expected CommandExecuted request"),
+        }
+    }
+
+    #[test]
+    fn test_command_executed_without_cwd() {
+        let json = r#"{"type":"command_executed","session_id":"abc","command":"ls"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::CommandExecuted(report) => {
+                assert_eq!(report.command, "ls");
+                assert_eq!(report.cwd, "");
+            }
+            _ => panic!("Expected CommandExecuted request"),
         }
     }
 }

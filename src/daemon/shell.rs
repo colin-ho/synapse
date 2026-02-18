@@ -114,15 +114,12 @@ fn extract_embedded_plugin_at(data_dir: &std::path::Path) -> anyhow::Result<Path
 
 /// Output shell initialization code to stdout.
 pub(super) fn print_init_code() -> anyhow::Result<()> {
-    let config = crate::config::Config::load();
-    let ghost_color = &config.general.ghost_text_color;
-
     if let Some((exe, workspace_root)) = detect_dev_mode() {
-        print_dev_init_code(&exe, &workspace_root, ghost_color)?;
+        print_dev_init_code(&exe, &workspace_root)?;
     } else {
         let exe = std::env::current_exe().unwrap_or_default();
         let exe = exe.canonicalize().unwrap_or(exe);
-        print_normal_init_code(&exe, ghost_color)?;
+        print_normal_init_code(&exe)?;
     }
     Ok(())
 }
@@ -131,7 +128,6 @@ pub(super) fn print_init_code() -> anyhow::Result<()> {
 fn print_dev_init_code(
     exe: &std::path::Path,
     workspace_root: &std::path::Path,
-    ghost_color: &str,
 ) -> anyhow::Result<()> {
     let plugin_path = find_plugin_path(exe, Some(workspace_root))?;
     let hash = workspace_hash(workspace_root);
@@ -154,7 +150,9 @@ fn print_dev_init_code(
         r#"# synapse dev mode
 export SYNAPSE_BIN="{exe}"
 export SYNAPSE_SOCKET="{socket}"
-export SYNAPSE_GHOST_COLOR="{ghost_color}"
+# Synapse completions — add to fpath before compinit
+_synapse_completions_dir="${{XDG_DATA_HOME:-$HOME/.local/share}}/synapse/completions"
+[[ -d "$_synapse_completions_dir" ]] && fpath=("$_synapse_completions_dir" $fpath)
 # Stop existing dev daemon on this socket
 if [[ -f "{pid}" ]] && kill -0 $(<"{pid}") 2>/dev/null; then
     kill $(<"{pid}") 2>/dev/null
@@ -195,23 +193,23 @@ fi
         pid = pid_path,
         log = log_path,
         plugin = plugin_path.display(),
-        ghost_color = ghost_color,
     );
     Ok(())
 }
 
 /// Output normal-mode shell initialization code.
-fn print_normal_init_code(exe: &std::path::Path, ghost_color: &str) -> anyhow::Result<()> {
+fn print_normal_init_code(exe: &std::path::Path) -> anyhow::Result<()> {
     let plugin_path = find_plugin_path(exe, None)?;
 
     print!(
         r#"export SYNAPSE_BIN="{exe}"
-export SYNAPSE_GHOST_COLOR="{ghost_color}"
+# Synapse completions — add to fpath before compinit
+_synapse_completions_dir="${{XDG_DATA_HOME:-$HOME/.local/share}}/synapse/completions"
+[[ -d "$_synapse_completions_dir" ]] && fpath=("$_synapse_completions_dir" $fpath)
 source "{plugin}"
     "#,
         exe = exe.display(),
         plugin = plugin_path.display(),
-        ghost_color = ghost_color,
     );
     Ok(())
 }

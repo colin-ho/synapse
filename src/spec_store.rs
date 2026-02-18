@@ -14,11 +14,8 @@ use std::sync::LazyLock;
 
 use crate::config::SpecConfig;
 use crate::llm::LlmClient;
-use crate::spec::{
-    ArgSpec, ArgTemplate, CommandSpec, GeneratorSpec, OptionSpec, SpecSource, SubcommandSpec,
-};
+use crate::spec::{CommandSpec, GeneratorSpec, OptionSpec, SpecSource, SubcommandSpec};
 use crate::spec_autogen;
-use crate::spec_cache;
 
 /// Commands that must never be run with --help for safety reasons.
 const DISCOVERY_BLOCKLIST: &[&str] = &[
@@ -51,128 +48,38 @@ impl Expiry<(String, PathBuf), GeneratorCacheEntry> for GeneratorExpiry {
 }
 
 /// Manages loading, caching, and resolution of command specs.
+///
+/// The spec store handles two tiers of specs:
+/// 1. User project specs (`.synapse/specs/*.toml`) — highest priority
+/// 2. Project auto-generated specs (Makefile, package.json, etc.)
+///
+/// Discovery of unknown commands writes compsys files directly to the
+/// completions directory — there is no intermediate TOML cache.
 pub struct SpecStore {
-    builtin: HashMap<String, CommandSpec>,
-    discovered: RwLock<HashMap<String, spec_cache::DiscoveredSpec>>,
     discovering: RwLock<HashSet<String>>,
     project_cache: Cache<PathBuf, Arc<HashMap<String, CommandSpec>>>,
     generator_cache: Cache<(String, PathBuf), GeneratorCacheEntry>,
     config: SpecConfig,
-    /// Alias → canonical name mapping for builtins
-    alias_map: RwLock<HashMap<String, String>>,
     llm_client: Option<Arc<LlmClient>>,
     /// Set of command names that have zsh completion files available.
-    /// Used by `all_command_names()` so partial command-name completions
-    /// include commands we haven't parsed yet.
     zsh_index: HashSet<String>,
+    /// Directory for generated compsys completion files.
+    completions_dir: PathBuf,
 }
 
 impl SpecStore {
     pub fn new(config: SpecConfig, llm_client: Option<Arc<LlmClient>>) -> Self {
-        let mut builtin = HashMap::new();
-        let mut alias_map = HashMap::new();
+        Self::with_completions_dir(config, llm_client, crate::compsys_export::completions_dir())
+    }
 
-        // Load embedded built-in specs (subcommand trees + ssh for host generator)
-        let specs_raw: &[(&str, &str)] = &[
-            ("git", include_str!("../specs/builtin/git.toml")),
-            ("cargo", include_str!("../specs/builtin/cargo.toml")),
-            ("npm", include_str!("../specs/builtin/npm.toml")),
-            ("docker", include_str!("../specs/builtin/docker.toml")),
-            ("ssh", include_str!("../specs/builtin/ssh.toml")),
-            ("pip", include_str!("../specs/builtin/pip.toml")),
-            ("brew", include_str!("../specs/builtin/brew.toml")),
-            ("kubectl", include_str!("../specs/builtin/kubectl.toml")),
-            ("tmux", include_str!("../specs/builtin/tmux.toml")),
-            ("go", include_str!("../specs/builtin/go.toml")),
-            ("yarn", include_str!("../specs/builtin/yarn.toml")),
-            ("pnpm", include_str!("../specs/builtin/pnpm.toml")),
-            ("systemctl", include_str!("../specs/builtin/systemctl.toml")),
-            ("helm", include_str!("../specs/builtin/helm.toml")),
-            ("terraform", include_str!("../specs/builtin/terraform.toml")),
-            ("gh", include_str!("../specs/builtin/gh.toml")),
-            ("uv", include_str!("../specs/builtin/uv.toml")),
-        ];
-
-        for (name, toml_str) in specs_raw {
-            match toml::from_str::<CommandSpec>(toml_str) {
-                Ok(mut spec) => {
-                    spec.source = SpecSource::Builtin;
-                    // Register aliases
-                    for alias in &spec.aliases {
-                        alias_map.insert(alias.clone(), name.to_string());
-                    }
-                    builtin.insert(name.to_string(), spec);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse builtin spec {name}: {e}");
-                }
-            }
-        }
-
-        // Aliases for commands whose full builtins were removed
-        for (alias, canonical) in [("python3", "python"), ("gawk", "awk"), ("mawk", "awk")] {
-            alias_map.insert(alias.to_string(), canonical.to_string());
-        }
-
-        // Register minimal shell command specs (only if no full builtin spec exists)
-        for (names, template) in [
-            (
-                &["cd", "mkdir", "rmdir", "pushd"][..],
-                ArgTemplate::Directories,
-            ),
-            (
-                &[
-                    "cat", "less", "head", "tail", "vim", "nvim", "code", "nano", "bat", "wc",
-                    "sort", "uniq", "file", "stat", "touch", "open", "cp", "mv", "rm", "chmod",
-                    "chown", "ln", "node", "ruby", "perl", "python", "awk", "bash", "sh", "zsh",
-                ][..],
-                ArgTemplate::FilePaths,
-            ),
-            (&["export", "unset"][..], ArgTemplate::EnvVars),
-        ] {
-            for name in names {
-                if !builtin.contains_key(*name) {
-                    builtin.insert(
-                        name.to_string(),
-                        CommandSpec {
-                            name: name.to_string(),
-                            args: vec![ArgSpec {
-                                name: "path".into(),
-                                template: Some(template.clone()),
-                                ..Default::default()
-                            }],
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-        }
-        for name in [
-            "sudo", "env", "nohup", "time", "watch", "xargs", "nice", "ionice", "strace",
-        ] {
-            if !builtin.contains_key(name) {
-                builtin.insert(
-                    name.to_string(),
-                    CommandSpec {
-                        name: name.to_string(),
-                        recursive: true,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-
-        tracing::info!("Loaded {} builtin specs", builtin.len());
-
+    pub fn with_completions_dir(
+        config: SpecConfig,
+        llm_client: Option<Arc<LlmClient>>,
+        completions_dir: PathBuf,
+    ) -> Self {
         // Build the zsh completion filename index (readdir only, sub-millisecond).
         let zsh_index = crate::zsh_completion::scan_available_commands();
         tracing::info!("Indexed {} zsh completion files", zsh_index.len());
-
-        // Load discovered specs from disk
-        let discovered = spec_cache::load_all_discovered();
-        if !discovered.is_empty() {
-            tracing::info!("Loaded {} discovered specs from disk", discovered.len());
-        }
 
         let project_cache = Cache::builder()
             .max_capacity(50)
@@ -185,81 +92,27 @@ impl SpecStore {
             .build();
 
         Self {
-            builtin,
-            discovered: RwLock::new(discovered),
             discovering: RwLock::new(HashSet::new()),
             project_cache,
             generator_cache,
             config,
-            alias_map: RwLock::new(alias_map),
             llm_client,
             zsh_index,
+            completions_dir,
         }
     }
 
-    /// Look up a spec by command name. Project auto-gen specs are merged with
-    /// builtins so additions (e.g. docker-compose services) don't shadow the
-    /// full builtin spec tree.
+    /// Look up a spec by command name. Only returns project-level specs
+    /// (user-defined and auto-generated).
     pub async fn lookup(&self, command: &str, cwd: &Path) -> Option<CommandSpec> {
         let project_specs = self.get_project_specs(cwd).await;
-
-        if let Some(project_spec) = project_specs.get(command) {
-            // Merge with builtin if both exist
-            if let Some(builtin_spec) = self.builtin.get(command) {
-                return Some(merge_specs(builtin_spec, project_spec));
-            }
-            return Some(project_spec.clone());
-        }
-
-        // Check builtin specs
-        if let Some(spec) = self.builtin.get(command) {
-            return Some(spec.clone());
-        }
-
-        // Check aliases
-        let alias_map = self.alias_map.read().await;
-        if let Some(canonical) = alias_map.get(command) {
-            if let Some(spec) = self.builtin.get(canonical) {
-                return Some(spec.clone());
-            }
-        }
-        drop(alias_map);
-
-        // Check discovered specs (includes zsh-parsed and --help-parsed)
-        if let Some(discovered) = self.discovered.read().await.get(command) {
-            let mut spec = discovered.spec.clone();
-            spec.source = SpecSource::Discovered;
-            return Some(spec);
-        }
-
-        // Lazy-parse zsh completion file and promote into discovered cache.
-        if self.zsh_index.contains(command) {
-            if let Some(mut spec) = crate::zsh_completion::find_and_parse(command) {
-                spec.source = SpecSource::Discovered;
-                let discovered = spec_cache::DiscoveredSpec {
-                    discovered_at: Some(chrono::Utc::now().to_rfc3339()),
-                    command_path: None,
-                    version_output: None,
-                    spec: spec.clone(),
-                };
-                self.discovered
-                    .write()
-                    .await
-                    .insert(command.to_string(), discovered);
-                return Some(spec);
-            }
-        }
-
-        None
+        project_specs.get(command).cloned()
     }
 
-    /// Insert a spec into the discovered cache (for testing).
-    #[cfg(test)]
-    pub async fn inject_discovered(&self, command: &str, spec: spec_cache::DiscoveredSpec) {
-        self.discovered
-            .write()
-            .await
-            .insert(command.to_string(), spec);
+    /// Return all project specs for the given cwd as a Vec (for compsys export).
+    pub async fn lookup_all_project_specs(&self, cwd: &Path) -> Vec<CommandSpec> {
+        let project_specs = self.get_project_specs(cwd).await;
+        project_specs.values().cloned().collect()
     }
 
     /// Invalidate all caches (project specs and generator outputs).
@@ -268,17 +121,15 @@ impl SpecStore {
         self.generator_cache.invalidate_all();
     }
 
+    /// Check if a command already has a completion file (system or generated).
+    fn has_completion(&self, command: &str) -> bool {
+        self.zsh_index.contains(command)
+            || self.completions_dir.join(format!("_{command}")).exists()
+    }
+
     /// Get all available command names for a given cwd.
     pub async fn all_command_names(&self, cwd: &Path) -> Vec<String> {
-        let mut seen: std::collections::HashSet<String> = self.builtin.keys().cloned().collect();
-
-        for cmd in &self.zsh_index {
-            seen.insert(cmd.clone());
-        }
-
-        for key in self.discovered.read().await.keys() {
-            seen.insert(key.clone());
-        }
+        let mut seen: HashSet<String> = self.zsh_index.clone();
 
         let project_specs = self.get_project_specs(cwd).await;
         for key in project_specs.keys() {
@@ -288,8 +139,9 @@ impl SpecStore {
         seen.into_iter().collect()
     }
 
-    /// Trigger background discovery for an unknown command or stale discovered spec.
-    /// Returns immediately — the spec will be available on subsequent lookups.
+    /// Trigger background discovery for an unknown command.
+    /// Returns immediately — a compsys completion file will be written
+    /// to the completions directory when discovery completes.
     pub async fn trigger_discovery(self: &Arc<Self>, command: &str, cwd: Option<&Path>) {
         if !self.config.discover_from_help {
             return;
@@ -298,19 +150,9 @@ impl SpecStore {
         let command = command.to_string();
         let cwd = cwd.map(Path::to_path_buf);
 
-        // Skip if we already have a builtin or zsh completion spec
-        if self.builtin.contains_key(&command) {
+        // Skip if a completion already exists (system or generated)
+        if self.has_completion(&command) {
             return;
-        }
-        if self.zsh_index.contains(&command) {
-            return;
-        }
-
-        // Skip fresh discovered specs; stale ones are eligible for refresh.
-        if let Some(discovered) = self.discovered.read().await.get(&command) {
-            if !spec_cache::is_stale(discovered, crate::config::DISCOVER_MAX_AGE_SECS) {
-                return;
-            }
         }
 
         // Check blocklist
@@ -336,22 +178,23 @@ impl SpecStore {
         });
     }
 
-    /// Save a discovered spec to disk and the in-memory cache.
-    async fn save_discovered_spec(&self, command: &str, spec: CommandSpec, cwd: Option<&Path>) {
-        let command_path = self.resolve_command_path(command, cwd).await;
-        let discovered = spec_cache::DiscoveredSpec {
-            discovered_at: Some(chrono::Utc::now().to_rfc3339()),
-            command_path,
-            version_output: None,
-            spec,
-        };
-        if let Err(e) = spec_cache::save_discovered(&discovered) {
-            tracing::warn!("Failed to save discovered spec for {command}: {e}");
+    /// Write a discovered spec as a compsys completion file.
+    /// The compsys file IS the persistent cache — no TOML intermediate.
+    fn save_discovered_spec(&self, command: &str, spec: &CommandSpec) {
+        if self.zsh_index.contains(command) {
+            return; // Don't overwrite existing system completions
         }
-        self.discovered
-            .write()
-            .await
-            .insert(command.to_string(), discovered);
+        match crate::compsys_export::write_completion_file(spec, &self.completions_dir) {
+            Ok(path) => {
+                tracing::info!(
+                    "Wrote compsys completion for {command} at {}",
+                    path.display()
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Failed to write compsys completion for {command}: {e}");
+            }
+        }
     }
 
     /// Run fast discovery inline and return whether a spec was produced.
@@ -363,18 +206,19 @@ impl SpecStore {
         cwd: Option<&Path>,
         _timeout: Duration,
     ) -> bool {
-        let lookup_cwd = cwd.unwrap_or(Path::new(""));
+        // Already have a completion file?
+        if self.has_completion(command) {
+            return true;
+        }
 
-        // Already have a spec?
+        // Already have a project spec?
+        let lookup_cwd = cwd.unwrap_or(Path::new(""));
         if self.lookup(command, lookup_cwd).await.is_some() {
             return true;
         }
 
         // Same guards as trigger_discovery.
         if !self.config.discover_from_help {
-            return false;
-        }
-        if self.builtin.contains_key(command) {
             return false;
         }
         if DISCOVERY_BLOCKLIST.contains(&command) {
@@ -395,7 +239,7 @@ impl SpecStore {
         {
             spec.source = SpecSource::Discovered;
             tracing::info!("Completion generator produced spec for {command}");
-            self.save_discovered_spec(command, spec, cwd).await;
+            self.save_discovered_spec(command, &spec);
             return true;
         }
 
@@ -417,7 +261,7 @@ impl SpecStore {
             return false;
         }
 
-        self.save_discovered_spec(command, spec, cwd).await;
+        self.save_discovered_spec(command, &spec);
         tracing::info!("Fast-discovered spec for {command}");
         true
     }
@@ -431,7 +275,7 @@ impl SpecStore {
         {
             spec.source = SpecSource::Discovered;
             tracing::info!("Completion generator produced spec for {command}");
-            self.save_discovered_spec(command, spec, cwd).await;
+            self.save_discovered_spec(command, &spec);
             tracing::info!("Discovered spec for {command}");
             return;
         }
@@ -472,7 +316,7 @@ impl SpecStore {
                 .await;
         }
 
-        self.save_discovered_spec(command, spec, cwd).await;
+        self.save_discovered_spec(command, &spec);
         tracing::info!("Discovered spec for {command}");
     }
 
@@ -675,39 +519,6 @@ impl SpecStore {
         parse_help_basic(command_name, help_text)
     }
 
-    /// Resolve a command name to its full path.
-    async fn resolve_command_path(&self, command: &str, cwd: Option<&Path>) -> Option<String> {
-        if command.contains('/') {
-            let path = Path::new(command);
-            if path.is_absolute() {
-                return std::fs::canonicalize(path)
-                    .ok()
-                    .map(|p| p.to_string_lossy().to_string());
-            }
-
-            if let Some(cwd) = cwd {
-                return std::fs::canonicalize(cwd.join(path))
-                    .ok()
-                    .map(|p| p.to_string_lossy().to_string());
-            }
-        }
-
-        let mut cmd = Command::new("which");
-        cmd.arg(command);
-        if let Some(cwd) = cwd {
-            cmd.current_dir(cwd);
-        }
-        let output = cmd.output().await.ok()?;
-
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(path);
-            }
-        }
-        None
-    }
-
     /// Get project-specific specs (user-defined + auto-generated), cached.
     async fn get_project_specs(&self, cwd: &Path) -> Arc<HashMap<String, CommandSpec>> {
         if !self.config.enabled {
@@ -854,60 +665,6 @@ impl SpecStore {
     }
 }
 
-/// Merge a ProjectAuto spec into a builtin spec.
-/// Starts with a clone of the builtin, then appends any subcommands/options/args from `auto`
-/// that don't already exist in the builtin. For subcommands that exist in both, merges their
-/// nested subcommands and args. Preserves the builtin's source tag for ranking consistency.
-fn merge_specs(builtin: &CommandSpec, auto: &CommandSpec) -> CommandSpec {
-    let mut merged = builtin.clone();
-
-    for auto_sub in &auto.subcommands {
-        if let Some(builtin_sub) = merged
-            .subcommands
-            .iter_mut()
-            .find(|s| s.name == auto_sub.name)
-        {
-            // Merge nested subcommands
-            for nested in &auto_sub.subcommands {
-                if !builtin_sub
-                    .subcommands
-                    .iter()
-                    .any(|s| s.name == nested.name)
-                {
-                    builtin_sub.subcommands.push(nested.clone());
-                }
-            }
-            // Merge nested args
-            for arg in &auto_sub.args {
-                if !builtin_sub.args.iter().any(|a| a.name == arg.name) {
-                    builtin_sub.args.push(arg.clone());
-                }
-            }
-        } else {
-            merged.subcommands.push(auto_sub.clone());
-        }
-    }
-
-    // Merge top-level options
-    for opt in &auto.options {
-        let already = merged.options.iter().any(|o| {
-            (o.long.is_some() && o.long == opt.long) || (o.short.is_some() && o.short == opt.short)
-        });
-        if !already {
-            merged.options.push(opt.clone());
-        }
-    }
-
-    // Merge top-level args
-    for arg in &auto.args {
-        if !merged.args.iter().any(|a| a.name == arg.name) {
-            merged.args.push(arg.clone());
-        }
-    }
-
-    merged
-}
-
 /// Minimal best-effort help text parser used when LLM is unavailable.
 /// Extracts obvious `--option` lines and `command  description` subcommand lines.
 pub fn parse_help_basic(command_name: &str, help_text: &str) -> CommandSpec {
@@ -995,191 +752,6 @@ pub fn parse_help_basic(command_name: &str, help_text: &str) -> CommandSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::{ArgSpec, CommandSpec, OptionSpec, SpecSource, SubcommandSpec};
-
-    #[test]
-    fn test_merge_specs_adds_new_subcommands() {
-        let builtin = CommandSpec {
-            name: "docker".into(),
-            source: SpecSource::Builtin,
-            subcommands: vec![
-                SubcommandSpec {
-                    name: "build".into(),
-                    description: Some("Build an image".into()),
-                    ..Default::default()
-                },
-                SubcommandSpec {
-                    name: "run".into(),
-                    description: Some("Run a container".into()),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-
-        let auto = CommandSpec {
-            name: "docker".into(),
-            source: SpecSource::ProjectAuto,
-            subcommands: vec![SubcommandSpec {
-                name: "compose".into(),
-                subcommands: vec![SubcommandSpec {
-                    name: "up".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let merged = merge_specs(&builtin, &auto);
-        assert_eq!(merged.source, SpecSource::Builtin);
-        assert_eq!(merged.subcommands.len(), 3);
-        assert!(merged.subcommands.iter().any(|s| s.name == "build"));
-        assert!(merged.subcommands.iter().any(|s| s.name == "run"));
-        assert!(merged.subcommands.iter().any(|s| s.name == "compose"));
-    }
-
-    #[test]
-    fn test_merge_specs_merges_existing_subcommand_children() {
-        let builtin = CommandSpec {
-            name: "docker".into(),
-            source: SpecSource::Builtin,
-            subcommands: vec![SubcommandSpec {
-                name: "compose".into(),
-                description: Some("Docker Compose".into()),
-                subcommands: vec![SubcommandSpec {
-                    name: "up".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let auto = CommandSpec {
-            name: "docker".into(),
-            source: SpecSource::ProjectAuto,
-            subcommands: vec![SubcommandSpec {
-                name: "compose".into(),
-                subcommands: vec![
-                    SubcommandSpec {
-                        name: "up".into(), // duplicate — should not be added
-                        ..Default::default()
-                    },
-                    SubcommandSpec {
-                        name: "down".into(),
-                        ..Default::default()
-                    },
-                ],
-                args: vec![ArgSpec {
-                    name: "service".into(),
-                    suggestions: vec!["web".into(), "db".into()],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let merged = merge_specs(&builtin, &auto);
-        let compose = merged
-            .subcommands
-            .iter()
-            .find(|s| s.name == "compose")
-            .unwrap();
-        // "up" from builtin + "down" from auto (no duplicate "up")
-        assert_eq!(compose.subcommands.len(), 2);
-        assert!(compose.subcommands.iter().any(|s| s.name == "up"));
-        assert!(compose.subcommands.iter().any(|s| s.name == "down"));
-        // Service args merged in
-        assert!(compose.args.iter().any(|a| a.name == "service"));
-    }
-
-    #[test]
-    fn test_merge_specs_preserves_builtin_options() {
-        let builtin = CommandSpec {
-            name: "test".into(),
-            options: vec![OptionSpec {
-                long: Some("--verbose".into()),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let auto = CommandSpec {
-            name: "test".into(),
-            options: vec![
-                OptionSpec {
-                    long: Some("--verbose".into()), // duplicate
-                    ..Default::default()
-                },
-                OptionSpec {
-                    long: Some("--extra".into()), // new
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-
-        let merged = merge_specs(&builtin, &auto);
-        assert_eq!(merged.options.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_lookup_merges_project_auto_with_builtin_docker() {
-        // Simulate the docker-compose shadowing scenario
-        let tmp = tempfile::tempdir().unwrap();
-        let compose_path = tmp.path().join("docker-compose.yml");
-        std::fs::write(
-            &compose_path,
-            "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n",
-        )
-        .unwrap();
-
-        let config = SpecConfig::default();
-        let store = SpecStore::new(config, None);
-
-        let spec = store.lookup("docker", tmp.path()).await;
-        let spec = spec.expect("docker spec should exist");
-
-        // Must include builtin subcommands (build, run, exec, etc.)
-        let sub_names: Vec<&str> = spec.subcommands.iter().map(|s| s.name.as_str()).collect();
-        assert!(
-            sub_names.contains(&"build"),
-            "missing builtin 'build': {sub_names:?}"
-        );
-        assert!(
-            sub_names.contains(&"run"),
-            "missing builtin 'run': {sub_names:?}"
-        );
-        assert!(
-            sub_names.contains(&"exec"),
-            "missing builtin 'exec': {sub_names:?}"
-        );
-        assert!(
-            sub_names.contains(&"compose"),
-            "missing 'compose': {sub_names:?}"
-        );
-        // Should have many subcommands (builtin has 13+)
-        assert!(
-            spec.subcommands.len() >= 10,
-            "expected 10+ subcommands, got {}",
-            spec.subcommands.len()
-        );
-
-        // The compose subcommand should have service args from auto-gen merged in
-        let compose = spec
-            .subcommands
-            .iter()
-            .find(|s| s.name == "compose")
-            .unwrap();
-        // Compose should have subcommands from both builtin and auto-gen
-        assert!(
-            compose.subcommands.iter().any(|s| s.name == "up"),
-            "compose missing 'up'"
-        );
-    }
-
     #[test]
     fn test_parse_help_basic_no_section_header() {
         // htop-style help: options listed without an "Options:" header.
@@ -1223,6 +795,30 @@ Released under the GNU GPLv2+.
             spec.options.len() >= 4,
             "expected at least 4 options, got {}",
             spec.options.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lookup_returns_project_auto_specs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose_path = tmp.path().join("docker-compose.yml");
+        std::fs::write(
+            &compose_path,
+            "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n",
+        )
+        .unwrap();
+
+        let config = SpecConfig::default();
+        let store = SpecStore::new(config, None);
+
+        let spec = store.lookup("docker", tmp.path()).await;
+        let spec = spec.expect("docker spec should exist from docker-compose.yml");
+
+        // Should have compose subcommand from auto-gen
+        let sub_names: Vec<&str> = spec.subcommands.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            sub_names.contains(&"compose"),
+            "missing 'compose': {sub_names:?}"
         );
     }
 }

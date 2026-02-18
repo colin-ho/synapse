@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SpecSource {
     Discovered,
-    Builtin,
     ProjectAuto,
 }
 
@@ -48,7 +47,7 @@ impl Default for CommandSpec {
             options: Vec::new(),
             args: Vec::new(),
             recursive: false,
-            source: SpecSource::Builtin,
+            source: SpecSource::ProjectAuto,
         }
     }
 }

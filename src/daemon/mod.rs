@@ -51,6 +51,32 @@ enum Commands {
     },
     /// Add synapse to your ~/.zshrc
     Install,
+    /// Generate compsys completion files for all known specs
+    GenerateCompletions {
+        /// Output directory (default: ~/.local/share/synapse/completions/)
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        /// Regenerate even if files already exist
+        #[arg(long)]
+        force: bool,
+
+        /// Generate for all commands, even those with existing compsys functions
+        #[arg(long)]
+        no_gap_check: bool,
+    },
+    /// Query daemon for dynamic completion values (used by generated compsys functions)
+    Complete {
+        /// Command name
+        command: String,
+
+        /// Completion context (e.g. "target", subcommand path)
+        context: Vec<String>,
+
+        /// Working directory
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
     /// Send protocol requests directly to a running daemon (for testing/debugging)
     Probe {
         /// Override the socket path
@@ -118,6 +144,20 @@ pub async fn run() -> anyhow::Result<()> {
         }
         Some(Commands::Install) => {
             shell::setup_shell_rc("~/.zshrc")?;
+        }
+        Some(Commands::GenerateCompletions {
+            output_dir,
+            force,
+            no_gap_check,
+        }) => {
+            lifecycle::generate_completions(output_dir, force, no_gap_check).await?;
+        }
+        Some(Commands::Complete {
+            command,
+            context,
+            cwd,
+        }) => {
+            lifecycle::run_complete_query(command, context, cwd).await?;
         }
         None => {
             if std::io::stdout().is_terminal() {

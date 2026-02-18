@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::protocol::{Request, Response};
 
-use super::handlers::{handle_request, handle_suggest, spawn_phase2_update};
+use super::handlers::handle_request;
 use super::state::{RuntimeState, SharedWriter};
 
 pub(super) async fn run_server(
@@ -97,13 +97,7 @@ async fn handle_connection(
 
         tracing::trace!("Received: {trimmed}");
 
-        let mut phase2_plan = None;
         let response = match serde_json::from_str::<Request>(trimmed) {
-            Ok(Request::Suggest(req)) => {
-                let result = handle_suggest(req, &state).await;
-                phase2_plan = result.phase2_plan;
-                result.response
-            }
             Ok(request) => handle_request(request, &state, writer.clone()).await,
             Err(e) => {
                 tracing::warn!("Parse error: {e}");
@@ -117,10 +111,6 @@ async fn handle_connection(
         let mut w = writer.lock().await;
         w.send(response_line).await?;
         drop(w);
-
-        if let Some(plan) = phase2_plan {
-            spawn_phase2_update(plan, &state, writer.clone());
-        }
     }
 
     Ok(())
