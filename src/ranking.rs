@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 
 use crate::completion_context::{CompletionContext, ExpectedType, Position};
-use crate::config::WeightsConfig;
+use crate::config::{WEIGHT_HISTORY, WEIGHT_RECENCY, WEIGHT_SPEC};
 use crate::protocol::{SuggestionItem, SuggestionKind, SuggestionSource};
 use crate::providers::ProviderSuggestion;
 
@@ -55,16 +55,12 @@ pub struct RankedSuggestion {
     pub kind: SuggestionKind,
 }
 
-#[derive(Clone)]
-pub struct Ranker {
-    weights: WeightsConfig,
-}
+#[derive(Clone, Default)]
+pub struct Ranker;
 
 impl Ranker {
-    pub fn new(weights: WeightsConfig) -> Self {
-        Self {
-            weights: weights.normalized(),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn rank(
@@ -156,18 +152,18 @@ impl Ranker {
             let w = weights_for_position(ctx);
             (weight_for_source(&w, source), w[6])
         } else {
-            (self.static_weight_for(source), self.weights.recency)
+            (Self::static_weight_for(source), WEIGHT_RECENCY)
         }
     }
 
-    fn static_weight_for(&self, source: SuggestionSource) -> f64 {
+    fn static_weight_for(source: SuggestionSource) -> f64 {
         match source {
-            SuggestionSource::History => self.weights.history,
-            SuggestionSource::Spec => self.weights.spec,
-            SuggestionSource::Filesystem => self.weights.spec,
-            SuggestionSource::Environment => self.weights.spec,
-            SuggestionSource::Workflow => self.weights.history,
-            SuggestionSource::Llm => self.weights.spec,
+            SuggestionSource::History => WEIGHT_HISTORY,
+            SuggestionSource::Spec => WEIGHT_SPEC,
+            SuggestionSource::Filesystem => WEIGHT_SPEC,
+            SuggestionSource::Environment => WEIGHT_SPEC,
+            SuggestionSource::Workflow => WEIGHT_HISTORY,
+            SuggestionSource::Llm => WEIGHT_SPEC,
         }
     }
 }
