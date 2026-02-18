@@ -644,12 +644,12 @@ mod tests {
         let provider = make_spec_provider();
         let dir = tempfile::tempdir().unwrap();
 
-        let req = make_provider_request("cat file.txt | gre", dir.path().to_str().unwrap()).await;
+        let req = make_provider_request("cat file.txt | carg", dir.path().to_str().unwrap()).await;
         let results = provider.suggest(&req, limit(5)).await;
         let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
         assert!(
-            texts.iter().any(|t| *t == "cat file.txt | grep"),
-            "Expected 'cat file.txt | grep' after pipe, got: {:?}",
+            texts.iter().any(|t| *t == "cat file.txt | cargo"),
+            "Expected 'cat file.txt | cargo' after pipe, got: {:?}",
             texts
         );
     }
