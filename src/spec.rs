@@ -127,7 +127,6 @@ pub struct GeneratorSpec {
         default = "default_cache_ttl",
         skip_serializing_if = "is_default_cache_ttl"
     )]
-    #[allow(dead_code)]
     pub cache_ttl_secs: u64,
     #[serde(
         default = "default_generator_timeout",

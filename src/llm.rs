@@ -346,7 +346,10 @@ impl LlmClient {
     }
 
     fn should_activate_backoff(error: &LlmError) -> bool {
-        matches!(error, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
+        // Only backoff on transient errors (rate-limit, server errors).
+        // Auth errors (401/403) are permanent config problems — return them immediately
+        // so the user can fix their setup instead of waiting out a 5-minute backoff.
+        matches!(error, LlmError::Api { status, .. } if *status == 429 || *status >= 500)
     }
 
     /// Wait until the configured rate limit interval has passed since the last LLM call.

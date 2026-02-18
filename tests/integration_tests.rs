@@ -381,6 +381,211 @@ async fn test_concurrent_connections() {
     daemon.abort();
 }
 
+/// Spawn a mock daemon that responds to suggest, list_suggestions, and ping.
+fn spawn_mock_daemon_full(
+    socket_path: std::path::PathBuf,
+    pid_path: std::path::PathBuf,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        std::fs::write(&pid_path, std::process::id().to_string()).unwrap();
+
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+
+                while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                    let trimmed = line.trim();
+                    let response = if trimmed.contains("\"type\":\"ping\"") {
+                        "pong".to_string()
+                    } else if trimmed.contains("\"type\":\"suggest\"") {
+                        "suggest\tgit status\thistory".to_string()
+                    } else if trimmed.contains("\"type\":\"list_suggestions\"") {
+                        "list\t2\tgit status\thistory\t\tcommand\tgit stash\tspec\tStash changes\tsubcommand".to_string()
+                    } else {
+                        "ack".to_string()
+                    };
+                    let _ = writer.write_all(format!("{response}\n").as_bytes()).await;
+                    let _ = writer.flush().await;
+                    line.clear();
+                }
+            });
+        }
+    })
+}
+
+#[tokio::test]
+async fn test_pipelined_suggest_requests() {
+    // The async suggest pattern sends multiple requests without reading responses
+    // in between (fire-and-forget). Verify the daemon handles pipelined requests
+    // and all responses arrive in order.
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("pipeline.sock");
+    let pid_path = dir.path().join("pipeline.pid");
+
+    let daemon = spawn_mock_daemon(socket_path.clone(), pid_path.clone());
+    wait_for_socket(&socket_path).await;
+
+    let stream = UnixStream::connect(&socket_path).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+
+    let suggest_json = r#"{"type":"suggest","session_id":"sess","buffer":"git","cursor_pos":3,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}"#;
+
+    // Send 5 requests back-to-back without reading any responses
+    for _ in 0..5 {
+        writer
+            .write_all(format!("{suggest_json}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    writer.flush().await.unwrap();
+
+    // All 5 responses should arrive
+    for i in 0..5 {
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(2), lines.next_line())
+            .await
+            .unwrap_or_else(|_| panic!("Timed out waiting for response {i}"))
+            .unwrap()
+            .unwrap_or_else(|| panic!("EOF before response {i}"));
+
+        assert!(
+            resp.starts_with("suggest\t"),
+            "Response {i} should be a suggest frame, got: {resp}"
+        );
+        assert!(
+            resp.contains("git status"),
+            "Response {i} should contain suggestion, got: {resp}"
+        );
+    }
+
+    daemon.abort();
+}
+
+#[tokio::test]
+async fn test_suggest_then_list_pipelined() {
+    // Simulates: user types a character (async suggest) then immediately presses
+    // Down Arrow (synchronous dropdown list). Both requests are sent before any
+    // response is read. Verify responses arrive in order with correct types.
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("interleave.sock");
+    let pid_path = dir.path().join("interleave.pid");
+
+    let daemon = spawn_mock_daemon_full(socket_path.clone(), pid_path.clone());
+    wait_for_socket(&socket_path).await;
+
+    let stream = UnixStream::connect(&socket_path).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+
+    let suggest_req = r#"{"type":"suggest","session_id":"sess","buffer":"git","cursor_pos":3,"cwd":"/tmp","last_exit_code":0,"recent_commands":[]}"#;
+    let list_req = r#"{"type":"list_suggestions","session_id":"sess","buffer":"git","cursor_pos":3,"cwd":"/tmp","last_exit_code":0,"recent_commands":[],"max_results":5}"#;
+
+    // Send both requests back-to-back
+    writer
+        .write_all(format!("{suggest_req}\n{list_req}\n").as_bytes())
+        .await
+        .unwrap();
+    writer.flush().await.unwrap();
+
+    // First response: suggest frame
+    let resp1 = tokio::time::timeout(std::time::Duration::from_secs(2), lines.next_line())
+        .await
+        .expect("Timed out on suggest response")
+        .unwrap()
+        .expect("EOF before suggest response");
+    assert!(
+        resp1.starts_with("suggest\t"),
+        "First response should be suggest, got: {resp1}"
+    );
+
+    // Second response: list frame
+    let resp2 = tokio::time::timeout(std::time::Duration::from_secs(2), lines.next_line())
+        .await
+        .expect("Timed out on list response")
+        .unwrap()
+        .expect("EOF before list response");
+    assert!(
+        resp2.starts_with("list\t"),
+        "Second response should be list, got: {resp2}"
+    );
+
+    daemon.abort();
+}
+
+#[tokio::test]
+async fn test_suggest_and_update_frames_share_field_layout() {
+    // The async suggest handler (_synapse_handle_update) processes both "suggest"
+    // and "update" frames identically. Verify both have text at field[2] and
+    // source at field[3] when split by tab.
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("layout.sock");
+    let pid_path = dir.path().join("layout.pid");
+
+    // Mock daemon that sends a suggest response followed by an update
+    let sock = socket_path.clone();
+    let pid = pid_path.clone();
+    let daemon = tokio::spawn(async move {
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        std::fs::write(&pid, std::process::id().to_string()).unwrap();
+
+        if let Ok((stream, _)) = listener.accept().await {
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+
+            if reader.read_line(&mut line).await.unwrap() > 0 {
+                // Send suggest immediately, then update shortly after
+                writer
+                    .write_all(b"suggest\tgit commit\thistory\n")
+                    .await
+                    .unwrap();
+                writer
+                    .write_all(b"update\tgit commit --amend\tspec\n")
+                    .await
+                    .unwrap();
+                writer.flush().await.unwrap();
+            }
+        }
+    });
+    wait_for_socket(&socket_path).await;
+
+    let stream = UnixStream::connect(&socket_path).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+
+    // Send a suggest request
+    writer
+        .write_all(b"{\"type\":\"suggest\",\"session_id\":\"s\",\"buffer\":\"git\",\"cursor_pos\":3,\"cwd\":\"/tmp\",\"last_exit_code\":0,\"recent_commands\":[]}\n")
+        .await
+        .unwrap();
+    writer.flush().await.unwrap();
+
+    // Read both frames and verify identical field layout
+    let suggest_frame = lines.next_line().await.unwrap().unwrap();
+    let update_frame = lines.next_line().await.unwrap().unwrap();
+
+    let suggest_fields: Vec<&str> = suggest_frame.split('\t').collect();
+    let update_fields: Vec<&str> = update_frame.split('\t').collect();
+
+    // Both should have: [type, text, source]
+    assert_eq!(suggest_fields[0], "suggest");
+    assert_eq!(update_fields[0], "update");
+
+    // Text at index 1, source at index 2 — same positions
+    assert_eq!(suggest_fields[1], "git commit");
+    assert_eq!(suggest_fields[2], "history");
+    assert_eq!(update_fields[1], "git commit --amend");
+    assert_eq!(update_fields[2], "spec");
+
+    daemon.abort();
+}
+
 #[test]
 fn test_natural_language_request_parsing() {
     let json = r#"{

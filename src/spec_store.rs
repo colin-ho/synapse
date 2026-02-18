@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use moka::future::Cache;
+use moka::Expiry;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
@@ -28,13 +29,34 @@ const DISCOVERY_BLOCKLIST: &[&str] = &[
 /// Maximum bytes to read from --help stdout.
 const MAX_HELP_OUTPUT_BYTES: usize = 256 * 1024;
 
+/// Cached generator output with its per-entry TTL.
+#[derive(Clone)]
+struct GeneratorCacheEntry {
+    items: Vec<String>,
+    ttl: Duration,
+}
+
+/// Per-entry expiry policy that uses each generator's `cache_ttl_secs`.
+struct GeneratorExpiry;
+
+impl Expiry<(String, PathBuf), GeneratorCacheEntry> for GeneratorExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &(String, PathBuf),
+        value: &GeneratorCacheEntry,
+        _current_time: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(value.ttl)
+    }
+}
+
 /// Manages loading, caching, and resolution of command specs.
 pub struct SpecStore {
     builtin: HashMap<String, CommandSpec>,
     discovered: RwLock<HashMap<String, spec_cache::DiscoveredSpec>>,
     discovering: RwLock<HashSet<String>>,
     project_cache: Cache<PathBuf, Arc<HashMap<String, CommandSpec>>>,
-    generator_cache: Cache<(String, PathBuf), Vec<String>>,
+    generator_cache: Cache<(String, PathBuf), GeneratorCacheEntry>,
     config: SpecConfig,
     /// Alias → canonical name mapping for builtins
     alias_map: RwLock<HashMap<String, String>>,
@@ -167,7 +189,7 @@ impl SpecStore {
 
         let generator_cache = Cache::builder()
             .max_capacity(200)
-            .time_to_live(Duration::from_secs(30))
+            .expire_after(GeneratorExpiry)
             .build();
 
         Self {
@@ -697,9 +719,8 @@ impl SpecStore {
 
         let cache_key = (generator.command.clone(), cwd.to_path_buf());
 
-        // Check generator cache with the generator's own TTL
         if let Some(cached) = self.generator_cache.get(&cache_key).await {
-            return cached;
+            return cached.items;
         }
 
         let timeout = Duration::from_millis(
@@ -760,8 +781,13 @@ impl SpecStore {
             }
         };
 
-        // Cache the result
-        self.generator_cache.insert(cache_key, result.clone()).await;
+        // Cache the result with the generator's own TTL
+        let ttl = Duration::from_secs(generator.cache_ttl_secs);
+        let entry = GeneratorCacheEntry {
+            items: result.clone(),
+            ttl,
+        };
+        self.generator_cache.insert(cache_key, entry).await;
 
         result
     }
