@@ -13,7 +13,6 @@ It is built as:
 - Spec system with:
   - project auto-generated specs (Makefile, package.json, Cargo.toml, docker-compose, Justfile)
   - command discovery from `--help` (writes compsys files directly)
-  - user project overrides via `.synapse/specs/*.toml`
 - Optional LLM-powered features:
   - natural language to command translation (`? ...`)
 - Built-in probe tool for protocol-level debugging (`synapse probe`).
@@ -134,10 +133,9 @@ Core request types:
 
 ## Specs and Discovery
 
-Spec resolution priority (for the `Complete` handler):
+Spec resolution (for the `Complete` handler):
 
-1. User project specs (`.synapse/specs/*.toml`)
-2. Project auto-generated specs (Makefile, package.json, etc.)
+1. Project auto-generated specs (Makefile, package.json, etc.)
 
 Discovery of unknown commands (triggered by `command_executed`) writes compsys completion files directly to `~/.local/share/synapse/completions/`. The compsys file IS the persistent cache.
 

@@ -24,7 +24,7 @@ Synapse currently reimplements functionality that mature, specialized tools alre
 
 3. **Natural language to command translation** — The `? query` prefix integrated into the shell flow. Copilot CLI is a separate conversational agent; Synapse integrates NL translation into the normal shell experience.
 
-4. **TOML spec format** — More accessible than compsys's zsh DSL. User-authorable specs in `.synapse/specs/` for project-specific commands.
+4. **TOML spec format** — More accessible than compsys's zsh DSL. Used internally as an intermediate representation for spec discovery and auto-generation.
 
 ## 2. Target Architecture
 
@@ -51,7 +51,6 @@ Synapse pivots to a **spec engine + NL translation layer** that integrates with 
 │              Synapse Daemon                            │
 │                                                       │
 │  Spec Engine:                                         │
-│    - User project specs (.synapse/specs/*.toml)       │
 │    - Auto-generated from project files                │
 │    - Discovered from --help → compsys files directly  │
 │    - Exported as compsys _arguments functions          │
@@ -83,9 +82,8 @@ The TOML disk cache (`~/.cache/synapse/specs/*.toml` via `spec_cache.rs`) is als
 
 **What remains of the spec system:**
 - `CommandSpec` as an **in-memory IR** — the `--help` parser, project file parsers, and zsh completion parser all produce `CommandSpec` structs that get translated to compsys format. The Rust struct is a clean intermediate representation.
-- **User-authored `.synapse/specs/*.toml`** — TOML remains as the user-facing authoring format for custom project commands. Writing a TOML spec is dramatically easier than authoring a compsys `_arguments` function.
 - `spec_autogen.rs` — Project file parsing (Makefile, package.json, etc.) produces `CommandSpec` in-memory, exported to compsys.
-- `spec_store.rs` — Simplified to 2 tiers: user project specs + project auto-generated specs. No builtin tier, no discovered-spec tier.
+- `spec_store.rs` — Manages auto-generated project specs and discovery. No builtin tier.
 
 ### What this enables
 
@@ -388,7 +386,7 @@ Remove sections: `[history]`, `[workflow]`, `[weights]`, `ghost_text_color`.
 | Component | File(s) | Why |
 |---|---|---|
 | Spec data model | `src/spec.rs` | In-memory IR — CommandSpec, OptionSpec, ArgSpec, GeneratorSpec |
-| Spec store (simplified) | `src/spec_store.rs` | 2-tier resolution (user project specs + project auto-gen), generator execution |
+| Spec store (simplified) | `src/spec_store.rs` | Project auto-gen specs, generator execution, discovery |
 | Spec auto-generation | `src/spec_autogen.rs` | Makefile, package.json, Cargo.toml, docker-compose, Justfile parsing |
 | Zsh completion scanner | `src/zsh_completion.rs` | Gap detection + inbound spec parsing from `--help` |
 | LLM client | `src/llm.rs` | NL translation + spec discovery enrichment |
@@ -550,7 +548,7 @@ Remove the provider system, ranking, and suggestion pipeline.
 - `src/daemon/handlers.rs` — Remove `handle_suggest()`, `handle_list_suggestions()`, `handle_interaction()`, `Phase2UpdatePlan`, `SuggestHandling`, `collect_provider_suggestions()`, `spawn_phase2_update()`, phase deadline constants. Simplify `handle_command_executed()` to only trigger discovery.
 - `src/daemon/state.rs` — Remove `providers`, `phase2_providers`, `ranker`, `workflow_predictor` fields.
 - `src/daemon/lifecycle.rs` — Remove provider initialization, workflow predictor setup. Add: trigger `generate_all` on startup.
-- `src/spec_store.rs` — Simplify from 4-tier to 2-tier resolution (user project specs + project auto-gen). Remove builtin spec loading (`include_str!` embeds), remove discovered-spec tier, remove `spec_cache` integration. Discovery now writes compsys files directly via `compsys_export` instead of caching TOML.
+- `src/spec_store.rs` — Simplify to project auto-gen only. Remove builtin spec loading (`include_str!` embeds), remove discovered-spec tier, remove `spec_cache` integration. Discovery now writes compsys files directly via `compsys_export` instead of caching TOML.
 - `src/config.rs` — Remove `HistoryConfig`, `WorkflowConfig`, weight constants, `ghost_text_color`. Keep `SpecConfig`, `LlmConfig`, `SecurityConfig`, `LoggingConfig`. Add `CompletionsConfig`.
 - `src/completion_context/mod.rs` — Simplify to just re-export tokenizer (needed by `Complete` handler).
 - `config.example.toml` — Already updated: `[history]`, `[workflow]`, `[weights]`, `ghost_text_color` removed; `[completions]` added.
@@ -593,7 +591,7 @@ Make the spec engine automatically export compsys functions when specs change.
 | Protocol request types | 9 | 7 |
 | Config sections | 8 | 5 |
 | Built-in TOML specs | 17 | 0 (removed — gap-only means they'd never export) |
-| Spec tiers | 4 | 2 (user project + project auto-gen) |
+| Spec tiers | 4 | 1 (project auto-gen) |
 
 ## 10. Open Questions
 
