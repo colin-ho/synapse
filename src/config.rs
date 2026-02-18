@@ -1,14 +1,43 @@
 use serde::Deserialize;
 use std::{num::NonZeroUsize, path::PathBuf};
 
+// --- Hardcoded internal constants (previously configurable) ---
+
+/// Maximum character length for suggestion text before truncation.
+pub const MAX_SUGGESTION_LENGTH: usize = 200;
+/// Debounce delay in ms for NL requests.
+pub const NL_DEBOUNCE_MS: u64 = 50;
+/// Minimum interval in ms between LLM API calls.
+pub const RATE_LIMIT_MS: u64 = 200;
+/// Timeout in ms for context gathering commands (git/docker/etc.).
+pub const ARG_CONTEXT_TIMEOUT_MS: u64 = 2_000;
+/// Max context budget (~tokens) sent to the LLM for argument suggestions.
+pub const ARG_MAX_CONTEXT_TOKENS: usize = 3_000;
+/// Max tokens of git diff for commit message generation.
+pub const WORKFLOW_MAX_DIFF_TOKENS: usize = 2_000;
+/// Minimum characters for NL queries.
+pub const NL_MIN_QUERY_LENGTH: usize = 5;
+/// Max time in ms for generator commands.
+pub const GENERATOR_TIMEOUT_MS: u64 = 500;
+/// Timeout in ms for each --help invocation during discovery.
+pub const DISCOVER_TIMEOUT_MS: u64 = 2_000;
+/// Maximum age in seconds before re-discovering a command (7 days).
+pub const DISCOVER_MAX_AGE_SECS: u64 = 604_800;
+/// Maximum recursion depth for subcommand discovery.
+pub const DISCOVER_MAX_DEPTH: usize = 1;
+
+// --- Ranking weights (previously configurable) ---
+
+pub const WEIGHT_HISTORY: f64 = 0.30;
+pub const WEIGHT_SPEC: f64 = 0.50;
+pub const WEIGHT_RECENCY: f64 = 0.20;
+
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
     pub history: HistoryConfig,
-    pub context: ContextConfig,
     pub spec: SpecConfig,
-    pub weights: WeightsConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
     pub llm: LlmConfig,
@@ -21,24 +50,14 @@ pub struct Config {
 #[serde(default)]
 pub struct GeneralConfig {
     pub socket_path: Option<String>,
-    pub max_suggestion_length: usize,
-    pub accept_key: String,
     pub log_level: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct HistoryConfig {
-    pub enabled: bool,
     pub max_entries: usize,
     pub fuzzy: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct ContextConfig {
-    pub enabled: bool,
-    pub scan_depth: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,7 +65,6 @@ pub struct ContextConfig {
 pub struct SpecConfig {
     pub enabled: bool,
     pub auto_generate: bool,
-    pub generator_timeout_ms: u64,
     pub max_list_results: NonZeroUsize,
     /// Whether to run generator commands from project-level specs (.synapse/specs/).
     /// Disabled by default for security: a malicious repo could include specs with
@@ -55,12 +73,6 @@ pub struct SpecConfig {
     pub scan_depth: usize,
     /// Discover specs by running `command --help` for unknown commands
     pub discover_from_help: bool,
-    /// Maximum recursion depth for subcommand discovery (0 = no recursion)
-    pub discover_max_depth: usize,
-    /// Timeout in ms for each `--help` invocation during discovery
-    pub discover_timeout_ms: u64,
-    /// Maximum age in seconds before re-discovering a command (default: 7 days)
-    pub discover_max_age_secs: u64,
     /// Auto-discover specs for CLI tools built by the current project.
     /// This only runs when `trust_project_generators` is also enabled.
     pub discover_project_cli: bool,
@@ -70,17 +82,8 @@ pub struct SpecConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct WeightsConfig {
-    pub history: f64,
-    pub spec: f64,
-    pub recency: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
 pub struct SecurityConfig {
     pub scrub_paths: bool,
-    pub scrub_env_keys: Vec<String>,
     pub command_blocklist: Vec<String>,
 }
 
@@ -105,17 +108,9 @@ pub struct LlmConfig {
     pub timeout_ms: u64,
     pub max_calls_per_discovery: usize,
     pub natural_language: bool,
-    pub nl_min_query_length: usize,
     pub nl_max_suggestions: usize,
     pub workflow_prediction: bool,
-    pub workflow_max_diff_tokens: usize,
     pub contextual_args: bool,
-    pub arg_context_timeout_ms: u64,
-    pub arg_max_context_tokens: usize,
-    /// Debounce delay in ms for NL requests (default: 50ms)
-    pub nl_debounce_ms: u64,
-    /// Minimum interval in ms between LLM API calls (default: 200ms)
-    pub rate_limit_ms: u64,
     /// Optional separate LLM config for spec discovery.
     /// When set, a second LLM client is created for discovery only.
     pub discovery: Option<LlmDiscoveryConfig>,
@@ -132,7 +127,6 @@ pub struct LlmDiscoveryConfig {
     pub model: Option<String>,
     pub timeout_ms: Option<u64>,
     pub max_calls_per_discovery: Option<usize>,
-    pub rate_limit_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -148,8 +142,6 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             socket_path: None,
-            max_suggestion_length: 200,
-            accept_key: "right-arrow".into(),
             log_level: "warn".into(),
         }
     }
@@ -158,18 +150,8 @@ impl Default for GeneralConfig {
 impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             max_entries: 50000,
             fuzzy: true,
-        }
-    }
-}
-
-impl Default for ContextConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            scan_depth: 3,
         }
     }
 }
@@ -179,26 +161,12 @@ impl Default for SpecConfig {
         Self {
             enabled: true,
             auto_generate: true,
-            generator_timeout_ms: 500,
             max_list_results: NonZeroUsize::new(50).unwrap(),
             trust_project_generators: false,
             scan_depth: 3,
             discover_from_help: true,
-            discover_max_depth: 1,
-            discover_timeout_ms: 2000,
-            discover_max_age_secs: 604800,
             discover_project_cli: false,
             discover_blocklist: Vec::new(),
-        }
-    }
-}
-
-impl Default for WeightsConfig {
-    fn default() -> Self {
-        Self {
-            history: 0.30,
-            spec: 0.50,
-            recency: 0.20,
         }
     }
 }
@@ -207,13 +175,6 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             scrub_paths: true,
-            scrub_env_keys: vec![
-                "*_KEY".into(),
-                "*_SECRET".into(),
-                "*_TOKEN".into(),
-                "*_PASSWORD".into(),
-                "*_CREDENTIALS".into(),
-            ],
             command_blocklist: vec![
                 "export *=".into(),
                 "curl -u".into(),
@@ -243,15 +204,9 @@ impl Default for LlmConfig {
             timeout_ms: 10_000,
             max_calls_per_discovery: 20,
             natural_language: true,
-            nl_min_query_length: 5,
             nl_max_suggestions: 3,
             workflow_prediction: false,
-            workflow_max_diff_tokens: 2000,
             contextual_args: true,
-            arg_context_timeout_ms: 2_000,
-            arg_max_context_tokens: 3_000,
-            nl_debounce_ms: 50,
-            rate_limit_ms: 200,
             discovery: None,
         }
     }
@@ -295,17 +250,11 @@ impl LlmDiscoveryConfig {
             max_calls_per_discovery: self
                 .max_calls_per_discovery
                 .unwrap_or(parent.max_calls_per_discovery),
-            rate_limit_ms: self.rate_limit_ms.unwrap_or(parent.rate_limit_ms),
             // Irrelevant for discovery — carry parent values for struct completeness
             natural_language: parent.natural_language,
-            nl_min_query_length: parent.nl_min_query_length,
             nl_max_suggestions: parent.nl_max_suggestions,
             workflow_prediction: parent.workflow_prediction,
-            workflow_max_diff_tokens: parent.workflow_max_diff_tokens,
             contextual_args: parent.contextual_args,
-            arg_context_timeout_ms: parent.arg_context_timeout_ms,
-            arg_max_context_tokens: parent.arg_max_context_tokens,
-            nl_debounce_ms: parent.nl_debounce_ms,
             discovery: None,
         }
     }
@@ -389,57 +338,23 @@ impl Config {
     }
 }
 
-impl WeightsConfig {
-    pub fn normalized(&self) -> WeightsConfig {
-        let sum = self.history + self.spec + self.recency;
-        if sum == 0.0 {
-            return WeightsConfig::default();
-        }
-        WeightsConfig {
-            history: self.history / sum,
-            spec: self.spec / sum,
-            recency: self.recency / sum,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
-    use super::{Config, LlmDiscoveryConfig, WeightsConfig};
+    use super::{Config, LlmDiscoveryConfig};
 
     static SOCKET_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_config_defaults() {
         let config = Config::default();
-        assert_eq!(config.general.max_suggestion_length, 200);
-        assert!(config.history.enabled);
         assert_eq!(config.history.max_entries, 50000);
-        assert_eq!(config.weights.history, 0.30);
-        assert_eq!(config.weights.spec, 0.50);
-        assert_eq!(config.weights.recency, 0.20);
         assert!(config.llm.contextual_args);
-        assert_eq!(config.llm.arg_context_timeout_ms, 2_000);
-        assert_eq!(config.llm.arg_max_context_tokens, 3_000);
         assert_eq!(
             config.llm.base_url,
             Some("http://127.0.0.1:1234".to_string())
         );
-    }
-
-    #[test]
-    fn test_weights_normalization() {
-        let weights = WeightsConfig {
-            history: 1.0,
-            spec: 1.0,
-            recency: 1.0,
-        };
-        let normalized = weights.normalized();
-        let sum = normalized.history + normalized.spec + normalized.recency;
-        assert!((sum - 1.0).abs() < 0.001);
-        assert!((normalized.history - 0.333).abs() < 0.01);
     }
 
     #[test]
@@ -501,7 +416,6 @@ mod tests {
             resolved.max_calls_per_discovery,
             parent.max_calls_per_discovery
         );
-        assert_eq!(resolved.rate_limit_ms, parent.rate_limit_ms);
     }
 
     #[test]

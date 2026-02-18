@@ -3,44 +3,24 @@
 
 [general]
 # socket_path = "/tmp/synapse.sock"     # auto-detected if omitted
-max_suggestion_length = 200             # truncate long suggestions
-accept_key = "right-arrow"              # or "tab"
 log_level = "warn"                      # "error" | "warn" | "info" | "debug" | "trace"
 
 [history]
-enabled = true
 max_entries = 50000
 fuzzy = true                            # enable fuzzy matching when prefix fails
-
-[context]
-# Deprecated: context provider has been merged into the spec provider.
-# This section is kept for backward compatibility and has no effect.
-enabled = true
-scan_depth = 3
 
 [spec]
 enabled = true
 auto_generate = true                   # auto-generate specs from project files
-generator_timeout_ms = 500             # max time for generator commands
 max_list_results = 50                  # max items in dropdown list
 trust_project_generators = false       # allow .synapse/specs/ generators to run shell commands
 scan_depth = 3                         # max levels to walk up for project files (ignored inside git repos)
 discover_from_help = true              # auto-discover specs by running --help on unknown commands
-discover_max_depth = 1                 # recurse into subcommands (0 = top-level only)
-discover_timeout_ms = 2000             # timeout per --help invocation
-discover_max_age_secs = 604800         # re-discover after 7 days (604800 = 1 week)
 discover_project_cli = false           # discover specs for project-built CLIs (requires trust_project_generators=true)
 discover_blocklist = []                # commands to never auto-discover
 
-[weights]
-# Weights are normalized to sum to 1.0
-history = 0.30
-spec = 0.50
-recency = 0.20
-
 [security]
 scrub_paths = true                      # redact home directory in API payloads
-scrub_env_keys = ["*_KEY", "*_SECRET", "*_TOKEN", "*_PASSWORD", "*_CREDENTIALS"]
 command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 
 [llm]
@@ -51,16 +31,10 @@ base_url = "http://127.0.0.1:1234"     # API base URL (default: LM Studio local 
 model = "qwen2.5-coder-7b-instruct-mlx" # model to use (MLX for Apple Silicon)
 timeout_ms = 10000                     # per-request timeout
 max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
-natural_language = true                # enable ? prefix mode for NL → command translation
-nl_min_query_length = 5                # minimum characters after prefix; shorter queries return protocol error
+natural_language = true                # enable ? prefix mode for NL -> command translation
 nl_max_suggestions = 3                 # number of alternative commands to generate for NL queries
 workflow_prediction = false            # enable LLM workflow predictions (predict next command)
-workflow_max_diff_tokens = 2000        # max tokens of git diff for commit message generation
 contextual_args = true                 # enable LLM contextual argument suggestions (phase 2)
-arg_context_timeout_ms = 2000          # timeout for context gathering commands (git/docker/etc.)
-arg_max_context_tokens = 3000          # max context budget sent to the LLM
-nl_debounce_ms = 50                    # debounce delay for NL requests (ms)
-rate_limit_ms = 200                    # minimum interval between LLM API calls (ms)
 
 # Anthropic (hosted) example:
 # [llm]
@@ -71,8 +45,8 @@ rate_limit_ms = 200                    # minimum interval between LLM API calls 
 
 # Override LLM settings for spec discovery only.
 # Discovery runs asynchronously in the background (never blocks typing) and results
-# are cached for discover_max_age_secs (default: 1 week), so a slower but more capable
-# cloud model is ideal here. All fields are optional — unset fields inherit from [llm].
+# are cached for 1 week, so a slower but more capable cloud model is ideal here.
+# All fields are optional -- unset fields inherit from [llm].
 #
 # [llm.discovery]
 # provider = "anthropic"
@@ -80,7 +54,6 @@ rate_limit_ms = 200                    # minimum interval between LLM API calls 
 # model = "claude-haiku-4-5-20251001"
 # timeout_ms = 30000
 # max_calls_per_discovery = 30
-# rate_limit_ms = 100
 
 [workflow]
 enabled = true                         # enable workflow prediction (bigram-based)

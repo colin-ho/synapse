@@ -11,7 +11,7 @@ use moka::future::Cache;
 use tokio::process::Command;
 
 use crate::completion_context::{CompletionContext, ExpectedType, Position};
-use crate::config::LlmConfig;
+use crate::config::{self, LlmConfig};
 use crate::llm::{scrub_home_paths, LlmClient};
 use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
@@ -81,8 +81,8 @@ pub struct LlmArgumentProvider {
 }
 
 impl LlmArgumentProvider {
-    pub fn new(client: Arc<LlmClient>, llm_config: &LlmConfig, scrub_paths: bool) -> Self {
-        let max_context_chars = llm_config.arg_max_context_tokens.saturating_mul(4).max(512);
+    pub fn new(client: Arc<LlmClient>, _llm_config: &LlmConfig, scrub_paths: bool) -> Self {
+        let max_context_chars = config::ARG_MAX_CONTEXT_TOKENS.saturating_mul(4).max(512);
         Self {
             client,
             context_registry: ContextRegistry::new(),
@@ -90,7 +90,7 @@ impl LlmArgumentProvider {
                 .max_capacity(CACHE_MAX_ENTRIES)
                 .time_to_live(Duration::from_secs(CACHE_TTL_SECONDS))
                 .build(),
-            context_timeout: Duration::from_millis(llm_config.arg_context_timeout_ms),
+            context_timeout: Duration::from_millis(config::ARG_CONTEXT_TIMEOUT_MS),
             max_context_chars,
             scrub_paths,
         }

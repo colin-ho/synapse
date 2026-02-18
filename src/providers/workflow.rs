@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::completion_context::Position;
-use crate::config::{LlmConfig, WorkflowConfig};
+use crate::config::WorkflowConfig;
 use crate::llm::LlmClient;
 use crate::protocol::{SuggestionKind, SuggestionSource};
 use crate::providers::{ProviderRequest, ProviderSuggestion, SuggestionProvider};
@@ -18,7 +18,7 @@ pub struct WorkflowProvider {
     predictor: Arc<WorkflowPredictor>,
     config: WorkflowConfig,
     llm_client: Option<Arc<LlmClient>>,
-    llm_config: LlmConfig,
+    workflow_prediction: bool,
 }
 
 impl WorkflowProvider {
@@ -26,13 +26,13 @@ impl WorkflowProvider {
         predictor: Arc<WorkflowPredictor>,
         config: WorkflowConfig,
         llm_client: Option<Arc<LlmClient>>,
-        llm_config: LlmConfig,
+        workflow_prediction: bool,
     ) -> Self {
         Self {
             predictor,
             config,
             llm_client,
-            llm_config,
+            workflow_prediction,
         }
     }
 
@@ -73,7 +73,7 @@ impl WorkflowProvider {
     /// LLM-powered workflow prediction for async Phase 2.
     /// Returns a prediction when bigram data is weak and LLM is available.
     pub async fn predict_with_llm(&self, request: &ProviderRequest) -> Option<ProviderSuggestion> {
-        if !self.llm_config.workflow_prediction {
+        if !self.workflow_prediction {
             return None;
         }
 
@@ -149,7 +149,7 @@ impl WorkflowProvider {
             && crate::workflow::normalize_command(previous) == "git add"
         {
             if let Some(diff) =
-                get_staged_diff(&request.cwd, self.llm_config.workflow_max_diff_tokens).await
+                get_staged_diff(&request.cwd, crate::config::WORKFLOW_MAX_DIFF_TOKENS).await
             {
                 if let Ok(msg) = llm.generate_commit_message(&diff).await {
                     let msg = msg.trim().trim_matches('"').to_string();
@@ -289,7 +289,7 @@ mod tests {
     }
 
     fn make_provider(predictor: Arc<WorkflowPredictor>) -> WorkflowProvider {
-        WorkflowProvider::new(predictor, make_config(), None, LlmConfig::default())
+        WorkflowProvider::new(predictor, make_config(), None, false)
     }
 
     #[tokio::test]
