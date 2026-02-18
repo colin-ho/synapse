@@ -17,8 +17,8 @@ pub const ARG_MAX_CONTEXT_TOKENS: usize = 3_000;
 pub const WORKFLOW_MAX_DIFF_TOKENS: usize = 2_000;
 /// Minimum characters for NL queries.
 pub const NL_MIN_QUERY_LENGTH: usize = 5;
-/// Max time in ms for generator commands.
-pub const GENERATOR_TIMEOUT_MS: u64 = 500;
+/// Max time in ms for generator commands (safety cap for spec-defined timeouts).
+pub const GENERATOR_TIMEOUT_MS: u64 = 5_000;
 /// Timeout in ms for each --help invocation during discovery.
 pub const DISCOVER_TIMEOUT_MS: u64 = 2_000;
 /// Maximum age in seconds before re-discovering a command (7 days).

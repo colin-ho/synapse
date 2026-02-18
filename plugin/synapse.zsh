@@ -257,7 +257,7 @@ _synapse_request() {
             IFS=$'\t' read -rA _tsv_fields <<< "$response"
             local frame_type="${_tsv_fields[1]}"
 
-            if [[ "$frame_type" == "update" ]]; then
+            if [[ "$frame_type" == "update" ]] || [[ "$frame_type" == "suggest" ]]; then
                 _synapse_handle_update "$response"
                 continue
             fi
@@ -623,16 +623,11 @@ _synapse_suggest() {
     local json
     json="$(_synapse_build_suggest_request "$buffer" "$cursor" "$PWD")"
 
-    local response
-    response="$(_synapse_request "$json" "suggest")" || return
-
-    # TSV: suggest\ttext\tsource
-    local -a _tsv_fields
-    IFS=$'\t' read -rA _tsv_fields <<< "$response"
-    [[ "${_tsv_fields[1]}" == "suggest" ]] || return
-    _SYNAPSE_CURRENT_SOURCE="${_tsv_fields[3]}"
-
-    _synapse_show_suggestion "${_tsv_fields[2]}"
+    # Fire-and-forget: send request, response arrives via async handler
+    print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || {
+        _synapse_disconnect
+        return
+    }
 }
 
 # --- Async Handler ---
@@ -677,7 +672,7 @@ _synapse_handle_update() {
 
     local msg_type="${_tsv_fields[1]}"
 
-    [[ "$msg_type" == "update" ]] || return 1
+    [[ "$msg_type" == "update" || "$msg_type" == "suggest" ]] || return 1
 
     # Skip async updates while dropdown is open, in NL mode, or during paste
     if [[ $_SYNAPSE_DROPDOWN_OPEN -eq 1 ]] || [[ $_SYNAPSE_NL_MODE -eq 1 ]] || (( _SYNAPSE_PASTING )); then
