@@ -5,8 +5,8 @@ use futures_util::SinkExt;
 
 use crate::protocol::{
     CommandExecutedReport, InteractionAction, InteractionReport, ListSuggestionsRequest,
-    NaturalLanguageRequest, Request, Response, SuggestRequest, SuggestionListResponse,
-    SuggestionResponse, SuggestionSource,
+    NaturalLanguageRequest, Request, Response, SuggestRequest, SuggestionItem, SuggestionKind,
+    SuggestionListResponse, SuggestionResponse, SuggestionSource,
 };
 use crate::providers::{Provider, ProviderRequest, ProviderSuggestion, SuggestionProvider};
 
@@ -353,7 +353,7 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
 async fn handle_natural_language(
     req: NaturalLanguageRequest,
     state: &RuntimeState,
-    writer: SharedWriter,
+    _writer: SharedWriter,
 ) -> Response {
     tracing::debug!(
         session = %req.session_id,
@@ -378,16 +378,6 @@ async fn handle_natural_language(
         }
     };
 
-    // Debounce generation: always bump first so older in-flight requests become stale,
-    // even when this request is served from cache or rejected early.
-    let nl_gens = state.nl_generations.clone();
-    let gen = {
-        let mut gens = nl_gens.lock().unwrap();
-        let g = gens.entry(req.session_id.clone()).or_insert(0);
-        *g += 1;
-        *g
-    };
-
     // Check minimum query length
     if req.query.len() < crate::config::NL_MIN_QUERY_LENGTH {
         return Response::Error {
@@ -404,215 +394,136 @@ async fn handle_natural_language(
     let scrubbed_env_hints: std::collections::HashMap<String, String> =
         crate::llm::scrub_env_values(&req.env_hints, &state.config.security.scrub_env_keys);
 
-    // Check cache — send all cached results via writer, return Ack
+    // Check cache first
     if let Some(cached) = state.nl_cache.get(&req.query, &req.cwd, &os).await {
-        for item in &cached.items {
-            send_async_response(
-                &writer,
-                Response::Update(SuggestionResponse {
-                    text: item.command.clone(),
-                    source: SuggestionSource::Llm,
-                    confidence: 0.95,
-                    description: item.warning.clone(),
-                }),
-                "NL cached update",
-            )
-            .await;
-        }
-        send_async_response(&writer, Response::SuggestDone, "NL cached done").await;
-        return Response::Ack;
+        let suggestions = cached
+            .items
+            .into_iter()
+            .map(|item| SuggestionItem {
+                text: item.command,
+                source: SuggestionSource::Llm,
+                confidence: 0.95,
+                description: item.warning,
+                kind: SuggestionKind::Command,
+            })
+            .collect();
+        return Response::SuggestionList(SuggestionListResponse { suggestions });
     }
 
-    // Spawn async task for LLM call — return Ack immediately
-    let nl_cache = state.nl_cache.clone();
-    let config = state.config.clone();
-    let interaction_logger = state.interaction_logger.clone();
-    let session_id = req.session_id.clone();
     let query = req.query.clone();
     let cwd = req.cwd.clone();
     let env_hints = scrubbed_env_hints;
-    let recent_commands = req.recent_commands.clone();
-
     let project_root_cache = state.project_root_cache.clone();
     let project_type_cache = state.project_type_cache.clone();
     let tools_cache = state.tools_cache.clone();
 
-    tokio::spawn(async move {
-        // Overlap debounce sleep with context detection (both can run in parallel)
-        let debounce_ms = crate::config::NL_DEBOUNCE_MS;
-        let scan_depth = config.spec.scan_depth;
-        let cwd_for_cache = cwd.clone();
-        let env_hints_for_cache = env_hints.clone();
+    let scan_depth = state.config.spec.scan_depth;
+    let cwd_for_cache = cwd.clone();
+    let env_hints_for_cache = env_hints.clone();
 
-        let (_, project_root, available_tools) = tokio::join!(
-            tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)),
-            project_root_cache.get_with(cwd_for_cache, async {
-                crate::project::find_project_root(std::path::Path::new(&cwd), scan_depth)
-            }),
-            tools_cache.get_with(
-                env_hints_for_cache.get("PATH").cloned().unwrap_or_default(),
-                async { extract_available_tools(&env_hints_for_cache) }
-            ),
-        );
+    let (project_root, available_tools) = tokio::join!(
+        project_root_cache.get_with(cwd_for_cache, async {
+            crate::project::find_project_root(std::path::Path::new(&cwd), scan_depth)
+        }),
+        tools_cache.get_with(
+            env_hints_for_cache.get("PATH").cloned().unwrap_or_default(),
+            async { extract_available_tools(&env_hints_for_cache) }
+        ),
+    );
 
-        let is_stale = {
-            let gens = nl_gens.lock().unwrap();
-            gens.get(&session_id).copied().unwrap_or(0) != gen
-        };
-        if is_stale {
-            tracing::debug!(session = %session_id, "NL debounce: skipping stale request");
-            send_async_response(
-                &writer,
-                Response::Error {
-                    message: "Natural language request superseded by a newer query".into(),
-                },
-                "NL stale error",
-            )
-            .await;
-            send_async_response(&writer, Response::SuggestDone, "NL stale done").await;
-            return;
+    let project_type = match project_root.as_ref() {
+        Some(root) => {
+            let root = root.clone();
+            project_type_cache
+                .get_with(root.clone(), async {
+                    crate::project::detect_project_type(&root)
+                })
+                .await
         }
+        None => None,
+    };
 
-        let project_type = match project_root.as_ref() {
-            Some(root) => {
-                let root = root.clone();
-                project_type_cache
-                    .get_with(root.clone(), async {
-                        crate::project::detect_project_type(&root)
-                    })
-                    .await
-            }
-            None => None,
-        };
+    let ctx = crate::llm::NlTranslationContext {
+        query: query.clone(),
+        cwd: cwd.clone(),
+        os: os.clone(),
+        project_type,
+        available_tools,
+        recent_commands: req.recent_commands.clone(),
+    };
 
-        let ctx = crate::llm::NlTranslationContext {
-            query: query.clone(),
-            cwd: cwd.clone(),
-            os: os.clone(),
-            project_type,
-            available_tools,
-            recent_commands,
-        };
+    let max_suggestions = state.config.llm.nl_max_suggestions;
+    let compiled_blocklist =
+        super::state::CompiledBlocklist::new(&state.config.security.command_blocklist);
 
-        let max_suggestions = config.llm.nl_max_suggestions;
-        let compiled_blocklist =
-            super::state::CompiledBlocklist::new(&config.security.command_blocklist);
-        let writer_for_stream = writer.clone();
-
-        // Use streaming to send each suggestion as it's parsed from the LLM response
-        let result = llm_client
-            .translate_command_streaming(&ctx, max_suggestions, move |item| {
-                // Validate: skip empty or blocked commands
-                let first_token = item.command.split_whitespace().next().unwrap_or("");
-                if first_token.is_empty() {
-                    return;
-                }
-                if compiled_blocklist.is_blocked(&item.command) {
-                    tracing::warn!(
-                        "NL translation blocked by security policy: {}",
-                        item.command
-                    );
-                    return;
-                }
-
-                // Send update frame immediately (fire-and-forget from sync callback)
-                let w = writer_for_stream.clone();
-                let response = Response::Update(SuggestionResponse {
-                    text: item.command.clone(),
-                    source: SuggestionSource::Llm,
-                    confidence: 0.95,
-                    description: item.warning.clone(),
-                });
-                tokio::spawn(async move {
-                    send_async_response(&w, response, "NL streaming update").await;
-                });
-            })
-            .await;
-
-        match result {
-            Ok(result) => {
-                let final_blocklist =
-                    super::state::CompiledBlocklist::new(&config.security.command_blocklist);
-                let valid_items: Vec<_> = result
-                    .items
-                    .into_iter()
-                    .filter(|item| {
-                        let first_token = item.command.split_whitespace().next().unwrap_or("");
-                        !first_token.is_empty() && !final_blocklist.is_blocked(&item.command)
-                    })
-                    .collect();
-
-                if valid_items.is_empty() {
-                    send_async_response(
-                        &writer,
-                        Response::Error {
-                            message: "All NL translations were empty or blocked by security policy"
-                                .into(),
-                        },
-                        "NL all-blocked error",
-                    )
-                    .await;
-                    send_async_response(&writer, Response::SuggestDone, "NL blocked done").await;
-                    return;
-                }
-
-                // Cache the valid results
-                nl_cache
-                    .insert(
-                        &query,
-                        &cwd,
-                        &os,
-                        crate::nl_cache::NlCacheEntry {
-                            items: valid_items
-                                .iter()
-                                .map(|item| crate::nl_cache::NlCacheItem {
-                                    command: item.command.clone(),
-                                    warning: item.warning.clone(),
-                                })
-                                .collect(),
-                        },
-                    )
-                    .await;
-
-                // Log the first result as the primary NL interaction
-                if let Some(first) = valid_items.first() {
-                    interaction_logger.log_interaction(
-                        &session_id,
-                        crate::protocol::InteractionAction::Accept,
-                        &format!("? {query}"),
-                        &first.command,
-                        SuggestionSource::Llm,
-                        0.95,
-                        &cwd,
-                        Some(&query),
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("NL translation failed: {e}");
-                send_async_response(
-                    &writer,
-                    Response::Error {
-                        message: format!("Natural language translation failed: {e}"),
-                    },
-                    "NL translation error",
-                )
-                .await;
-            }
+    let result = match llm_client.translate_command(&ctx, max_suggestions).await {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!("NL translation failed: {e}");
+            return Response::Error {
+                message: format!("Natural language translation failed: {e}"),
+            };
         }
-        // Signal to the plugin that all NL results have been sent
-        send_async_response(&writer, Response::SuggestDone, "NL done").await;
-    });
+    };
 
-    Response::Ack
-}
+    let valid_items: Vec<_> = result
+        .items
+        .into_iter()
+        .filter(|item| {
+            let first_token = item.command.split_whitespace().next().unwrap_or("");
+            !first_token.is_empty() && !compiled_blocklist.is_blocked(&item.command)
+        })
+        .collect();
 
-async fn send_async_response(writer: &SharedWriter, response: Response, context: &str) {
-    let response_line = response.to_tsv();
-    let mut w = writer.lock().await;
-    if let Err(e) = w.send(response_line).await {
-        tracing::debug!("Failed to send {context}: {e}");
+    if valid_items.is_empty() {
+        return Response::Error {
+            message: "All NL translations were empty or blocked by security policy".into(),
+        };
     }
+
+    state
+        .nl_cache
+        .insert(
+            &query,
+            &cwd,
+            &os,
+            crate::nl_cache::NlCacheEntry {
+                items: valid_items
+                    .iter()
+                    .map(|item| crate::nl_cache::NlCacheItem {
+                        command: item.command.clone(),
+                        warning: item.warning.clone(),
+                    })
+                    .collect(),
+            },
+        )
+        .await;
+
+    if let Some(first) = valid_items.first() {
+        state.interaction_logger.log_interaction(
+            &req.session_id,
+            crate::protocol::InteractionAction::Accept,
+            &format!("? {query}"),
+            &first.command,
+            SuggestionSource::Llm,
+            0.95,
+            &cwd,
+            Some(&query),
+        );
+    }
+
+    let suggestions = valid_items
+        .into_iter()
+        .map(|item| SuggestionItem {
+            text: item.command,
+            source: SuggestionSource::Llm,
+            confidence: 0.95,
+            description: item.warning,
+            kind: SuggestionKind::Command,
+        })
+        .collect();
+
+    Response::SuggestionList(SuggestionListResponse { suggestions })
 }
 
 fn detect_os() -> String {
@@ -721,7 +632,6 @@ async fn collect_provider_suggestions(
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use futures_util::StreamExt;
     use tokio_util::codec::{Framed, LinesCodec};
@@ -834,18 +744,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nl_cache_hit_still_bumps_generation() {
+    async fn test_nl_cache_hit_returns_suggestions() {
         let mut config = Config::default();
         config.llm.enabled = true;
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config);
-
-        let (writer_stream, reader_stream) =
-            tokio::net::UnixStream::pair().expect("UnixStream::pair");
-        let (sink, _) = Framed::new(writer_stream, LinesCodec::new()).split();
-        let writer: SharedWriter = Arc::new(tokio::sync::Mutex::new(sink));
-        let mut reader = Framed::new(reader_stream, LinesCodec::new());
+        let writer = test_shared_writer();
 
         let query = "find rust files".to_string();
         let cwd = "/tmp".to_string();
@@ -884,44 +789,27 @@ mod tests {
         )
         .await;
 
-        // Cache hit now returns Ack; updates are sent via the writer
-        assert!(matches!(resp, Response::Ack));
-
-        // Read the two update frames
-        let line1 = tokio::time::timeout(Duration::from_secs(2), reader.next())
-            .await
-            .expect("timed out")
-            .expect("writer closed")
-            .expect("read error");
-        assert!(line1.starts_with("update\tfd -e rs\t"), "got: {line1}");
-
-        let line2 = tokio::time::timeout(Duration::from_secs(2), reader.next())
-            .await
-            .expect("timed out")
-            .expect("writer closed")
-            .expect("read error");
-        assert!(
-            line2.starts_with("update\tfind . -name '*.rs'\t"),
-            "got: {line2}"
-        );
-
-        let gens = state.nl_generations.lock().unwrap();
-        assert_eq!(gens.get("sess-cache").copied(), Some(1));
+        let list = match resp {
+            Response::SuggestionList(list) => list,
+            other => panic!("expected suggestion list response, got: {other:?}"),
+        };
+        assert_eq!(list.suggestions.len(), 2);
+        assert_eq!(list.suggestions[0].text, "fd -e rs");
+        assert_eq!(list.suggestions[1].text, "find . -name '*.rs'");
+        assert!(list
+            .suggestions
+            .iter()
+            .all(|s| s.source == crate::protocol::SuggestionSource::Llm));
     }
 
     #[tokio::test]
-    async fn test_nl_llm_failure_sends_async_error() {
+    async fn test_nl_llm_failure_returns_error() {
         let mut config = Config::default();
         config.llm.enabled = true;
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config);
-
-        let (writer_stream, reader_stream) =
-            tokio::net::UnixStream::pair().expect("UnixStream::pair");
-        let (sink, _) = Framed::new(writer_stream, LinesCodec::new()).split();
-        let writer: SharedWriter = Arc::new(tokio::sync::Mutex::new(sink));
-        let mut reader = Framed::new(reader_stream, LinesCodec::new());
+        let writer = test_shared_writer();
 
         let resp = handle_natural_language(
             NaturalLanguageRequest {
@@ -935,21 +823,12 @@ mod tests {
             writer,
         )
         .await;
-        assert!(matches!(resp, Response::Ack));
-
-        let line = tokio::time::timeout(Duration::from_secs(5), reader.next())
-            .await
-            .expect("timed out waiting for async NL response")
-            .expect("writer closed unexpectedly")
-            .expect("failed to read async NL frame");
-
-        assert!(
-            line.starts_with("error\t"),
-            "expected async error frame, got: {line}"
-        );
-        assert!(
-            line.contains("Natural language translation failed"),
-            "unexpected async error message: {line}"
-        );
+        match resp {
+            Response::Error { message } => assert!(
+                message.contains("Natural language translation failed"),
+                "unexpected error message: {message}"
+            ),
+            other => panic!("expected error response, got: {other:?}"),
+        }
     }
 }

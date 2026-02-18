@@ -206,9 +206,9 @@ impl Default for LoggingConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             provider: "openai".into(),
-            api_key_env: "OPENAI_API_KEY".into(),
+            api_key_env: "LMSTUDIO_API_KEY".into(),
             base_url: Some("http://127.0.0.1:1234".into()),
             model: "gpt-4o-mini".into(),
             timeout_ms: 10_000,

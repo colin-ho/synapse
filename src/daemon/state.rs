@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,8 +33,6 @@ pub(super) struct RuntimeState {
     pub(super) config: Config,
     pub(super) llm_client: Option<Arc<LlmClient>>,
     pub(super) nl_cache: NlCache,
-    /// Per-session generation counter for NL request debouncing.
-    pub(super) nl_generations: Arc<std::sync::Mutex<HashMap<String, u64>>>,
     /// Cached project root per cwd.
     pub(super) project_root_cache: Cache<String, Option<PathBuf>>,
     /// Cached project type per project root.
@@ -122,7 +119,6 @@ impl RuntimeState {
             config,
             llm_client,
             nl_cache,
-            nl_generations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             project_root_cache: Cache::builder()
                 .max_capacity(50)
                 .time_to_live(context_ttl)
