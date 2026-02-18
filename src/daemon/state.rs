@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::stream::SplitSink;
+use moka::future::Cache;
 use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::config::Config;
@@ -31,6 +34,12 @@ pub(super) struct RuntimeState {
     pub(super) nl_cache: NlCache,
     /// Per-session generation counter for NL request debouncing.
     pub(super) nl_generations: Arc<std::sync::Mutex<HashMap<String, u64>>>,
+    /// Cached project root per cwd.
+    pub(super) project_root_cache: Cache<String, Option<PathBuf>>,
+    /// Cached project type per project root.
+    pub(super) project_type_cache: Cache<PathBuf, Option<String>>,
+    /// Cached available tools per PATH string.
+    pub(super) tools_cache: Cache<String, Vec<String>>,
 }
 
 impl RuntimeState {
@@ -47,6 +56,7 @@ impl RuntimeState {
         llm_client: Option<Arc<LlmClient>>,
         nl_cache: NlCache,
     ) -> Self {
+        let context_ttl = Duration::from_secs(300); // 5 min
         Self {
             providers,
             phase2_providers,
@@ -60,6 +70,18 @@ impl RuntimeState {
             llm_client,
             nl_cache,
             nl_generations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            project_root_cache: Cache::builder()
+                .max_capacity(50)
+                .time_to_live(context_ttl)
+                .build(),
+            project_type_cache: Cache::builder()
+                .max_capacity(50)
+                .time_to_live(context_ttl)
+                .build(),
+            tools_cache: Cache::builder()
+                .max_capacity(5)
+                .time_to_live(Duration::from_secs(600))
+                .build(),
         }
     }
 }

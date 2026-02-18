@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -53,8 +54,9 @@ pub struct LlmClient {
     model: String,
     max_calls_per_discovery: usize,
     client: Client,
-    /// Ensures at most 1 LLM call per second.
+    /// Minimum interval between LLM calls.
     rate_limiter: Mutex<Instant>,
+    rate_limit_duration: Duration,
     /// Set on API errors, cleared after 5 minutes.
     backoff_active: AtomicBool,
     backoff_until: Mutex<Option<Instant>>,
@@ -115,6 +117,7 @@ impl LlmClient {
             model: config.model.clone(),
             max_calls_per_discovery: config.max_calls_per_discovery,
             client,
+            rate_limit_duration: Duration::from_millis(config.rate_limit_ms),
             rate_limiter: Mutex::new(Instant::now() - Duration::from_secs(1)),
             backoff_active: AtomicBool::new(false),
             backoff_until: Mutex::new(None),
@@ -381,12 +384,12 @@ impl LlmClient {
         matches!(error, LlmError::Api { status, .. } if *status == 429 || *status >= 500 || *status == 401 || *status == 403)
     }
 
-    /// Wait until at least 1 second has passed since the last LLM call.
+    /// Wait until the configured rate limit interval has passed since the last LLM call.
     async fn rate_limit(&self) {
         let mut last_call = self.rate_limiter.lock().await;
         let elapsed = last_call.elapsed();
-        if elapsed < Duration::from_secs(1) {
-            tokio::time::sleep(Duration::from_secs(1) - elapsed).await;
+        if elapsed < self.rate_limit_duration {
+            tokio::time::sleep(self.rate_limit_duration - elapsed).await;
         }
         *last_call = Instant::now();
     }
@@ -491,6 +494,208 @@ impl LlmClient {
             None => "https://api.openai.com/v1/chat/completions".to_string(),
         }
     }
+
+    /// Translate a natural language query into shell commands using SSE streaming.
+    ///
+    /// Calls `on_item` as each complete command line is parsed from the stream,
+    /// allowing the caller to send results to the user before the LLM finishes.
+    /// Returns the full result set after the stream completes.
+    pub async fn translate_command_streaming<F>(
+        &self,
+        ctx: &NlTranslationContext,
+        max_suggestions: usize,
+        on_item: F,
+    ) -> Result<NlTranslationResult, LlmError>
+    where
+        F: Fn(&NlTranslationItem) + Send,
+    {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let cwd = self.scrub_if_enabled(&ctx.cwd);
+        let prompt = build_nl_prompt(ctx, &cwd, max_suggestions);
+        let max_tokens = (max_suggestions as u32 * 80).max(512);
+
+        // State for incremental line parsing
+        let mut accumulated = String::new();
+        let mut emitted: Vec<NlTranslationItem> = Vec::new();
+        let mut lines_parsed = 0usize;
+
+        // Closure to check new complete lines and emit commands
+        let mut try_emit_new = |accumulated: &str| {
+            let lines: Vec<&str> = accumulated.lines().collect();
+            // Only process lines that end with \n (i.e. complete lines).
+            // The last line might be incomplete if it doesn't end with \n.
+            let complete_count = if accumulated.ends_with('\n') {
+                lines.len()
+            } else {
+                lines.len().saturating_sub(1)
+            };
+            for line in lines
+                .iter()
+                .skip(lines_parsed)
+                .take(complete_count - lines_parsed)
+            {
+                lines_parsed += 1;
+                if let Some(cmd) = parse_streaming_line(line) {
+                    if emitted.len() >= max_suggestions {
+                        break;
+                    }
+                    if emitted.iter().any(|i| i.command == cmd) {
+                        continue;
+                    }
+                    let warning = detect_destructive_command(&cmd);
+                    let item = NlTranslationItem {
+                        command: cmd,
+                        warning,
+                    };
+                    on_item(&item);
+                    emitted.push(item);
+                }
+            }
+        };
+
+        let resp = self.start_streaming_request(&prompt, max_tokens).await?;
+        let status = resp.status().as_u16();
+        if status != 200 {
+            let body = resp.text().await.unwrap_or_default();
+            let err = LlmError::Api { status, body };
+            if Self::should_activate_backoff(&err) {
+                self.activate_backoff().await;
+            }
+            return Err(err);
+        }
+
+        let mut stream = resp.bytes_stream();
+        let mut sse_buf = String::new();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk?;
+            sse_buf.push_str(&String::from_utf8_lossy(&bytes));
+            // Parse complete SSE lines
+            while let Some(line_end) = sse_buf.find('\n') {
+                let line = sse_buf[..line_end].trim().to_string();
+                sse_buf = sse_buf[line_end + 1..].to_string();
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" {
+                        break;
+                    }
+                    if let Some(text) = self.extract_sse_text(data) {
+                        accumulated.push_str(&text);
+                        try_emit_new(&accumulated);
+                    }
+                }
+            }
+        }
+
+        // Parse any remaining text (last line without trailing newline)
+        if !accumulated.is_empty() {
+            // Final pass: parse everything including the last line
+            let final_commands = extract_commands(&accumulated, max_suggestions);
+            for cmd in final_commands {
+                if emitted.iter().any(|i| i.command == cmd) {
+                    continue;
+                }
+                let warning = detect_destructive_command(&cmd);
+                let item = NlTranslationItem {
+                    command: cmd,
+                    warning,
+                };
+                on_item(&item);
+                emitted.push(item);
+            }
+        }
+
+        if emitted.is_empty() {
+            return Err(LlmError::EmptyResponse);
+        }
+        Ok(NlTranslationResult { items: emitted })
+    }
+
+    /// Start a streaming SSE request to the configured LLM provider.
+    async fn start_streaming_request(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<reqwest::Response, LlmError> {
+        match self.provider {
+            LlmProvider::Anthropic => {
+                let body = serde_json::json!({
+                    "model": self.model,
+                    "max_tokens": max_tokens,
+                    "stream": true,
+                    "messages": [{"role": "user", "content": prompt}]
+                });
+                Ok(self
+                    .client
+                    .post(self.anthropic_messages_url())
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await?)
+            }
+            LlmProvider::OpenAI => {
+                let body = serde_json::json!({
+                    "model": self.model,
+                    "max_tokens": max_tokens,
+                    "stream": true,
+                    "messages": [{"role": "user", "content": prompt}]
+                });
+                Ok(self
+                    .client
+                    .post(self.openai_chat_completions_url())
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await?)
+            }
+        }
+    }
+
+    /// Extract text content from an SSE data line (provider-specific JSON).
+    fn extract_sse_text(&self, data: &str) -> Option<String> {
+        match self.provider {
+            LlmProvider::Anthropic => {
+                let event: AnthropicStreamEvent = serde_json::from_str(data).ok()?;
+                event.delta?.text
+            }
+            LlmProvider::OpenAI => {
+                let chunk: OpenAIStreamChunk = serde_json::from_str(data).ok()?;
+                chunk.choices.first()?.delta.content.clone()
+            }
+        }
+    }
+}
+
+// --- Anthropic streaming SSE types ---
+
+#[derive(Deserialize)]
+struct AnthropicStreamEvent {
+    delta: Option<AnthropicStreamDelta>,
+}
+
+#[derive(Deserialize)]
+struct AnthropicStreamDelta {
+    text: Option<String>,
+}
+
+// --- OpenAI streaming SSE types ---
+
+#[derive(Deserialize)]
+struct OpenAIStreamChunk {
+    choices: Vec<OpenAIStreamChoice>,
+}
+
+#[derive(Deserialize)]
+struct OpenAIStreamChoice {
+    delta: OpenAIStreamDelta,
+}
+
+#[derive(Deserialize)]
+struct OpenAIStreamDelta {
+    content: Option<String>,
 }
 
 // --- Anthropic API types ---
@@ -761,6 +966,37 @@ fn extract_command(response: &str) -> String {
     }
 
     trimmed.to_string()
+}
+
+/// Parse a single line from a streaming LLM response into a shell command.
+/// Returns `None` if the line is empty, a comment, or markdown decoration.
+fn parse_streaming_line(line: &str) -> Option<String> {
+    let mut line = line.trim();
+    if line.is_empty() || line.starts_with("```") {
+        return None;
+    }
+
+    // Strip numbered prefix: "1. ", "2. ", etc.
+    if let Some((num, rest)) = line.split_once(". ") {
+        if num.trim().parse::<usize>().is_ok() {
+            line = rest.trim();
+        }
+    }
+
+    // Strip bullet prefix
+    if let Some(rest) = line.strip_prefix("- ") {
+        line = rest.trim();
+    }
+
+    // Strip backtick wrapping
+    line = line.trim_matches('`').trim();
+
+    // Skip comment lines and empty results
+    if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+        return None;
+    }
+
+    Some(line.to_string())
 }
 
 /// Extract multiple shell commands from an LLM response.
