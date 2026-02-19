@@ -347,7 +347,17 @@ _synapse_clear_dropdown() {
 _synapse_dropdown_exit() {
     _synapse_clear_dropdown
     zle -K main
+    unset _ZSH_AUTOSUGGEST_DISABLED 2>/dev/null
+    (( $+functions[_zsh_autosuggest_enable] )) && _zsh_autosuggest_enable
     zle reset-prompt
+}
+
+# Pre-redraw hook: forcefully re-render the dropdown on every redraw.
+# Other plugins (zsh-autosuggestions, prompt themes) can overwrite
+# POSTDISPLAY during their own pre-redraw hooks.  By re-rendering here
+# we guarantee the dropdown survives regardless of hook ordering.
+_synapse_pre_redraw() {
+    (( _SYNAPSE_DROPDOWN_COUNT > 0 )) && _synapse_render_dropdown
 }
 
 # --- Dropdown Protocol ---
@@ -455,6 +465,12 @@ _synapse_nl_execute() {
     _SYNAPSE_DROPDOWN_INDEX=0
     _SYNAPSE_DROPDOWN_SCROLL=0
 
+    # Disable zsh-autosuggestions while the dropdown is open.  Its
+    # zle-line-pre-redraw hook overwrites POSTDISPLAY on every redraw,
+    # which would blank out the dropdown immediately.
+    typeset -g _ZSH_AUTOSUGGEST_DISABLED=1
+    (( $+functions[_zsh_autosuggest_disable] )) && _zsh_autosuggest_disable
+
     _synapse_render_dropdown
     zle -R
 
@@ -472,7 +488,7 @@ _synapse_accept_line() {
     if _synapse_buffer_has_nl_prefix; then
         _synapse_nl_execute
     else
-        zle accept-line
+        zle .accept-line
     fi
 }
 
@@ -580,6 +596,8 @@ _synapse_cleanup() {
     add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
     add-zsh-hook -d chpwd _synapse_chpwd 2>/dev/null
+    (( $+functions[add-zle-hook-widget] )) && add-zle-hook-widget -d zle-line-pre-redraw _synapse_pre_redraw 2>/dev/null
+    zle -A .accept-line accept-line 2>/dev/null
     bindkey -D synapse-dropdown &>/dev/null
     bindkey '^M' accept-line 2>/dev/null
     bindkey '^J' accept-line 2>/dev/null
@@ -633,6 +651,12 @@ _synapse_init() {
     add-zsh-hook precmd _synapse_precmd
     add-zsh-hook preexec _synapse_preexec
     add-zsh-hook chpwd _synapse_chpwd
+
+    # Guard POSTDISPLAY from being overwritten by other plugins during redraw
+    autoload -Uz add-zle-hook-widget 2>/dev/null
+    if (( $+functions[add-zle-hook-widget] )); then
+        add-zle-hook-widget zle-line-pre-redraw _synapse_pre_redraw
+    fi
 
     # Initial connection
     _synapse_ensure_daemon
