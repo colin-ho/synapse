@@ -91,7 +91,10 @@ pub(super) async fn start_daemon(
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
-    if let Some(log_path) = log_file {
+    // CLI --log-file takes priority, then config daemon_log, then stderr
+    let resolved_log = log_file.or_else(|| config.daemon_log_path());
+
+    if let Some(log_path) = resolved_log {
         if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent)?;
         }

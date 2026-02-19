@@ -10,12 +10,11 @@ use std::path::{Path, PathBuf};
 
 use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, GeneratorSpec, OptionSpec, SubcommandSpec};
 
-/// Return the default completions directory (~/.local/share/synapse/completions/).
+/// Return the default completions directory (~/.synapse/completions/).
 pub fn completions_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("synapse")
+        .join(".synapse")
         .join("completions")
 }
 
@@ -878,6 +877,6 @@ mod tests {
     #[test]
     fn test_completions_dir() {
         let dir = completions_dir();
-        assert!(dir.ends_with("synapse/completions"));
+        assert!(dir.ends_with(".synapse/completions"));
     }
 }

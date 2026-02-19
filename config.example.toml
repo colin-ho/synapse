@@ -51,10 +51,11 @@ nl_max_suggestions = 3                 # number of alternative commands to gener
 # max_calls_per_discovery = 30
 
 [completions]
-# output_dir = "~/.local/share/synapse/completions"  # override output directory
+# output_dir = "~/.synapse/completions"              # override output directory
 gap_only = true                        # only generate for commands without existing compsys functions
 auto_regenerate = true                 # automatically regenerate when new specs are discovered
 
 [logging]
-interaction_log = "~/.local/share/synapse/interactions.jsonl"
+interaction_log = "~/.synapse/interactions.jsonl"
 max_log_size_mb = 50                    # rotate after this size
+daemon_log = "~/.synapse/daemon.log"               # set to "" to disable file logging

@@ -73,6 +73,8 @@ pub struct SecurityConfig {
 pub struct LoggingConfig {
     pub interaction_log: String,
     pub max_log_size_mb: u64,
+    /// Daemon log file path. Set to empty string to disable file logging.
+    pub daemon_log: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -172,8 +174,9 @@ impl Default for SecurityConfig {
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            interaction_log: "~/.local/share/synapse/interactions.jsonl".into(),
+            interaction_log: "~/.synapse/interactions.jsonl".into(),
             max_log_size_mb: 50,
+            daemon_log: "~/.synapse/daemon.log".into(),
         }
     }
 }
@@ -322,6 +325,16 @@ impl Config {
             .interaction_log
             .replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
         PathBuf::from(path)
+    }
+
+    /// Returns the configured daemon log path, or `None` if set to empty string.
+    pub fn daemon_log_path(&self) -> Option<PathBuf> {
+        let raw = &self.logging.daemon_log;
+        if raw.is_empty() {
+            return None;
+        }
+        let path = raw.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
+        Some(PathBuf::from(path))
     }
 }
 
