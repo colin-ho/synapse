@@ -568,7 +568,7 @@ impl SpecStore {
     }
 
     /// Get project-specific specs (user-defined + auto-generated), cached.
-    async fn get_project_specs(&self, cwd: &Path) -> Arc<HashMap<String, CommandSpec>> {
+    pub async fn get_project_specs(&self, cwd: &Path) -> Arc<HashMap<String, CommandSpec>> {
         if !self.config.enabled {
             return Arc::new(HashMap::new());
         }

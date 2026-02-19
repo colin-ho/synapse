@@ -1,5 +1,5 @@
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -122,4 +122,52 @@ impl InteractionLogger {
             }
         }
     }
+}
+
+/// Entry used when reading back the interaction log. Only the fields we need.
+#[derive(Deserialize)]
+struct ReadLogEntry {
+    action: InteractionAction,
+    suggestion: String,
+    nl_query: Option<String>,
+    ts: String,
+}
+
+/// Read recent accepted NL translations from the interaction log.
+/// Returns `(query, command)` pairs, most recent first, up to `limit`.
+pub fn read_recent_accepted(log_path: &std::path::Path, limit: usize) -> Vec<(String, String)> {
+    let Ok(content) = std::fs::read_to_string(log_path) else {
+        return Vec::new();
+    };
+
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(7);
+
+    let mut results: Vec<(String, String)> = content
+        .lines()
+        .rev() // most recent first
+        .filter_map(|line| {
+            let entry: ReadLogEntry = serde_json::from_str(line).ok()?;
+            if !matches!(entry.action, InteractionAction::Accept) {
+                return None;
+            }
+            let query = entry.nl_query?;
+            if query.is_empty() || entry.suggestion.is_empty() {
+                return None;
+            }
+            // Filter by recency
+            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.ts) {
+                if ts < cutoff {
+                    return None;
+                }
+            }
+            Some((query, entry.suggestion))
+        })
+        .take(limit * 2) // oversample, then dedup
+        .collect();
+
+    // Dedup by query
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|(q, _)| seen.insert(q.clone()));
+    results.truncate(limit);
+    results
 }

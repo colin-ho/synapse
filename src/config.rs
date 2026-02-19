@@ -90,6 +90,10 @@ pub struct LlmConfig {
     pub max_calls_per_discovery: usize,
     pub natural_language: bool,
     pub nl_max_suggestions: usize,
+    /// Temperature for single NL suggestion (lower = more deterministic).
+    pub temperature: f32,
+    /// Temperature for multiple NL suggestions (higher = more variety).
+    pub temperature_multi: f32,
     /// Optional separate LLM config for spec discovery.
     /// When set, a second LLM client is created for discovery only.
     pub discovery: Option<LlmDiscoveryConfig>,
@@ -186,6 +190,8 @@ impl Default for LlmConfig {
             max_calls_per_discovery: 20,
             natural_language: true,
             nl_max_suggestions: 3,
+            temperature: 0.3,
+            temperature_multi: 0.7,
             discovery: None,
         }
     }
@@ -232,6 +238,8 @@ impl LlmDiscoveryConfig {
                 .unwrap_or(parent.max_calls_per_discovery),
             natural_language: parent.natural_language,
             nl_max_suggestions: parent.nl_max_suggestions,
+            temperature: parent.temperature,
+            temperature_multi: parent.temperature_multi,
             discovery: None,
         }
     }

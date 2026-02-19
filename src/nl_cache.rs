@@ -12,6 +12,7 @@ struct NlCacheKey {
     normalized_query: String,
     cwd: String,
     os: String,
+    project_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -52,11 +53,18 @@ impl NlCache {
             .to_string()
     }
 
-    pub async fn get(&self, query: &str, cwd: &str, os: &str) -> Option<NlCacheEntry> {
+    pub async fn get(
+        &self,
+        query: &str,
+        cwd: &str,
+        os: &str,
+        project_type: &str,
+    ) -> Option<NlCacheEntry> {
         let key = NlCacheKey {
             normalized_query: Self::normalize_query(query),
             cwd: cwd.to_string(),
             os: os.to_string(),
+            project_type: project_type.to_string(),
         };
         self.cache.get(&key).await
     }
@@ -65,11 +73,19 @@ impl NlCache {
         self.cache.invalidate_all();
     }
 
-    pub async fn insert(&self, query: &str, cwd: &str, os: &str, entry: NlCacheEntry) {
+    pub async fn insert(
+        &self,
+        query: &str,
+        cwd: &str,
+        os: &str,
+        project_type: &str,
+        entry: NlCacheEntry,
+    ) {
         let key = NlCacheKey {
             normalized_query: Self::normalize_query(query),
             cwd: cwd.to_string(),
             os: os.to_string(),
+            project_type: project_type.to_string(),
         };
         self.cache.insert(key, entry).await;
     }
@@ -123,6 +139,7 @@ mod tests {
                 "find large files",
                 "/tmp",
                 "macOS",
+                "rust",
                 NlCacheEntry {
                     items: vec![NlCacheItem {
                         command: "find . -size +100M".into(),
@@ -132,7 +149,7 @@ mod tests {
             )
             .await;
 
-        let result = cache.get("find large files", "/tmp", "macOS").await;
+        let result = cache.get("find large files", "/tmp", "macOS", "rust").await;
         assert!(result.is_some());
         assert_eq!(result.unwrap().items[0].command, "find . -size +100M");
     }
@@ -145,6 +162,7 @@ mod tests {
                 "Find Large Files?",
                 "/tmp",
                 "macOS",
+                "rust",
                 NlCacheEntry {
                     items: vec![NlCacheItem {
                         command: "find . -size +100M".into(),
@@ -155,7 +173,7 @@ mod tests {
             .await;
 
         // Should hit with different capitalization/punctuation
-        let result = cache.get("find large files", "/tmp", "macOS").await;
+        let result = cache.get("find large files", "/tmp", "macOS", "rust").await;
         assert!(result.is_some());
     }
 
@@ -167,6 +185,7 @@ mod tests {
                 "find large files",
                 "/tmp",
                 "macOS",
+                "rust",
                 NlCacheEntry {
                     items: vec![NlCacheItem {
                         command: "find . -size +100M".into(),
@@ -176,7 +195,31 @@ mod tests {
             )
             .await;
 
-        let result = cache.get("find large files", "/home", "macOS").await;
+        let result = cache
+            .get("find large files", "/home", "macOS", "rust")
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cache_miss_different_project_type() {
+        let cache = NlCache::new();
+        cache
+            .insert(
+                "run tests",
+                "/tmp",
+                "macOS",
+                "rust",
+                NlCacheEntry {
+                    items: vec![NlCacheItem {
+                        command: "cargo test".into(),
+                        warning: None,
+                    }],
+                },
+            )
+            .await;
+
+        let result = cache.get("run tests", "/tmp", "macOS", "node").await;
         assert!(result.is_none());
     }
 }
