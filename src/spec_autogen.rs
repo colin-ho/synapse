@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, OptionSpec, SubcommandSpec};
+use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, GeneratorSpec, OptionSpec, SubcommandSpec};
 
 /// Auto-generate specs from project files.
 ///
@@ -15,27 +15,38 @@ use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, OptionSpec, SubcommandSpec}
 pub fn generate_specs(root: &Path, cwd: &Path) -> Vec<CommandSpec> {
     let mut specs = Vec::new();
 
-    let make_targets = crate::project::parse_makefile_targets(cwd);
-    if !make_targets.is_empty() {
-        specs.push(make_spec(make_targets));
+    // Dynamic tools: detect file existence only, completions use generators
+    // that run at completion time (always current for the cwd).
+    if cwd.join("Makefile").exists()
+        || cwd.join("makefile").exists()
+        || cwd.join("GNUmakefile").exists()
+    {
+        specs.push(make_spec());
     }
 
-    if let Some(scripts) = crate::project::parse_npm_scripts(cwd) {
+    if cwd.join("package.json").exists() {
         let manager = crate::project::detect_package_manager(cwd);
-        specs.push(package_json_spec(manager, scripts));
+        specs.push(package_json_spec(manager));
     }
 
+    if cwd.join("docker-compose.yml").exists()
+        || cwd.join("docker-compose.yaml").exists()
+        || cwd.join("compose.yml").exists()
+        || cwd.join("compose.yaml").exists()
+    {
+        specs.push(docker_compose_spec());
+    }
+
+    if cwd.join("justfile").exists()
+        || cwd.join("Justfile").exists()
+        || cwd.join(".justfile").exists()
+    {
+        specs.push(justfile_spec());
+    }
+
+    // Static tools: parse project files for structure (not cwd-dynamic).
     if let Some((is_workspace, has_bin_targets)) = crate::project::parse_cargo_info(root) {
         specs.push(cargo_spec(is_workspace, has_bin_targets));
-    }
-
-    if let Some(services) = crate::project::parse_docker_services(cwd) {
-        specs.push(docker_compose_spec(services));
-    }
-
-    let just_recipes = crate::project::parse_justfile_recipes(cwd);
-    if !just_recipes.is_empty() {
-        specs.push(justfile_spec(just_recipes));
     }
 
     if let Some(py) = crate::project::parse_python_info(root) {
@@ -53,18 +64,9 @@ pub fn generate_specs(root: &Path, cwd: &Path) -> Vec<CommandSpec> {
     specs
 }
 
-fn make_spec(targets: Vec<String>) -> CommandSpec {
-    let subcommands = targets
-        .into_iter()
-        .map(|name| SubcommandSpec {
-            name,
-            ..Default::default()
-        })
-        .collect();
-
+fn make_spec() -> CommandSpec {
     CommandSpec {
         name: "make".to_string(),
-        subcommands,
         options: vec![
             OptionSpec {
                 short: Some("-j".into()),
@@ -80,34 +82,54 @@ fn make_spec(targets: Vec<String>) -> CommandSpec {
                 ..Default::default()
             },
         ],
+        args: vec![ArgSpec {
+            name: "target".into(),
+            variadic: true,
+            generator: Some(GeneratorSpec {
+                command: "make -qp 2>/dev/null | awk -F: '/^[a-zA-Z][^$#\\/\\t=]*:([^=]|$)/{split($1,a,/ /);for(i in a)print a[i]}'".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
         ..Default::default()
     }
 }
 
-fn package_json_spec(manager: &str, scripts: Vec<(String, Option<String>)>) -> CommandSpec {
-    let script_subcmds: Vec<SubcommandSpec> = scripts
-        .into_iter()
-        .map(|(name, description)| SubcommandSpec {
-            name,
-            description,
-            ..Default::default()
-        })
-        .collect();
+fn package_json_spec(manager: &str) -> CommandSpec {
+    let script_generator = GeneratorSpec {
+        command: r#"node -e "Object.keys(require('./package.json').scripts||{}).forEach(s=>console.log(s))""#.into(),
+        ..Default::default()
+    };
+
+    let script_arg = ArgSpec {
+        name: "script".into(),
+        variadic: true,
+        generator: Some(script_generator),
+        ..Default::default()
+    };
 
     let subcommands = if manager == "npm" {
         vec![SubcommandSpec {
             name: "run".to_string(),
             description: Some("Run a script".into()),
-            subcommands: script_subcmds,
+            args: vec![script_arg.clone()],
             ..Default::default()
         }]
     } else {
-        script_subcmds
+        // yarn/pnpm/bun: scripts are top-level args
+        Vec::new()
+    };
+
+    let args = if manager != "npm" {
+        vec![script_arg]
+    } else {
+        Vec::new()
     };
 
     CommandSpec {
         name: manager.to_string(),
         subcommands,
+        args,
         ..Default::default()
     }
 }
@@ -162,23 +184,22 @@ fn cargo_spec(is_workspace: bool, has_bin_targets: bool) -> CommandSpec {
     }
 }
 
-fn docker_compose_spec(services: Vec<String>) -> CommandSpec {
-    let service_args = if services.is_empty() {
-        Vec::new()
-    } else {
-        vec![ArgSpec {
-            name: "service".into(),
-            suggestions: services,
-            variadic: true,
+fn docker_compose_spec() -> CommandSpec {
+    let service_arg = || ArgSpec {
+        name: "service".into(),
+        variadic: true,
+        generator: Some(GeneratorSpec {
+            command: "docker compose config --services 2>/dev/null".into(),
             ..Default::default()
-        }]
+        }),
+        ..Default::default()
     };
 
     let subcommands = vec![
         SubcommandSpec {
             name: "up".into(),
             description: Some("Start services".into()),
-            args: service_args.clone(),
+            args: vec![service_arg()],
             options: vec![
                 OptionSpec {
                     short: Some("-d".into()),
@@ -202,7 +223,7 @@ fn docker_compose_spec(services: Vec<String>) -> CommandSpec {
         SubcommandSpec {
             name: "logs".into(),
             description: Some("View logs".into()),
-            args: service_args.clone(),
+            args: vec![service_arg()],
             options: vec![OptionSpec {
                 short: Some("-f".into()),
                 long: Some("--follow".into()),
@@ -214,7 +235,7 @@ fn docker_compose_spec(services: Vec<String>) -> CommandSpec {
         SubcommandSpec {
             name: "restart".into(),
             description: Some("Restart services".into()),
-            args: service_args.clone(),
+            args: vec![service_arg()],
             ..Default::default()
         },
         SubcommandSpec {
@@ -225,7 +246,7 @@ fn docker_compose_spec(services: Vec<String>) -> CommandSpec {
         SubcommandSpec {
             name: "build".into(),
             description: Some("Build services".into()),
-            args: service_args,
+            args: vec![service_arg()],
             ..Default::default()
         },
     ];
@@ -242,18 +263,18 @@ fn docker_compose_spec(services: Vec<String>) -> CommandSpec {
     }
 }
 
-fn justfile_spec(recipes: Vec<String>) -> CommandSpec {
-    let subcommands = recipes
-        .into_iter()
-        .map(|name| SubcommandSpec {
-            name,
-            ..Default::default()
-        })
-        .collect();
-
+fn justfile_spec() -> CommandSpec {
     CommandSpec {
         name: "just".to_string(),
-        subcommands,
+        args: vec![ArgSpec {
+            name: "recipe".into(),
+            variadic: true,
+            generator: Some(GeneratorSpec {
+                command: "just --summary 2>/dev/null | tr ' ' '\\n'".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
         ..Default::default()
     }
 }

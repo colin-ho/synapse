@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::protocol::{
     CommandExecutedReport, CompleteRequest, CompleteResultItem, CompleteResultResponse,
-    NaturalLanguageRequest, Request, Response, SuggestionItem, SuggestionKind,
+    CwdChangedReport, NaturalLanguageRequest, Request, Response, SuggestionItem, SuggestionKind,
     SuggestionListResponse, SuggestionSource,
 };
 
@@ -17,6 +17,7 @@ pub(super) async fn handle_request(
     match request {
         Request::NaturalLanguage(req) => handle_natural_language(req, state, writer).await,
         Request::CommandExecuted(report) => handle_command_executed(report, state).await,
+        Request::CwdChanged(report) => handle_cwd_changed(report, state).await,
         Request::Complete(req) => handle_complete(req, state).await,
         Request::Ping => {
             tracing::trace!("Ping");
@@ -67,6 +68,26 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
             .spec_store
             .trigger_discovery(command_name, cwd.as_deref())
             .await;
+    }
+
+    Response::Ack
+}
+
+async fn handle_cwd_changed(report: CwdChangedReport, state: &RuntimeState) -> Response {
+    tracing::debug!(
+        session = %report.session_id,
+        cwd = %report.cwd,
+        "CwdChanged"
+    );
+
+    // Pre-warm the project spec cache (and auto-write compsys files if enabled).
+    // Fire-and-forget: the lookup populates the cache as a side effect.
+    if !report.cwd.is_empty() {
+        let spec_store = state.spec_store.clone();
+        let cwd = std::path::PathBuf::from(&report.cwd);
+        tokio::spawn(async move {
+            let _ = spec_store.lookup_all_project_specs(&cwd).await;
+        });
     }
 
     Response::Ack

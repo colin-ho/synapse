@@ -198,11 +198,10 @@ pub(super) async fn start_daemon(
             PathBuf::from(s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()))
         })
         .unwrap_or_else(crate::compsys_export::completions_dir);
-    let spec_store = Arc::new(SpecStore::with_completions_dir(
-        config.spec.clone(),
-        discovery_llm_client,
-        completions_dir,
-    ));
+    let spec_store = Arc::new(
+        SpecStore::with_completions_dir(config.spec.clone(), discovery_llm_client, completions_dir)
+            .with_auto_regenerate(config.completions.auto_regenerate),
+    );
 
     let session_manager = SessionManager::new();
     let interaction_logger = InteractionLogger::new(
