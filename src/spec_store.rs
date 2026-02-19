@@ -400,7 +400,7 @@ impl SpecStore {
             return true;
         }
 
-        // Same guards as trigger_discovery.
+        // Safety guards: blocklist, config, command-name heuristics.
         if !self.can_discover_command(command) {
             return false;
         }
