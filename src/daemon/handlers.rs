@@ -3,8 +3,8 @@ use std::path::Path;
 
 use crate::protocol::{
     CommandExecutedReport, CompleteRequest, CompleteResultItem, CompleteResultResponse,
-    CwdChangedReport, NaturalLanguageRequest, Request, Response, SuggestionItem, SuggestionKind,
-    SuggestionListResponse, SuggestionSource,
+    CwdChangedReport, NaturalLanguageRequest, Request, Response, RunGeneratorRequest,
+    SuggestionItem, SuggestionKind, SuggestionListResponse, SuggestionSource,
 };
 
 use super::state::{RuntimeState, SharedWriter};
@@ -19,6 +19,7 @@ pub(super) async fn handle_request(
         Request::CommandExecuted(report) => handle_command_executed(report, state).await,
         Request::CwdChanged(report) => handle_cwd_changed(report, state).await,
         Request::Complete(req) => handle_complete(req, state).await,
+        Request::RunGenerator(req) => handle_run_generator(req, state).await,
         Request::Ping => {
             tracing::trace!("Ping");
             Response::Pong
@@ -204,6 +205,42 @@ async fn handle_complete(req: CompleteRequest, state: &RuntimeState) -> Response
     }
 
     Response::CompleteResult(CompleteResultResponse { values })
+}
+
+async fn handle_run_generator(req: RunGeneratorRequest, state: &RuntimeState) -> Response {
+    tracing::debug!(
+        command = %req.command,
+        cwd = %req.cwd,
+        "RunGenerator request"
+    );
+
+    let cwd = if req.cwd.is_empty() {
+        std::path::PathBuf::from("/")
+    } else {
+        std::path::PathBuf::from(&req.cwd)
+    };
+
+    let generator = crate::spec::GeneratorSpec {
+        command: req.command,
+        split_on: req.split_on.unwrap_or_else(|| "\n".to_string()),
+        strip_prefix: req.strip_prefix,
+        ..Default::default()
+    };
+
+    let values = state
+        .spec_store
+        .run_generator(&generator, &cwd, crate::spec::SpecSource::Discovered)
+        .await;
+
+    let items = values
+        .into_iter()
+        .map(|v| CompleteResultItem {
+            value: v,
+            description: None,
+        })
+        .collect();
+
+    Response::CompleteResult(CompleteResultResponse { values: items })
 }
 
 async fn handle_natural_language(

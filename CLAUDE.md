@@ -46,6 +46,7 @@ Running from `target/` auto-detects dev mode and creates a unique per-workspace 
 | `synapse install` | Add `eval "$(synapse)"` to `~/.zshrc` |
 | `synapse generate-completions` | Generate compsys completion files from known specs |
 | `synapse complete <cmd> [ctx...]` | Query daemon for dynamic completion values |
+| `synapse run-generator <cmd>` | Run a generator command through the daemon's timeout/caching (with `--cwd`, `--strip-prefix`, `--split-on`) |
 | `synapse probe` | Protocol-level debugging (with `--request`, `--stdio`) |
 
 ## Setup
@@ -84,7 +85,7 @@ Discovery writes compsys files directly — the compsys file IS the persistent c
 - **Security** — Path scrubbing in `src/llm.rs` (`scrub_env_values`), command blocklist in `src/daemon/state.rs` (`CompiledBlocklist`).
 - **Caching** — Spec store uses `moka::future::Cache` with TTL for hot paths.
 - **Sessions** (`src/session.rs`) — Per-session state (cwd tracking) identified by 12-char hex IDs.
-- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON requests, TSV responses. Request types: NaturalLanguage, CommandExecuted, CwdChanged, Complete, Ping, Shutdown, ReloadConfig, ClearCache. Response types: SuggestionList, CompleteResult, Pong, Ack, Error.
+- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON requests, TSV responses. Request types: NaturalLanguage, CommandExecuted, CwdChanged, Complete, RunGenerator, Ping, Shutdown, ReloadConfig, ClearCache. Response types: SuggestionList, CompleteResult, Pong, Ack, Error.
 - **Logging** (`src/logging.rs`) — Append-only JSONL interaction log at `~/.local/share/synapse/interactions.jsonl` with rotation at 50MB.
 - **Zsh completion scanner** (`src/zsh_completion.rs`) — Gap detection: scans fpath for existing compsys functions to avoid generating duplicates.
 

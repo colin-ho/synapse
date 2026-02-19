@@ -11,6 +11,7 @@ pub enum Request {
     CommandExecuted(CommandExecutedReport),
     CwdChanged(CwdChangedReport),
     Complete(CompleteRequest),
+    RunGenerator(RunGeneratorRequest),
     Ping,
     Shutdown,
     ReloadConfig,
@@ -38,6 +39,17 @@ pub struct CompleteRequest {
     pub context: Vec<String>,
     #[serde(default)]
     pub cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RunGeneratorRequest {
+    pub command: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub split_on: Option<String>,
+    #[serde(default)]
+    pub strip_prefix: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -402,6 +414,36 @@ mod tests {
                 assert_eq!(report.cwd, "/home/user/project");
             }
             _ => panic!("Expected CwdChanged request"),
+        }
+    }
+
+    #[test]
+    fn test_run_generator_request_deserialization() {
+        let json = r#"{"type":"run_generator","command":"git branch --no-color","cwd":"/tmp","strip_prefix":"* "}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::RunGenerator(rg) => {
+                assert_eq!(rg.command, "git branch --no-color");
+                assert_eq!(rg.cwd, "/tmp");
+                assert_eq!(rg.strip_prefix.as_deref(), Some("* "));
+                assert!(rg.split_on.is_none());
+            }
+            _ => panic!("Expected RunGenerator request"),
+        }
+    }
+
+    #[test]
+    fn test_run_generator_request_minimal() {
+        let json = r#"{"type":"run_generator","command":"git remote"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::RunGenerator(rg) => {
+                assert_eq!(rg.command, "git remote");
+                assert_eq!(rg.cwd, "");
+                assert!(rg.strip_prefix.is_none());
+                assert!(rg.split_on.is_none());
+            }
+            _ => panic!("Expected RunGenerator request"),
         }
     }
 }

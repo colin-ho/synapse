@@ -294,6 +294,100 @@ pub(super) async fn generate_completions(
     Ok(())
 }
 
+pub(super) async fn run_generator_query(
+    command: String,
+    cwd: Option<PathBuf>,
+    strip_prefix: Option<String>,
+    split_on: Option<String>,
+) -> anyhow::Result<()> {
+    let config = Config::load();
+    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+
+    // Try to connect to running daemon first
+    let socket_path = config.socket_path();
+    if socket_path.exists() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
+            let mut request_obj = serde_json::json!({
+                "type": "run_generator",
+                "command": command,
+                "cwd": cwd.to_string_lossy(),
+            });
+            if let Some(ref sp) = split_on {
+                request_obj["split_on"] = serde_json::Value::String(sp.clone());
+            }
+            if let Some(ref sp) = strip_prefix {
+                request_obj["strip_prefix"] = serde_json::Value::String(sp.clone());
+            }
+            let mut request_line = serde_json::to_string(&request_obj)?;
+            request_line.push('\n');
+            stream.write_all(request_line.as_bytes()).await?;
+
+            let (reader, _) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+            if let Ok(Ok(n)) = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                reader.read_line(&mut line),
+            )
+            .await
+            {
+                if n > 0 {
+                    print_complete_result_values(line.trim());
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Offline fallback: run the generator command directly with timeout
+    let timeout = std::time::Duration::from_millis(crate::config::GENERATOR_TIMEOUT_MS);
+    let result = tokio::time::timeout(
+        timeout,
+        tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(&cwd)
+            .output(),
+    )
+    .await;
+
+    if let Ok(Ok(output)) = result {
+        if output.status.success() {
+            let split_on = split_on.as_deref().unwrap_or("\n");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for item in stdout.split(split_on) {
+                let item = item.trim();
+                let item = match strip_prefix.as_deref() {
+                    Some(p) => item.strip_prefix(p).unwrap_or(item),
+                    None => item,
+                };
+                if !item.is_empty() {
+                    println!("{item}");
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Parse a `complete_result` TSV line and print each non-empty value.
+fn print_complete_result_values(line: &str) {
+    let fields: Vec<&str> = line.split('\t').collect();
+    if fields.first() != Some(&"complete_result") {
+        return;
+    }
+    let count: usize = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    for i in 0..count {
+        let val = fields.get(2 + i * 2).unwrap_or(&"");
+        if !val.is_empty() {
+            println!("{val}");
+        }
+    }
+}
+
 pub(super) async fn run_complete_query(
     command: String,
     context: Vec<String>,

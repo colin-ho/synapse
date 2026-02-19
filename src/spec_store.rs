@@ -57,6 +57,9 @@ pub struct SpecStore {
     discovering: RwLock<HashSet<String>>,
     project_cache: Cache<PathBuf, Arc<HashMap<String, CommandSpec>>>,
     generator_cache: Cache<(String, PathBuf), GeneratorCacheEntry>,
+    /// In-memory cache of specs produced by --help discovery.
+    /// Populated by `save_discovered_spec`, checked by `lookup` after project cache.
+    discovered_cache: Cache<String, CommandSpec>,
     config: SpecConfig,
     llm_client: Option<Arc<LlmClient>>,
     /// Set of command names that have zsh completion files available.
@@ -96,6 +99,11 @@ impl SpecStore {
             .expire_after(GeneratorExpiry)
             .build();
 
+        let discovered_cache = Cache::builder()
+            .max_capacity(500)
+            .time_to_live(Duration::from_secs(crate::config::DISCOVER_MAX_AGE_SECS))
+            .build();
+
         let parsed_system_specs = Cache::builder()
             .max_capacity(200)
             .time_to_live(Duration::from_secs(3600))
@@ -105,6 +113,7 @@ impl SpecStore {
             discovering: RwLock::new(HashSet::new()),
             project_cache,
             generator_cache,
+            discovered_cache,
             config,
             llm_client,
             zsh_index: std::sync::RwLock::new(zsh_index),
@@ -119,11 +128,14 @@ impl SpecStore {
         self
     }
 
-    /// Look up a spec by command name. Only returns project-level specs
-    /// (user-defined and auto-generated).
+    /// Look up a spec by command name.
+    /// Checks project specs first, then the in-memory discovered spec cache.
     pub async fn lookup(&self, command: &str, cwd: &Path) -> Option<CommandSpec> {
         let project_specs = self.get_project_specs(cwd).await;
-        project_specs.get(command).cloned()
+        if let Some(spec) = project_specs.get(command) {
+            return Some(spec.clone());
+        }
+        self.discovered_cache.get(command).await
     }
 
     /// Return all project specs for the given cwd as a Vec (for compsys export).
@@ -132,10 +144,11 @@ impl SpecStore {
         project_specs.values().cloned().collect()
     }
 
-    /// Invalidate all caches (project specs and generator outputs).
+    /// Invalidate all caches (project specs, generator outputs, and discovered specs).
     pub async fn clear_caches(&self) {
         self.project_cache.invalidate_all();
         self.generator_cache.invalidate_all();
+        self.discovered_cache.invalidate_all();
     }
 
     /// Check if a command already has a completion file (system or generated).
@@ -203,9 +216,10 @@ impl SpecStore {
         });
     }
 
-    /// Write a discovered spec as a compsys completion file.
-    /// The compsys file IS the persistent cache — no TOML intermediate.
-    fn save_discovered_spec(&self, command: &str, spec: &CommandSpec) {
+    /// Write a discovered spec as a compsys completion file and cache it in memory.
+    /// The compsys file IS the persistent on-disk cache; the in-memory discovered_cache
+    /// allows the daemon to serve dynamic completions for discovered commands.
+    async fn save_discovered_spec(&self, command: &str, spec: &CommandSpec) {
         let in_index = self
             .zsh_index
             .read()
@@ -225,6 +239,10 @@ impl SpecStore {
                 tracing::warn!("Failed to write compsys completion for {command}: {e}");
             }
         }
+        // Also cache in memory so the daemon can serve dynamic completions
+        self.discovered_cache
+            .insert(command.to_string(), spec.clone())
+            .await;
     }
 
     /// Run fast discovery inline and return whether a spec was produced.
@@ -269,7 +287,7 @@ impl SpecStore {
         {
             spec.source = SpecSource::Discovered;
             tracing::info!("Completion generator produced spec for {command}");
-            self.save_discovered_spec(command, &spec);
+            self.save_discovered_spec(command, &spec).await;
             return true;
         }
 
@@ -291,7 +309,7 @@ impl SpecStore {
             return false;
         }
 
-        self.save_discovered_spec(command, &spec);
+        self.save_discovered_spec(command, &spec).await;
         tracing::info!("Fast-discovered spec for {command}");
         true
     }
@@ -305,7 +323,7 @@ impl SpecStore {
         {
             spec.source = SpecSource::Discovered;
             tracing::info!("Completion generator produced spec for {command}");
-            self.save_discovered_spec(command, &spec);
+            self.save_discovered_spec(command, &spec).await;
             tracing::info!("Discovered spec for {command}");
             return;
         }
@@ -346,7 +364,7 @@ impl SpecStore {
                 .await;
         }
 
-        self.save_discovered_spec(command, &spec);
+        self.save_discovered_spec(command, &spec).await;
         tracing::info!("Discovered spec for {command}");
     }
 
@@ -859,7 +877,7 @@ impl SpecStore {
                     crate::zsh_completion::try_completion_generator(&cmd, gen_timeout).await
                 {
                     spec.source = SpecSource::Discovered;
-                    store.save_discovered_spec(&cmd, &spec);
+                    store.save_discovered_spec(&cmd, &spec).await;
                     tracing::debug!("Startup scan: discovered spec for {cmd}");
                 }
                 drop(permit);
@@ -1126,6 +1144,84 @@ Released under the GNU GPLv2+.
             executables.contains(&"ls".to_string()),
             "should find ls on PATH: got {} executables",
             executables.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discovered_cache_populated_by_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SpecConfig::default();
+        let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
+
+        // Discovered cache should be empty initially
+        assert!(store.discovered_cache.get("mycommand").await.is_none());
+
+        // Save a discovered spec
+        let spec = CommandSpec {
+            name: "mycommand".into(),
+            options: vec![OptionSpec {
+                long: Some("--verbose".into()),
+                description: Some("Verbose output".into()),
+                ..Default::default()
+            }],
+            source: SpecSource::Discovered,
+            ..Default::default()
+        };
+        store.save_discovered_spec("mycommand", &spec).await;
+
+        // Should now be in the discovered cache
+        let cached = store.discovered_cache.get("mycommand").await;
+        assert!(cached.is_some(), "spec should be in discovered cache");
+        let cached = cached.unwrap();
+        assert_eq!(cached.name, "mycommand");
+        assert_eq!(cached.options.len(), 1);
+
+        // Should also be written to disk as a compsys file
+        let compsys_path = tmp.path().join("_mycommand");
+        assert!(compsys_path.exists(), "compsys file should be written");
+    }
+
+    #[tokio::test]
+    async fn test_lookup_checks_discovered_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SpecConfig::default();
+        let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
+
+        // Lookup should return None initially
+        assert!(store.lookup("mycommand", tmp.path()).await.is_none());
+
+        // Save a discovered spec
+        let spec = CommandSpec {
+            name: "mycommand".into(),
+            source: SpecSource::Discovered,
+            ..Default::default()
+        };
+        store.save_discovered_spec("mycommand", &spec).await;
+
+        // Lookup should now find the discovered spec
+        let result = store.lookup("mycommand", tmp.path()).await;
+        assert!(result.is_some(), "lookup should find discovered spec");
+        assert_eq!(result.unwrap().name, "mycommand");
+    }
+
+    #[tokio::test]
+    async fn test_clear_caches_clears_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SpecConfig::default();
+        let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
+
+        let spec = CommandSpec {
+            name: "mycommand".into(),
+            source: SpecSource::Discovered,
+            ..Default::default()
+        };
+        store.save_discovered_spec("mycommand", &spec).await;
+        assert!(store.discovered_cache.get("mycommand").await.is_some());
+
+        store.clear_caches().await;
+        assert!(
+            store.discovered_cache.get("mycommand").await.is_none(),
+            "clear_caches should clear discovered cache"
         );
     }
 

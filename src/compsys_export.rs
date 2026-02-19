@@ -395,39 +395,34 @@ fn format_arg(arg: &ArgSpec) -> String {
 }
 
 /// Format a GeneratorSpec as a zsh completion action.
+///
+/// Emits a `synapse run-generator` call that routes through the daemon's
+/// timeout and caching infrastructure. Falls back to direct execution
+/// with timeout when the daemon is unavailable.
 fn format_generator_action(gen: &GeneratorSpec) -> String {
-    let cmd = &gen.command;
+    let cmd_escaped = escape_double_quote_string(&gen.command);
+    let mut synapse_cmd = format!("synapse run-generator \"{cmd_escaped}\" --cwd \"$PWD\"");
 
-    // Build the processing pipeline
-    let mut pipeline = String::new();
-
-    // Strip prefix if specified
     if let Some(ref prefix) = gen.strip_prefix {
-        // Escape sed regex metacharacters in the prefix
-        let escaped = prefix
-            .replace('\\', r"\\")
-            .replace('/', r"\/")
-            .replace('.', r"\.")
-            .replace('*', r"\*")
-            .replace('[', r"\[")
-            .replace(']', r"\]")
-            .replace('^', r"\^")
-            .replace('$', r"\$")
-            .replace('"', r#"\""#);
-        pipeline.push_str(&format!(" | sed \"s/^{escaped}//\""));
+        let prefix_escaped = escape_double_quote_string(prefix);
+        synapse_cmd.push_str(&format!(" --strip-prefix \"{prefix_escaped}\""));
     }
 
-    // Split parameter
-    let split_flag = if gen.split_on == "\n" {
-        "(f)".to_string()
-    } else {
-        format!("(s:{}:)", gen.split_on)
-    };
+    if gen.split_on != "\n" {
+        let split_escaped = escape_double_quote_string(&gen.split_on);
+        synapse_cmd.push_str(&format!(" --split-on \"{split_escaped}\""));
+    }
 
-    format!(
-        "{{local -a vals; vals=(${{{}\"$({cmd}{pipeline} 2>/dev/null)\"}}); compadd -a vals}}",
-        split_flag
-    )
+    // synapse run-generator outputs one value per line, so always split on newlines
+    format!("{{local -a vals; vals=(${{(f)\"$({synapse_cmd} 2>/dev/null)\"}}); compadd -a vals}}")
+}
+
+/// Escape a string for use inside double quotes in shell.
+fn escape_double_quote_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`")
 }
 
 /// Escape a string for use inside zsh single-quoted contexts.
@@ -559,13 +554,26 @@ mod tests {
             ..Default::default()
         };
         let result = format_arg(&arg);
-        assert!(result.contains("git branch --no-color"));
-        assert!(result.contains("sed"));
-        assert!(result.contains("compadd"));
+        assert!(
+            result.contains("synapse run-generator"),
+            "expected synapse run-generator, got: {result}"
+        );
+        assert!(
+            result.contains("git branch --no-color"),
+            "expected generator command, got: {result}"
+        );
+        assert!(
+            result.contains("--strip-prefix"),
+            "expected --strip-prefix flag, got: {result}"
+        );
+        assert!(
+            result.contains("compadd"),
+            "expected compadd, got: {result}"
+        );
     }
 
     #[test]
-    fn test_format_arg_generator_escapes_single_quotes() {
+    fn test_format_arg_generator_escapes_special_chars() {
         let arg = ArgSpec {
             name: "column".into(),
             generator: Some(GeneratorSpec {
@@ -576,15 +584,16 @@ mod tests {
             ..Default::default()
         };
         let result = format_arg(&arg);
-        // Inner single quotes are escaped as '\'' (end quote, literal quote, reopen).
-        // The original "awk '{print $1}'" becomes "awk '\''{print $1}'\'' ..."
+        // The command is passed as a double-quoted argument to synapse run-generator.
+        // $ and ` in the command must be escaped for the double-quote context.
         assert!(
-            result.contains("awk '\\''"),
-            "Expected escaped single quote before {{print, got: {result}"
+            result.contains("synapse run-generator"),
+            "Expected synapse run-generator, got: {result}"
         );
+        // The $1 should be escaped as \$1 inside the double-quoted argument
         assert!(
-            result.contains("$1}'\\''"),
-            "Expected escaped single quote after $1}}, got: {result}"
+            result.contains("\\$1"),
+            "Expected escaped dollar sign, got: {result}"
         );
     }
 
@@ -794,9 +803,26 @@ mod tests {
             ..Default::default()
         };
         let action = format_generator_action(&gen);
-        assert!(action.contains("git branch --no-color"));
-        assert!(action.contains("sed \"s/^\\* //\""));
-        assert!(action.contains("compadd -a vals"));
+        assert!(
+            action.contains("synapse run-generator"),
+            "expected synapse run-generator, got: {action}"
+        );
+        assert!(
+            action.contains("git branch --no-color"),
+            "expected generator command, got: {action}"
+        );
+        assert!(
+            action.contains("--strip-prefix"),
+            "expected --strip-prefix flag, got: {action}"
+        );
+        assert!(
+            action.contains("* "),
+            "expected strip prefix value, got: {action}"
+        );
+        assert!(
+            action.contains("compadd -a vals"),
+            "expected compadd, got: {action}"
+        );
     }
 
     #[test]
@@ -807,9 +833,26 @@ mod tests {
             ..Default::default()
         };
         let action = format_generator_action(&gen);
-        assert!(action.contains("git remote"));
-        assert!(action.contains("(f)"));
-        assert!(!action.contains("sed"));
+        assert!(
+            action.contains("synapse run-generator"),
+            "expected synapse run-generator, got: {action}"
+        );
+        assert!(
+            action.contains("git remote"),
+            "expected generator command, got: {action}"
+        );
+        assert!(
+            action.contains("(f)"),
+            "expected (f) split flag, got: {action}"
+        );
+        assert!(
+            !action.contains("--strip-prefix"),
+            "should not have --strip-prefix, got: {action}"
+        );
+        assert!(
+            !action.contains("--split-on"),
+            "should not have --split-on for default newline, got: {action}"
+        );
     }
 
     #[test]
