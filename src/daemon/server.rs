@@ -35,21 +35,6 @@ pub(super) async fn run_server(
         });
     }
 
-    // Spawn startup PATH scan for undiscovered commands
-    {
-        let spec_store = state.spec_store.clone();
-        let token = shutdown.clone();
-        tokio::spawn(async move {
-            // Small delay to let the server start accepting connections first
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            if token.is_cancelled() {
-                return;
-            }
-
-            spec_store.run_startup_scan().await;
-        });
-    }
-
     loop {
         tokio::select! {
             accept_result = listener.accept() => {

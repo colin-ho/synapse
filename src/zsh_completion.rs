@@ -234,6 +234,7 @@ const MAX_GENERATOR_OUTPUT_BYTES: usize = 256 * 1024;
 /// Try to obtain a zsh completion script by running common completion-generator
 /// subcommands (e.g. `kubectl completion zsh`). Returns a parsed `CommandSpec`
 /// on success, or `None` if no generator pattern works.
+/// Commands run in an isolated temp directory to prevent side effects.
 pub async fn try_completion_generator(
     command: &str,
     timeout: std::time::Duration,
@@ -245,15 +246,17 @@ pub async fn try_completion_generator(
         &["--completions", "zsh"],
     ];
 
+    let scratch = std::env::temp_dir().join("synapse-discovery");
+    let _ = std::fs::create_dir_all(&scratch);
+
     for args in patterns {
         let result = tokio::time::timeout(timeout, async {
-            tokio::process::Command::new(command)
-                .args(*args)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .await
+            let mut cmd = tokio::process::Command::new(command);
+            cmd.args(*args);
+            crate::spec_store::sandbox_command(&mut cmd, &scratch);
+            // Override stderr to null for generators (we only care about stdout)
+            cmd.stderr(std::process::Stdio::null());
+            cmd.output().await
         })
         .await;
 

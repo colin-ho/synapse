@@ -58,7 +58,8 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
         "Command executed"
     );
 
-    // Trigger spec discovery for the command name (first token)
+    // Warm caches for the command (safe strategies only: parse system zsh
+    // completion files + allowlisted completion generators).
     let command_name = report.command.split_whitespace().next().unwrap_or("");
     if !command_name.is_empty() {
         let cwd = if report.cwd.is_empty() {
@@ -68,7 +69,7 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
         };
         state
             .spec_store
-            .trigger_discovery(command_name, cwd.as_deref())
+            .warm_command_cache(command_name, cwd.as_deref())
             .await;
     }
 
@@ -110,15 +111,31 @@ async fn handle_complete(req: CompleteRequest, state: &RuntimeState) -> Response
     };
     let cwd_ref = cwd.as_deref();
 
-    // Look up the spec for the command
-    let spec = match state
-        .spec_store
-        .lookup(&req.command, cwd_ref.unwrap_or(Path::new("/")))
-        .await
-    {
+    // Look up the spec for the command.
+    // If no cached spec exists, try inline fast discovery (completion generators
+    // then regex-only --help). This makes discovery demand-driven: only when
+    // the user actually Tab-completes.
+    let lookup_cwd = cwd_ref.unwrap_or(Path::new("/"));
+    let spec = match state.spec_store.lookup(&req.command, lookup_cwd).await {
         Some(spec) => spec,
         None => {
-            return Response::CompleteResult(CompleteResultResponse { values: Vec::new() });
+            let timeout = std::time::Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
+            if state
+                .spec_store
+                .discover_and_wait(&req.command, cwd_ref, timeout)
+                .await
+            {
+                match state.spec_store.lookup(&req.command, lookup_cwd).await {
+                    Some(spec) => spec,
+                    None => {
+                        return Response::CompleteResult(CompleteResultResponse {
+                            values: Vec::new(),
+                        });
+                    }
+                }
+            } else {
+                return Response::CompleteResult(CompleteResultResponse { values: Vec::new() });
+            }
         }
     };
 

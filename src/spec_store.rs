@@ -1,13 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use moka::future::Cache;
 use moka::Expiry;
 use tokio::process::Command;
-use tokio::sync::RwLock;
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -19,8 +17,111 @@ use crate::spec_autogen;
 
 /// Commands that must never be run with --help for safety reasons.
 const DISCOVERY_BLOCKLIST: &[&str] = &[
-    "rm", "dd", "mkfs", "fdisk", "shutdown", "reboot", "halt", "poweroff", "sudo", "su", "doas",
-    "login", "passwd", "format", "diskutil",
+    // Destructive / system management
+    "rm",
+    "dd",
+    "mkfs",
+    "fdisk",
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
+    "format",
+    "diskutil",
+    // Privilege escalation / authentication
+    "sudo",
+    "su",
+    "doas",
+    "login",
+    "passwd",
+    "kinit",
+    "security",
+    // macOS GUI / system tools that may launch apps or prompt
+    "open",
+    "osascript",
+    "say",
+    "afplay",
+    "screencapture",
+    "pmset",
+    "caffeinate",
+    "networksetup",
+    "systemsetup",
+    "launchctl",
+    "defaults",
+    "softwareupdate",
+    "xcode-select",
+    "xcodebuild",
+    "instruments",
+    "installer",
+    "hdiutil",
+    "codesign",
+    "spctl",
+    // SSH / network tools that may prompt for credentials
+    "ssh",
+    "scp",
+    "sftp",
+    "ssh-agent",
+    "ssh-add",
+    "telnet",
+    "ftp",
+    // Package managers that may modify system state
+    "apt",
+    "apt-get",
+    "dpkg",
+    "yum",
+    "dnf",
+    "pacman",
+    "snap",
+    "flatpak",
+    "port",
+    // Database CLIs that may connect/modify
+    "mysql",
+    "psql",
+    "mongo",
+    "redis-cli",
+    "sqlite3",
+];
+
+/// Tools known to safely support `completion zsh`-style subcommands.
+/// Only these tools will have `try_completion_generator` called proactively
+/// (on CommandExecuted). All others require the user to Tab-complete to trigger discovery.
+const COMPLETION_GENERATOR_ALLOWLIST: &[&str] = &[
+    // Cobra-based (Go) tools
+    "kubectl",
+    "helm",
+    "gh",
+    "hugo",
+    "minikube",
+    "kind",
+    "istioctl",
+    "argocd",
+    "kustomize",
+    "stern",
+    "flux",
+    "cilium",
+    "cosign",
+    // Rust tools with clap-based completions
+    "rustup",
+    "starship",
+    "zoxide",
+    "bat",
+    "fd",
+    "rg",
+    "delta",
+    "mise",
+    // Other well-known tools with completion generators
+    "pip",
+    "poetry",
+    "pdm",
+    "uv",
+    "deno",
+    "fly",
+    "terraform",
+    "vault",
+    "consul",
+    "nomad",
+    "packer",
+    "pulumi",
 ];
 
 /// Maximum bytes to read from --help stdout.
@@ -50,17 +151,17 @@ impl Expiry<(String, PathBuf), GeneratorCacheEntry> for GeneratorExpiry {
 /// Manages loading, caching, and resolution of command specs.
 ///
 /// The spec store auto-generates specs from project files (Makefile,
-/// package.json, etc.) and discovers specs for unknown commands by
-/// running `--help`. Discovery writes compsys files directly to the
-/// completions directory — there is no intermediate TOML cache.
+/// package.json, etc.) and can discover specs on-demand via completion
+/// generators or `--help` parsing. Discovery writes compsys files
+/// directly to the completions directory.
 pub struct SpecStore {
-    discovering: RwLock<HashSet<String>>,
     project_cache: Cache<PathBuf, Arc<HashMap<String, CommandSpec>>>,
     generator_cache: Cache<(String, PathBuf), GeneratorCacheEntry>,
     /// In-memory cache of specs produced by --help discovery.
     /// Populated by `save_discovered_spec`, checked by `lookup` after project cache.
     discovered_cache: Cache<String, CommandSpec>,
     config: SpecConfig,
+    #[allow(dead_code)]
     llm_client: Option<Arc<LlmClient>>,
     /// Set of command names that have zsh completion files available.
     /// Wrapped in RwLock to allow periodic refresh when new tools are installed.
@@ -110,7 +211,6 @@ impl SpecStore {
             .build();
 
         Self {
-            discovering: RwLock::new(HashSet::new()),
             project_cache,
             generator_cache,
             discovered_cache,
@@ -177,35 +277,49 @@ impl SpecStore {
         seen.into_iter().collect()
     }
 
-    /// Trigger background discovery for an unknown command.
-    /// Returns immediately — a compsys completion file will be written
-    /// to the completions directory when discovery completes.
-    pub async fn trigger_discovery(self: &Arc<Self>, command: &str, cwd: Option<&Path>) {
-        if !self.can_discover_command(command) {
+    /// Warm caches for a command after execution. Safe strategies only:
+    /// 1. Parse system zsh completion file into cache (pure file reads, no execution)
+    /// 2. For allowlisted tools, try completion generators in the background
+    pub async fn warm_command_cache(self: &Arc<Self>, command: &str, cwd: Option<&Path>) {
+        let lookup_cwd = cwd.unwrap_or(Path::new("/"));
+
+        // Already have a project spec? Nothing to do.
+        if self.lookup(command, lookup_cwd).await.is_some() {
             return;
         }
 
-        let command = command.to_string();
-        let cwd = cwd.map(Path::to_path_buf);
-
-        // Skip if a completion already exists (system or generated)
-        if self.has_completion(&command) {
-            return;
-        }
-
-        // Check if already discovering
+        // Strategy 1: Parse the system zsh completion file into in-memory cache.
+        // This is a pure file read — no command execution.
+        if self
+            .parsed_system_specs
+            .get(&command.to_string())
+            .await
+            .is_none()
         {
-            let mut discovering = self.discovering.write().await;
-            if !discovering.insert(command.clone()) {
-                return; // Already in progress
-            }
+            let cmd = command.to_string();
+            let result =
+                tokio::task::spawn_blocking(move || crate::zsh_completion::find_and_parse(&cmd))
+                    .await
+                    .unwrap_or(None);
+            self.parsed_system_specs
+                .insert(command.to_string(), result)
+                .await;
         }
 
-        let store = Arc::clone(self);
-        tokio::spawn(async move {
-            store.discover_command_impl(&command, cwd.as_deref()).await;
-            store.discovering.write().await.remove(&command);
-        });
+        // Strategy 2: For allowlisted tools only, try completion generators in background.
+        if self.config.discover_from_help
+            && COMPLETION_GENERATOR_ALLOWLIST.contains(&command)
+            && !self.has_completion(command)
+        {
+            let store = Arc::clone(self);
+            let command = command.to_string();
+            tokio::spawn(async move {
+                if let Some(spec) = store.discover_with_generator(&command).await {
+                    store.save_discovered_spec(&command, &spec).await;
+                    tracing::info!("Allowlisted generator discovered spec for {command}");
+                }
+            });
+        }
     }
 
     /// Write a discovered spec as a compsys completion file and cache it in memory.
@@ -245,6 +359,7 @@ impl SpecStore {
                 .discover_blocklist
                 .iter()
                 .any(|blocked| blocked == command)
+            && is_safe_command_name(command)
     }
 
     async fn discover_with_generator(&self, command: &str) -> Option<CommandSpec> {
@@ -255,22 +370,12 @@ impl SpecStore {
         Some(spec)
     }
 
-    async fn discover_with_help(
-        &self,
-        command: &str,
-        cwd: Option<&Path>,
-        llm_budget: Option<&AtomicUsize>,
-    ) -> Option<CommandSpec> {
+    async fn discover_with_help(&self, command: &str, cwd: Option<&Path>) -> Option<CommandSpec> {
         let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
         let args: Vec<String> = Vec::new();
         let help_text = self.fetch_help_output(command, &args, timeout, cwd).await?;
 
-        let mut spec = if let Some(budget) = llm_budget {
-            self.parse_with_llm_or_regex(command, &help_text, budget)
-                .await
-        } else {
-            parse_help_basic(command, &help_text)
-        };
+        let mut spec = parse_help_basic(command, &help_text);
         spec.source = SpecSource::Discovered;
         (!spec.subcommands.is_empty() || !spec.options.is_empty()).then_some(spec)
     }
@@ -307,7 +412,7 @@ impl SpecStore {
         }
 
         // Strategy 2: Parse --help with regex (no LLM, no subcommand recursion).
-        let Some(spec) = self.discover_with_help(command, cwd, None).await else {
+        let Some(spec) = self.discover_with_help(command, cwd).await else {
             return false;
         };
         self.save_discovered_spec(command, &spec).await;
@@ -315,61 +420,24 @@ impl SpecStore {
         true
     }
 
-    /// Run the actual discovery process for a command.
-    async fn discover_command_impl(&self, command: &str, cwd: Option<&Path>) {
-        // Strategy 1: Try completion generator (structured output from the tool itself).
-        if let Some(spec) = self.discover_with_generator(command).await {
-            self.save_discovered_spec(command, &spec).await;
-            tracing::info!("Discovered spec for {command}");
-            return;
-        }
-
-        // Strategy 2: Parse --help output (LLM then regex fallback).
-        let llm_budget = AtomicUsize::new(
-            self.llm_client
-                .as_ref()
-                .map(|c| c.max_calls_per_discovery())
-                .unwrap_or(0),
-        );
-
-        let Some(mut spec) = self
-            .discover_with_help(command, cwd, Some(&llm_budget))
-            .await
-        else {
-            tracing::debug!("No useful spec data from --help for {command}");
-            return;
-        };
-
-        // Recurse into subcommands if configured
-        if crate::config::DISCOVER_MAX_DEPTH > 0 && !spec.subcommands.is_empty() {
-            self.discover_subcommands(command, &mut spec, cwd, &llm_budget)
-                .await;
-        }
-
-        self.save_discovered_spec(command, &spec).await;
-        tracing::info!("Discovered spec for {command}");
-    }
-
     /// Run `command help_flag` and return the stdout (or stderr as fallback).
+    /// The command runs in an isolated temp directory to prevent side-effect
+    /// file writes from polluting the user's workspace.
     async fn run_help_command(
         &self,
         command: &str,
         args: &[String],
         help_flag: &str,
         timeout: Duration,
-        cwd: Option<&Path>,
+        _cwd: Option<&Path>,
     ) -> Option<String> {
         let result = tokio::time::timeout(timeout, async {
+            let scratch = std::env::temp_dir().join("synapse-discovery");
+            let _ = std::fs::create_dir_all(&scratch);
             let mut cmd = Command::new(command);
             cmd.args(args).arg(help_flag);
-            if let Some(cwd) = cwd {
-                cmd.current_dir(cwd);
-            }
-            cmd.stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-                .await
+            sandbox_command(&mut cmd, &scratch);
+            cmd.output().await
         })
         .await;
 
@@ -423,130 +491,6 @@ impl SpecStore {
             }
         }
         None
-    }
-
-    /// Recursively discover subcommand specs by running `command ...subcommand --help`.
-    async fn discover_subcommands(
-        &self,
-        base_command: &str,
-        spec: &mut CommandSpec,
-        cwd: Option<&Path>,
-        llm_budget: &AtomicUsize,
-    ) {
-        for subcommand in spec.subcommands.iter_mut().take(30) {
-            self.discover_subcommand_tree(base_command, &[], subcommand, 1, cwd, llm_budget)
-                .await;
-        }
-    }
-
-    async fn discover_subcommand_tree(
-        &self,
-        base_command: &str,
-        parent_path: &[String],
-        subcommand: &mut SubcommandSpec,
-        depth: usize,
-        cwd: Option<&Path>,
-        llm_budget: &AtomicUsize,
-    ) {
-        if depth > crate::config::DISCOVER_MAX_DEPTH {
-            return;
-        }
-
-        // Skip "help" subcommands — not useful for completions.
-        if subcommand.name == "help" {
-            return;
-        }
-
-        let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
-
-        let mut args = parent_path.to_vec();
-        args.push(subcommand.name.clone());
-
-        let help_text = self
-            .fetch_help_output(base_command, &args, timeout, cwd)
-            .await
-            .unwrap_or_default();
-
-        if !help_text.trim().is_empty() {
-            let sub_spec = self
-                .parse_with_llm_or_regex(&subcommand.name, &help_text, llm_budget)
-                .await;
-            if subcommand.options.is_empty() {
-                subcommand.options = sub_spec.options;
-            }
-            if subcommand.subcommands.is_empty() {
-                subcommand.subcommands = sub_spec.subcommands;
-            }
-            if subcommand.args.is_empty() {
-                subcommand.args = sub_spec.args;
-            }
-            if subcommand.description.is_none() {
-                subcommand.description = sub_spec.description;
-            }
-        }
-
-        if depth >= crate::config::DISCOVER_MAX_DEPTH || subcommand.subcommands.is_empty() {
-            return;
-        }
-
-        let mut next_parent = parent_path.to_vec();
-        next_parent.push(subcommand.name.clone());
-        for nested in subcommand.subcommands.iter_mut().take(30) {
-            Box::pin(self.discover_subcommand_tree(
-                base_command,
-                &next_parent,
-                nested,
-                depth + 1,
-                cwd,
-                llm_budget,
-            ))
-            .await;
-        }
-    }
-
-    /// Try LLM parsing first (if available and budget allows), fall back to basic regex.
-    async fn parse_with_llm_or_regex(
-        &self,
-        command_name: &str,
-        help_text: &str,
-        llm_budget: &AtomicUsize,
-    ) -> CommandSpec {
-        if let Some(ref llm) = self.llm_client {
-            // Use compare_exchange loop to avoid wrapping to usize::MAX
-            let acquired = loop {
-                let current = llm_budget.load(Ordering::Relaxed);
-                if current == 0 {
-                    break false;
-                }
-                match llm_budget.compare_exchange_weak(
-                    current,
-                    current - 1,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break true,
-                    Err(_) => continue, // Retry on spurious failure
-                }
-            };
-
-            if acquired {
-                match llm.generate_spec(command_name, help_text).await {
-                    Ok(spec) => {
-                        tracing::info!("LLM parsed spec for {command_name}");
-                        return spec;
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            "LLM parse failed for {command_name}, falling back to regex: {e}"
-                        );
-                        llm_budget.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            } else {
-                tracing::debug!("LLM budget exhausted, using basic regex for {command_name}");
-            }
-        }
-        parse_help_basic(command_name, help_text)
     }
 
     /// Get project-specific specs (user-defined + auto-generated), cached.
@@ -775,101 +719,72 @@ impl SpecStore {
     pub fn config(&self) -> &SpecConfig {
         &self.config
     }
+}
 
-    /// Scan PATH directories for executables and return their names.
-    fn scan_path_executables() -> Vec<String> {
-        let path_var = match std::env::var("PATH") {
-            Ok(p) => p,
-            Err(_) => return Vec::new(),
-        };
-
-        let mut seen = HashSet::new();
-        for dir in path_var.split(':') {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                // Skip hidden files and names with dots (helper scripts)
-                if name.starts_with('.') || name.contains('.') {
-                    continue;
-                }
-                // Quick check: must be executable (on unix)
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(meta) = entry.metadata() {
-                        if meta.permissions().mode() & 0o111 == 0 {
-                            continue;
-                        }
-                    }
-                }
-                seen.insert(name.to_string());
-            }
-        }
-        seen.into_iter().collect()
+/// Heuristic: reject command names that are unlikely to be real CLI tools.
+/// Filters out names that look like file extensions, build artifacts, or
+/// macOS framework helpers that may cause side effects.
+fn is_safe_command_name(command: &str) -> bool {
+    // Too short — likely an alias or ambiguous (e.g. "zsh" would match but
+    // single-char commands like "w" or "r" are risky)
+    if command.len() <= 1 {
+        return false;
     }
 
-    /// Run startup PATH scan: discover specs for all undiscovered executables.
-    /// Uses bounded concurrency and inter-batch delays to avoid CPU spikes.
-    /// Only tries completion generators (no LLM, no --help parsing).
-    pub async fn run_startup_scan(self: &Arc<Self>) {
-        if !self.config.discover_from_help {
-            tracing::debug!("Startup scan disabled (discover_from_help = false)");
-            return;
-        }
-
-        let executables = tokio::task::spawn_blocking(Self::scan_path_executables)
-            .await
-            .unwrap_or_default();
-
-        // Filter to commands without existing completions
-        let undiscovered: Vec<String> = executables
-            .into_iter()
-            .filter(|cmd| {
-                !self.has_completion(cmd)
-                    && !DISCOVERY_BLOCKLIST.contains(&cmd.as_str())
-                    && !self.config.discover_blocklist.contains(cmd)
-            })
-            .collect();
-
-        if undiscovered.is_empty() {
-            tracing::info!("Startup scan: all PATH commands already have completions");
-            return;
-        }
-
-        tracing::info!(
-            "Startup scan: {} undiscovered commands on PATH",
-            undiscovered.len()
-        );
-
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
-        let delay = Duration::from_millis(100);
-
-        for cmd in undiscovered {
-            let permit = semaphore.clone().acquire_owned().await;
-            let Ok(permit) = permit else { break };
-
-            let store = Arc::clone(self);
-            tokio::spawn(async move {
-                // Only try completion generators during startup scan (cheapest strategy)
-                let gen_timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
-                if let Some(mut spec) =
-                    crate::zsh_completion::try_completion_generator(&cmd, gen_timeout).await
-                {
-                    spec.source = SpecSource::Discovered;
-                    store.save_discovered_spec(&cmd, &spec).await;
-                    tracing::debug!("Startup scan: discovered spec for {cmd}");
-                }
-                drop(permit);
-            });
-
-            tokio::time::sleep(delay).await;
-        }
-
-        tracing::info!("Startup scan complete");
+    // Reject names that look like they complete/generate things generically
+    // (these are often helper scripts that write output files)
+    const RISKY_NAMES: &[&str] = &[
+        "completion",
+        "completions",
+        "generate",
+        "install",
+        "setup",
+        "configure",
+        "init",
+        "bootstrap",
+        "deploy",
+        "migrate",
+        "update",
+        "upgrade",
+        "uninstall",
+        "remove",
+        "clean",
+        "purge",
+        "reset",
+        "destroy",
+    ];
+    if RISKY_NAMES.contains(&command) {
+        return false;
     }
+
+    // Reject commands starting with underscore (zsh internal completion functions)
+    if command.starts_with('_') {
+        return false;
+    }
+
+    true
+}
+
+/// Configure a Command for safe sandboxed execution during discovery.
+/// - Uses a temp directory as CWD (prevents file writes to user's workspace)
+/// - Nulls stdin (prevents interactive prompts)
+/// - Sanitizes environment to prevent GUI launches and credential prompts
+pub fn sandbox_command(cmd: &mut Command, scratch_dir: &Path) {
+    cmd.current_dir(scratch_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    // Prevent GUI dialogs, keychain prompts, and app launches on macOS
+    cmd.env("__CF_USER_TEXT_ENCODING", "")
+        .env("DISPLAY", "")
+        .env("SSH_ASKPASS", "")
+        .env("SUDO_ASKPASS", "")
+        .env("GIT_ASKPASS", "")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+        .env("NO_COLOR", "1")
+        .env("CI", "1"); // Many tools skip interactive prompts when CI=1
 }
 
 /// Minimal best-effort help text parser used when LLM is unavailable.
@@ -1113,19 +1028,6 @@ Released under the GNU GPLv2+.
         assert!(
             !store.has_completion("nonexistent_xyz_99999"),
             "unknown command should not have completion"
-        );
-    }
-
-    #[test]
-    fn test_scan_path_executables_returns_commands() {
-        let executables = SpecStore::scan_path_executables();
-        // Should find at least some common commands
-        assert!(!executables.is_empty(), "PATH scan should find executables");
-        // ls should be on PATH on any unix system
-        assert!(
-            executables.contains(&"ls".to_string()),
-            "should find ls on PATH: got {} executables",
-            executables.len()
         );
     }
 
