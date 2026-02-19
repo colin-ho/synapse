@@ -54,7 +54,7 @@ enum Commands {
     Install,
     /// Generate compsys completion files for all known specs
     GenerateCompletions {
-        /// Output directory (default: ~/.local/share/synapse/completions/)
+        /// Output directory (default: ~/.synapse/completions/)
         #[arg(long)]
         output_dir: Option<PathBuf>,
 

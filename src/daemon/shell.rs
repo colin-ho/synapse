@@ -68,20 +68,18 @@ fn find_plugin_path(
         }
     }
 
-    // Fallback: extract embedded plugin to ~/.local/share/synapse/plugin/synapse.zsh
+    // Fallback: extract embedded plugin to ~/.synapse/plugin/synapse.zsh
     extract_embedded_plugin().context("failed to extract embedded shell plugin")
 }
 
 /// Extract the embedded plugin to a well-known data directory and return the path.
 fn extract_embedded_plugin() -> anyhow::Result<PathBuf> {
-    let data_dir = dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
-        .context("failed to determine local data directory")?;
+    let data_dir = dirs::home_dir().context("failed to determine home directory")?;
     extract_embedded_plugin_at(&data_dir)
 }
 
 fn extract_embedded_plugin_at(data_dir: &std::path::Path) -> anyhow::Result<PathBuf> {
-    let plugin_path = data_dir.join("synapse").join("plugin").join("synapse.zsh");
+    let plugin_path = data_dir.join(".synapse").join("plugin").join("synapse.zsh");
 
     // Write if missing or content has changed (e.g. after upgrade)
     let needs_write = match std::fs::read_to_string(&plugin_path) {
@@ -151,7 +149,7 @@ fn print_dev_init_code(
 export SYNAPSE_BIN="{exe}"
 export SYNAPSE_SOCKET="{socket}"
 # Synapse completions — add to fpath before compinit
-_synapse_completions_dir="${{XDG_DATA_HOME:-$HOME/.local/share}}/synapse/completions"
+_synapse_completions_dir="$HOME/.synapse/completions"
 [[ -d "$_synapse_completions_dir" ]] && fpath=("$_synapse_completions_dir" $fpath)
 # Stop existing dev daemon on this socket
 if [[ -f "{pid}" ]] && kill -0 $(<"{pid}") 2>/dev/null; then
@@ -204,7 +202,7 @@ fn print_normal_init_code(exe: &std::path::Path) -> anyhow::Result<()> {
     print!(
         r#"export SYNAPSE_BIN="{exe}"
 # Synapse completions — add to fpath before compinit
-_synapse_completions_dir="${{XDG_DATA_HOME:-$HOME/.local/share}}/synapse/completions"
+_synapse_completions_dir="$HOME/.synapse/completions"
 [[ -d "$_synapse_completions_dir" ]] && fpath=("$_synapse_completions_dir" $fpath)
 source "{plugin}"
     "#,
@@ -256,7 +254,7 @@ mod tests {
             plugin_path,
             temp_dir
                 .path()
-                .join("synapse")
+                .join(".synapse")
                 .join("plugin")
                 .join("synapse.zsh")
         );
@@ -269,7 +267,7 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let plugin_path = temp_dir
             .path()
-            .join("synapse")
+            .join(".synapse")
             .join("plugin")
             .join("synapse.zsh");
         std::fs::create_dir_all(plugin_path.parent().expect("plugin path has parent"))?;
@@ -287,7 +285,7 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let plugin_path = temp_dir
             .path()
-            .join("synapse")
+            .join(".synapse")
             .join("plugin")
             .join("synapse.zsh");
         std::fs::create_dir_all(&plugin_path)?;
