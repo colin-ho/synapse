@@ -35,6 +35,40 @@ pub(super) async fn run_server(
         });
     }
 
+    // Spawn periodic zsh_index refresh (every 5 minutes)
+    // Catches newly-installed tools (e.g. `brew install` while daemon is running)
+    {
+        let spec_store = state.spec_store.clone();
+        let token = shutdown.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.tick().await; // Skip the initial immediate tick
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        spec_store.refresh_zsh_index();
+                    }
+                    _ = token.cancelled() => break,
+                }
+            }
+        });
+    }
+
+    // Spawn startup PATH scan for undiscovered commands
+    {
+        let spec_store = state.spec_store.clone();
+        let token = shutdown.clone();
+        tokio::spawn(async move {
+            // Small delay to let the server start accepting connections first
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if token.is_cancelled() {
+                return;
+            }
+
+            spec_store.run_startup_scan().await;
+        });
+    }
+
     loop {
         tokio::select! {
             accept_result = listener.accept() => {
