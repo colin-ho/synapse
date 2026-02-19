@@ -1,18 +1,22 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, GeneratorSpec, OptionSpec, SubcommandSpec};
+use crate::spec::{ArgSpec, CommandSpec, GeneratorSpec, OptionSpec, SubcommandSpec};
 
 /// Auto-generate specs from project files.
 ///
-/// `root` is the detected project/git root (used for cargo and python which
-/// are inherently project-root-scoped).
+/// Only generates specs for dynamic tools that use generators to read
+/// project-specific config at completion time (Makefile targets, npm scripts,
+/// docker-compose services, just recipes). Static tools like cargo, pytest,
+/// poetry, and ruff are better served by their own completion generators
+/// or system zsh completion files, which are far more comprehensive than
+/// any hardcoded spec we could maintain.
 ///
 /// `cwd` is the actual working directory of the session.  Tools like `make`,
 /// `npm run`, `docker compose`, and `just` resolve their config relative to
 /// CWD, so we parse from there to match what the user would actually see
 /// (important in monorepos where subdirectories have their own config files).
-pub fn generate_specs(root: &Path, cwd: &Path) -> Vec<CommandSpec> {
+pub fn generate_specs(_root: &Path, cwd: &Path) -> Vec<CommandSpec> {
     let mut specs = Vec::new();
     const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
     const COMPOSE_FILES: &[&str] = &[
@@ -40,23 +44,6 @@ pub fn generate_specs(root: &Path, cwd: &Path) -> Vec<CommandSpec> {
 
     if crate::project::has_any_file(cwd, JUSTFILES) {
         specs.push(justfile_spec());
-    }
-
-    // Static tools: parse project files for structure (not cwd-dynamic).
-    if let Some((is_workspace, has_bin_targets)) = crate::project::parse_cargo_info(root) {
-        specs.push(cargo_spec(is_workspace, has_bin_targets));
-    }
-
-    if let Some(py) = crate::project::parse_python_info(root) {
-        if py.has_poetry {
-            specs.push(poetry_spec());
-        }
-        if py.has_ruff {
-            specs.push(ruff_spec());
-        }
-        if py.has_venv {
-            specs.push(pytest_spec());
-        }
     }
 
     specs
@@ -148,53 +135,6 @@ fn package_json_spec(manager: &str) -> CommandSpec {
     }
 }
 
-fn cargo_spec(is_workspace: bool, has_bin_targets: bool) -> CommandSpec {
-    let mut subcommands: Vec<SubcommandSpec> = [
-        ("build", vec!["b"], "Compile the current package"),
-        ("test", vec!["t"], "Run tests"),
-        ("run", vec!["r"], "Run a binary"),
-        ("check", vec!["c"], "Analyze without building"),
-        ("clippy", vec![], "Run Clippy lints"),
-        ("fmt", vec![], "Format code"),
-    ]
-    .into_iter()
-    .map(|(name, aliases, desc)| SubcommandSpec {
-        name: name.into(),
-        aliases: aliases.into_iter().map(String::from).collect(),
-        description: Some(desc.into()),
-        ..Default::default()
-    })
-    .collect();
-
-    if is_workspace {
-        for sub in &mut subcommands {
-            if matches!(sub.name.as_str(), "build" | "test" | "check") {
-                sub.options.push(opt(
-                    None,
-                    Some("--workspace"),
-                    "Apply to all workspace members",
-                    false,
-                ));
-            }
-        }
-    }
-
-    if has_bin_targets {
-        for sub in &mut subcommands {
-            if sub.name == "run" {
-                sub.options
-                    .push(opt(None, Some("--bin"), "Run specific binary", true));
-            }
-        }
-    }
-
-    CommandSpec {
-        name: "cargo".to_string(),
-        subcommands,
-        ..Default::default()
-    }
-}
-
 fn docker_compose_spec() -> CommandSpec {
     let service_arg = || {
         generated_arg(
@@ -253,58 +193,6 @@ fn justfile_spec() -> CommandSpec {
     }
 }
 
-fn poetry_spec() -> CommandSpec {
-    let subcommands = [
-        ("install", "Install dependencies"),
-        ("run", "Run a command in the venv"),
-        ("build", "Build the package"),
-        ("lock", "Lock dependencies"),
-        ("update", "Update dependencies"),
-        ("add", "Add a dependency"),
-        ("remove", "Remove a dependency"),
-        ("shell", "Activate the venv shell"),
-    ]
-    .into_iter()
-    .map(|(name, desc)| SubcommandSpec {
-        name: name.into(),
-        description: Some(desc.into()),
-        ..Default::default()
-    })
-    .collect();
-
-    CommandSpec {
-        name: "poetry".to_string(),
-        subcommands,
-        ..Default::default()
-    }
-}
-
-fn ruff_spec() -> CommandSpec {
-    let path_arg = ArgSpec {
-        name: "path".into(),
-        template: Some(ArgTemplate::FilePaths),
-        ..Default::default()
-    };
-
-    let mut check = sub("check", "Run linting");
-    check.args = vec![path_arg.clone()];
-    check.options = vec![opt(
-        None,
-        Some("--fix"),
-        "Fix auto-fixable violations",
-        false,
-    )];
-
-    let mut format = sub("format", "Format code");
-    format.args = vec![path_arg];
-
-    CommandSpec {
-        name: "ruff".to_string(),
-        subcommands: vec![check, format],
-        ..Default::default()
-    }
-}
-
 /// Discover specs for CLI tools built by the current project by running `--help`.
 /// Only runs if the binary has actually been built.
 pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<CommandSpec> {
@@ -348,43 +236,4 @@ pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<Com
     }
 
     specs
-}
-
-fn pytest_spec() -> CommandSpec {
-    CommandSpec {
-        name: "pytest".to_string(),
-        description: Some("Run tests".into()),
-        options: vec![
-            OptionSpec {
-                short: Some("-v".into()),
-                long: Some("--verbose".into()),
-                description: Some("Increase verbosity".into()),
-                ..Default::default()
-            },
-            OptionSpec {
-                short: Some("-x".into()),
-                long: Some("--exitfirst".into()),
-                description: Some("Stop on first failure".into()),
-                ..Default::default()
-            },
-            OptionSpec {
-                short: Some("-k".into()),
-                takes_arg: true,
-                description: Some("Filter by expression".into()),
-                ..Default::default()
-            },
-            OptionSpec {
-                long: Some("--tb".into()),
-                takes_arg: true,
-                description: Some("Traceback style (short/long/no)".into()),
-                ..Default::default()
-            },
-        ],
-        args: vec![ArgSpec {
-            name: "path".into(),
-            template: Some(ArgTemplate::FilePaths),
-            ..Default::default()
-        }],
-        ..Default::default()
-    }
 }
