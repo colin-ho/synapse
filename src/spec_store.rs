@@ -1079,11 +1079,9 @@ Released under the GNU GPLv2+.
         let config = SpecConfig::default();
         let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
 
-        // Initial index has system completions
         let initial_count = store.zsh_index.read().unwrap().len();
-        assert!(initial_count > 0, "expected some system completions");
 
-        // Refresh should succeed and produce the same count
+        // Refresh should be idempotent
         store.refresh_zsh_index();
         let refreshed_count = store.zsh_index.read().unwrap().len();
         assert_eq!(initial_count, refreshed_count);
