@@ -20,25 +20,21 @@ typeset -g _SYNAPSE_RECONNECT_ATTEMPTS=0
 typeset -g _SYNAPSE_MAX_RECONNECT=3
 typeset -g _SYNAPSE_LAST_RECONNECT_TIME=0
 typeset -gi _SYNAPSE_DISCONNECT_WARNED=0
-typeset -gi _SYNAPSE_REQUEST_FAILURES=0
 typeset -gi _SYNAPSE_RECENT_CMD_MAX=10
 typeset -ga _SYNAPSE_RECENT_COMMANDS=()
 
 # --- NL Dropdown State ---
-typeset -gi _SYNAPSE_DROPDOWN_OPEN=0
 typeset -gi _SYNAPSE_DROPDOWN_INDEX=0
 typeset -gi _SYNAPSE_DROPDOWN_COUNT=0
 typeset -ga _SYNAPSE_DROPDOWN_ITEMS=()
 typeset -ga _SYNAPSE_DROPDOWN_SOURCES=()
 typeset -ga _SYNAPSE_DROPDOWN_DESCS=()
-typeset -ga _SYNAPSE_DROPDOWN_KINDS=()
 typeset -gi _SYNAPSE_DROPDOWN_MAX_VISIBLE=8
 typeset -gi _SYNAPSE_DROPDOWN_SCROLL=0
 typeset -g _SYNAPSE_DROPDOWN_SELECTED=""
 typeset -g _SYNAPSE_DROPDOWN_INSERT_KEY=""
 
-# --- Natural Language State ---
-typeset -gi _SYNAPSE_NL_MODE=0
+# --- Natural Language ---
 typeset -g _SYNAPSE_NL_PREFIX="?"
 
 # --- Modules ---
@@ -56,13 +52,11 @@ _synapse_generate_session_id() {
 
 # Find the daemon binary
 _synapse_find_binary() {
-    # Allow explicit override via env var
     if [[ -n "$SYNAPSE_BIN" ]] && [[ -x "$SYNAPSE_BIN" ]]; then
         echo "$SYNAPSE_BIN"
         return 0
     fi
     local bin
-    # Check common locations
     for bin in \
         "$(command -v synapse 2>/dev/null)" \
         "${0:A:h:h}/target/release/synapse" \
@@ -112,7 +106,6 @@ _synapse_ensure_daemon() {
     bin="$(_synapse_find_binary)" || return 1
     local lock_file="$(_synapse_lock_path)"
 
-    # Use zsystem flock (from zsh/system) — works on both macOS and Linux
     local lock_fd
     if ! zsystem flock -t 0 -f lock_fd "$lock_file" 2>/dev/null; then
         return 0  # Another shell is starting it
@@ -127,7 +120,6 @@ _synapse_ensure_daemon() {
     "$bin" start &>/dev/null &
     disown
 
-    # Wait briefly for daemon to start
     local i
     for i in 1 2 3 4 5; do
         sleep 0.1
@@ -149,18 +141,15 @@ _synapse_connect() {
     local sock="$(_synapse_socket_path)"
     [[ -S "$sock" ]] || return 1
 
-    # Connect via zsocket
     zsocket "$sock" 2>/dev/null || return 1
     _SYNAPSE_SOCKET_FD="$REPLY"
     _SYNAPSE_CONNECTED=1
-    _SYNAPSE_REQUEST_FAILURES=0
-
     return 0
 }
 
 _synapse_disconnect() {
     if [[ -n "$_SYNAPSE_SOCKET_FD" ]]; then
-        exec {_SYNAPSE_SOCKET_FD}>&- 2>/dev/null   # Close fd
+        exec {_SYNAPSE_SOCKET_FD}>&- 2>/dev/null
         _SYNAPSE_SOCKET_FD=""
     fi
     _SYNAPSE_CONNECTED=0
@@ -180,65 +169,30 @@ _synapse_buffer_has_nl_prefix() {
 
 # Extract NL query text from BUFFER (without "<nl_prefix> ").
 _synapse_nl_query_from_buffer() {
-    local prefix_len=${#_SYNAPSE_NL_PREFIX}
-    local start=$(( prefix_len + 2 ))
-    if (( start > ${#BUFFER} )); then
-        echo ""
-    else
-        echo "${BUFFER[$start,-1]}"
-    fi
+    echo "${BUFFER[$(( ${#_SYNAPSE_NL_PREFIX} + 2 )),-1]}"
 }
 
-# Reset NL mode state.
-_synapse_reset_nl() {
-    _SYNAPSE_NL_MODE=0
-}
-
-# Send a JSON request and read the response
+# Send a JSON request and read the response.
+# Runs inside $() so state mutations don't propagate to the parent shell.
 _synapse_request() {
     local json="$1"
-    local expected_type="${2:-}"
-    local timeout="${3:-0.05}"
+    local timeout="${2:-0.05}"
     [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return 1
     [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return 1
 
-    # Write request
-    print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || {
-        _synapse_disconnect
-        return 1
-    }
+    print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || return 1
 
-    # Read response
-    local response=""
-    local reads=0
+    local response="" reads=0
     local max_reads=$(( timeout / 0.01 ))
     max_reads="${max_reads%.*}"
     [[ -n "$max_reads" ]] || max_reads=5
     (( max_reads < 1 )) && max_reads=1
-    while (( reads < max_reads )); do
+    while (( reads++ < max_reads )); do
         if read -t 0.01 -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
-            local -a _tsv_fields
-            IFS=$'\t' read -rA _tsv_fields <<< "$response"
-            local frame_type="${_tsv_fields[1]}"
-
-            if [[ -n "$expected_type" ]] && [[ "$frame_type" != "$expected_type" ]]; then
-                (( reads++ ))
-                continue
-            fi
-
-            _SYNAPSE_REQUEST_FAILURES=0
             echo "$response"
             return 0
         fi
-        (( reads++ ))
     done
-
-    # Track consecutive failures to detect dead connections
-    (( _SYNAPSE_REQUEST_FAILURES++ ))
-    if (( _SYNAPSE_REQUEST_FAILURES >= 3 )); then
-        _synapse_disconnect
-    fi
-
     return 1
 }
 
@@ -252,52 +206,30 @@ _synapse_json_escape() {
     echo "$value"
 }
 
-# Build recent_commands JSON array.
-_synapse_build_recent_commands_json() {
-    local items=()
-    local cmd
+# Build a natural_language request JSON.
+_synapse_build_nl_request() {
+    local escaped_query="$(_synapse_json_escape "$1")"
+    local escaped_cwd="$(_synapse_json_escape "$2")"
+
+    # recent_commands array
+    local items=() cmd
     for cmd in "${_SYNAPSE_RECENT_COMMANDS[@]}"; do
         items+=("\"$(_synapse_json_escape "$cmd")\"")
     done
+    local recent="[]"
+    (( ${#items[@]} )) && recent="[${(j:,:)items}]"
 
-    if (( ${#items[@]} == 0 )); then
-        echo "[]"
-    else
-        echo "[${(j:,:)items}]"
-    fi
-}
-
-# Build env_hints JSON object for daemon requests.
-_synapse_build_env_hints_json() {
-    local hints=()
-    local key val
+    # env_hints object
+    local hints=() key val
     for key in PATH VIRTUAL_ENV; do
         val="${(P)key}"
         [[ -n "$val" ]] || continue
         hints+=("\"${key}\":\"$(_synapse_json_escape "$val")\"")
     done
+    local env="{}"
+    (( ${#hints[@]} )) && env="{${(j:,:)hints}}"
 
-    if (( ${#hints[@]} == 0 )); then
-        echo "{}"
-    else
-        echo "{${(j:,:)hints}}"
-    fi
-}
-
-# Build common JSON fields shared by requests.
-_synapse_json_common() {
-    _sj_cwd="$(_synapse_json_escape "$1")"
-    _sj_recent="$(_synapse_build_recent_commands_json)"
-    _sj_env="$(_synapse_build_env_hints_json)"
-}
-
-# Build a natural_language request JSON
-_synapse_build_nl_request() {
-    local escaped_query="$(_synapse_json_escape "$1")"
-    local _sj_cwd _sj_recent _sj_env
-    _synapse_json_common "$2"
-
-    echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${_sj_cwd}\",\"recent_commands\":${_sj_recent},\"env_hints\":${_sj_env}}"
+    echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${escaped_cwd}\",\"recent_commands\":${recent},\"env_hints\":${env}}"
 }
 
 # --- Dropdown Rendering (NL results) ---
@@ -335,12 +267,10 @@ _synapse_render_dropdown() {
         local text="${_SYNAPSE_DROPDOWN_ITEMS[$(( i + 1 ))]}"
         local desc="${_SYNAPSE_DROPDOWN_DESCS[$(( i + 1 ))]}"
 
-        # Truncate long items
         if (( ${#text} > max_width )); then
             text="${text:0:$(( max_width - 3 ))}..."
         fi
 
-        # Build display line
         local line=""
         if (( i == _SYNAPSE_DROPDOWN_INDEX )); then
             line=$'\n'"  > ${text}"
@@ -348,7 +278,6 @@ _synapse_render_dropdown() {
             line=$'\n'"    ${text}"
         fi
 
-        # Append description if present
         if [[ -n "$desc" ]]; then
             local remaining=$(( max_width - ${#text} - 4 ))
             if (( remaining > 10 )); then
@@ -374,7 +303,6 @@ _synapse_render_dropdown() {
     local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
     local pos=$base_offset
 
-    # Highlight dropdown items
     for (( i = start; i < end; i++ )); do
         local text="${_SYNAPSE_DROPDOWN_ITEMS[$(( i + 1 ))]}"
         if (( ${#text} > max_width )); then
@@ -407,13 +335,11 @@ _synapse_render_dropdown() {
 }
 
 _synapse_clear_dropdown() {
-    _SYNAPSE_DROPDOWN_OPEN=0
     _SYNAPSE_DROPDOWN_INDEX=0
     _SYNAPSE_DROPDOWN_COUNT=0
     _SYNAPSE_DROPDOWN_ITEMS=()
     _SYNAPSE_DROPDOWN_SOURCES=()
     _SYNAPSE_DROPDOWN_DESCS=()
-    _SYNAPSE_DROPDOWN_KINDS=()
     _SYNAPSE_DROPDOWN_SCROLL=0
     _SYNAPSE_DROPDOWN_SELECTED=""
     _SYNAPSE_DROPDOWN_INSERT_KEY=""
@@ -431,7 +357,6 @@ _synapse_parse_suggestion_list() {
     _SYNAPSE_DROPDOWN_ITEMS=()
     _SYNAPSE_DROPDOWN_SOURCES=()
     _SYNAPSE_DROPDOWN_DESCS=()
-    _SYNAPSE_DROPDOWN_KINDS=()
 
     local -a _tsv_fields
     _tsv_fields=("${(@s:	:)response}")
@@ -447,10 +372,20 @@ _synapse_parse_suggestion_list() {
         _SYNAPSE_DROPDOWN_ITEMS+=("${_tsv_fields[$base]}")
         _SYNAPSE_DROPDOWN_SOURCES+=("${_tsv_fields[$(( base + 1 ))]}")
         _SYNAPSE_DROPDOWN_DESCS+=("${_tsv_fields[$(( base + 2 ))]}")
-        _SYNAPSE_DROPDOWN_KINDS+=("${_tsv_fields[$(( base + 3 ))]}")
     done
 
     _SYNAPSE_DROPDOWN_COUNT=$count
+}
+
+# --- Socket Helpers ---
+
+# Drain stale responses (e.g. Ack from fire-and-forget command_executed/cwd_changed).
+# Must be called in the main shell (not a subshell) before _synapse_request.
+_synapse_drain_stale() {
+    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return
+    [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return
+    local _junk
+    while read -t 0 -u "$_SYNAPSE_SOCKET_FD" _junk 2>/dev/null; do :; done
 }
 
 # --- NL Translation ---
@@ -464,12 +399,6 @@ _synapse_set_status_message() {
     region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=${color}")
 }
 
-# Mark NL mode active and show hint
-_synapse_nl_suggest() {
-    _SYNAPSE_NL_MODE=1
-    _synapse_set_status_message "> press Enter to translate" 8
-}
-
 # Execute NL query synchronously
 _synapse_nl_execute() {
     [[ $_SYNAPSE_CONNECTED -eq 1 ]] || { zle .accept-line; return; }
@@ -481,19 +410,20 @@ _synapse_nl_execute() {
         return
     fi
 
-    # Show thinking indicator
     _synapse_set_status_message "thinking..." 8
     zle -R
 
-    # Build and send NL request
+    # Drain stale responses (Ack from fire-and-forget hooks) so the
+    # subshell in _synapse_request reads the actual NL response.
+    _synapse_drain_stale
+
     local json
     json="$(_synapse_build_nl_request "$query" "$PWD")"
 
     local response
-    response="$(_synapse_request "$json" "" 30.0)" || {
+    response="$(_synapse_request "$json" 30.0)" || {
         _synapse_set_status_message "[timed out waiting for translation]" 1
         zle -R
-        _synapse_reset_nl
         return
     }
 
@@ -502,14 +432,12 @@ _synapse_nl_execute() {
     if [[ "${_tsv_fields[1]}" == "error" ]]; then
         _synapse_set_status_message "[${_tsv_fields[2]}]" 1
         zle -R
-        _synapse_reset_nl
         return
     fi
 
     if [[ "${_tsv_fields[1]}" != "list" ]]; then
         _synapse_set_status_message "[unexpected NL response]" 1
         zle -R
-        _synapse_reset_nl
         return
     fi
 
@@ -518,14 +446,11 @@ _synapse_nl_execute() {
     if (( _SYNAPSE_DROPDOWN_COUNT == 0 )); then
         _synapse_set_status_message "[no results]" 1
         zle -R
-        _synapse_reset_nl
         return
     fi
 
     _SYNAPSE_DROPDOWN_INDEX=0
     _SYNAPSE_DROPDOWN_SCROLL=0
-    _SYNAPSE_DROPDOWN_OPEN=1
-    _synapse_reset_nl
 
     _synapse_render_dropdown
     zle -R
@@ -543,8 +468,6 @@ _synapse_dropdown_finish() {
     elif [[ -n "$_SYNAPSE_DROPDOWN_INSERT_KEY" ]]; then
         LBUFFER+="$_SYNAPSE_DROPDOWN_INSERT_KEY"
     fi
-    _SYNAPSE_DROPDOWN_SELECTED=""
-    _SYNAPSE_DROPDOWN_INSERT_KEY=""
     _synapse_clear_dropdown
     zle reset-prompt
 }
@@ -558,7 +481,6 @@ _synapse_accept_line() {
     if _synapse_buffer_has_nl_prefix; then
         _synapse_nl_execute
     else
-        _synapse_reset_nl
         zle .accept-line
     fi
 }
@@ -574,15 +496,9 @@ _synapse_tab_accept() {
 
 # --- Dropdown Widgets ---
 
-_synapse_dropdown_down_impl() {
-    (( _SYNAPSE_DROPDOWN_INDEX++ ))
-    if (( _SYNAPSE_DROPDOWN_INDEX >= _SYNAPSE_DROPDOWN_COUNT )); then
-        _SYNAPSE_DROPDOWN_INDEX=0
-    fi
-}
-
 _synapse_dropdown_down() {
-    _synapse_dropdown_down_impl
+    (( _SYNAPSE_DROPDOWN_INDEX++ ))
+    (( _SYNAPSE_DROPDOWN_INDEX >= _SYNAPSE_DROPDOWN_COUNT )) && _SYNAPSE_DROPDOWN_INDEX=0
     _synapse_render_dropdown
     zle -R
 }
@@ -616,9 +532,6 @@ _synapse_dropdown_close_and_insert() {
 
 # precmd: runs before each prompt
 _synapse_precmd() {
-    # Store last exit code
-    _SYNAPSE_LAST_EXIT=$?
-
     # Try to connect/reconnect if needed
     if [[ $_SYNAPSE_CONNECTED -eq 0 ]]; then
         if [[ $_SYNAPSE_DISCONNECT_WARNED -eq 0 ]]; then
@@ -643,8 +556,6 @@ _synapse_precmd() {
         fi
     fi
 
-    # Clear any leftover NL/dropdown state
-    _synapse_reset_nl
     _synapse_clear_dropdown
 }
 
@@ -652,13 +563,10 @@ _synapse_precmd() {
 _synapse_preexec() {
     local cmd="$1"
 
-    # Track recent commands
     _SYNAPSE_RECENT_COMMANDS=("$cmd" "${_SYNAPSE_RECENT_COMMANDS[@]:0:$(( _SYNAPSE_RECENT_CMD_MAX - 1 ))}")
 
-    # Notify daemon so it can trigger spec discovery for unknown commands
     if [[ $_SYNAPSE_CONNECTED -eq 1 ]] && [[ -n "$cmd" ]]; then
-        local escaped_cmd="${cmd//\\/\\\\}"
-        escaped_cmd="${escaped_cmd//\"/\\\"}"
+        local escaped_cmd="$(_synapse_json_escape "$cmd")"
         local escaped_cwd="$(_synapse_json_escape "$PWD")"
         print -u "$_SYNAPSE_SOCKET_FD" "{\"type\":\"command_executed\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"command\":\"${escaped_cmd}\",\"cwd\":\"${escaped_cwd}\"}" 2>/dev/null
     fi
@@ -679,7 +587,6 @@ _synapse_chpwd() {
 _synapse_cleanup() {
     _synapse_disconnect
     _synapse_clear_dropdown
-    _synapse_reset_nl
     add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
     add-zsh-hook -d chpwd _synapse_chpwd 2>/dev/null
@@ -690,7 +597,6 @@ _synapse_cleanup() {
 # --- Setup ---
 
 _synapse_init() {
-    # Generate session ID
     _synapse_generate_session_id
 
     # Register widgets
@@ -702,22 +608,28 @@ _synapse_init() {
     zle -N synapse-dropdown-close-and-insert _synapse_dropdown_close_and_insert
     zle -N accept-line _synapse_accept_line
 
-    # Create dropdown keymap (for NL results)
+    # Create dropdown keymap from scratch (NOT from main) so we don't
+    # inherit accept-line or other widgets that interfere with the modal UI.
     bindkey -D synapse-dropdown &>/dev/null
-    bindkey -N synapse-dropdown main &>/dev/null
+    bindkey -N synapse-dropdown
 
     # Any printable character closes dropdown and inserts
     bindkey -M synapse-dropdown -R ' '-'~' synapse-dropdown-close-and-insert
-    # Re-bind navigation keys after range binding
+    # Navigation (arrow keys)
     local seq
     for seq in '^[[' '^[O'; do
         bindkey -M synapse-dropdown "${seq}B" synapse-dropdown-down
         bindkey -M synapse-dropdown "${seq}A" synapse-dropdown-up
         bindkey -M synapse-dropdown "${seq}C" synapse-dropdown-accept
     done
-    bindkey -M synapse-dropdown '^M' synapse-dropdown-accept     # Enter
+    # Accept
+    bindkey -M synapse-dropdown '^M' synapse-dropdown-accept     # CR (Enter)
+    bindkey -M synapse-dropdown '^J' synapse-dropdown-accept     # NL (Enter)
     bindkey -M synapse-dropdown '\t' synapse-dropdown-accept     # Tab
+    # Dismiss
     bindkey -M synapse-dropdown '^[' synapse-dropdown-dismiss    # Escape
+    bindkey -M synapse-dropdown '^G' synapse-dropdown-dismiss    # Ctrl-G
+    bindkey -M synapse-dropdown '^C' synapse-dropdown-dismiss    # Ctrl-C
 
     # Main keymap: Tab for NL accept / normal completion
     bindkey '\t' synapse-tab-accept
