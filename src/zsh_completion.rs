@@ -5,12 +5,12 @@
 //! and extracts option/flag information — a faster and more reliable
 //! alternative to parsing `--help` text.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::spec::{CommandSpec, OptionSpec, SpecSource};
+use crate::spec::{CommandSpec, OptionSpec, SpecSource, SubcommandSpec};
 
 /// Literal directories to search for zsh completion files.
 const FPATH_DIRS: &[&str] = &[
@@ -21,22 +21,40 @@ const FPATH_DIRS: &[&str] = &[
 /// Parent directory containing versioned zsh function dirs (e.g. `/usr/share/zsh/5.9/functions`).
 const ZSH_SHARE_DIR: &str = "/usr/share/zsh";
 
+/// Resolve fpath directories. Uses `$FPATH` from the environment if available
+/// (the daemon inherits the shell's environment), otherwise falls back to
+/// well-known system directories.
+fn resolve_fpath_dirs() -> Vec<PathBuf> {
+    if let Ok(fpath) = std::env::var("FPATH") {
+        if !fpath.is_empty() {
+            return fpath
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .collect();
+        }
+    }
+    fallback_fpath_dirs()
+}
+
+/// Hardcoded fallback directories when `$FPATH` is not available.
+fn fallback_fpath_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = FPATH_DIRS.iter().map(PathBuf::from).collect();
+    if let Ok(entries) = std::fs::read_dir(ZSH_SHARE_DIR) {
+        for entry in entries.flatten() {
+            dirs.push(entry.path().join("functions"));
+        }
+    }
+    dirs
+}
+
 /// Scan all fpath directories and return the set of command names that have
 /// completion files available. This is just a `readdir` — no file parsing —
 /// so it completes in sub-millisecond time.
 pub fn scan_available_commands() -> std::collections::HashSet<String> {
     let mut commands = std::collections::HashSet::new();
 
-    let mut dirs: Vec<PathBuf> = FPATH_DIRS.iter().map(PathBuf::from).collect();
-
-    // Expand /usr/share/zsh/*/functions
-    if let Ok(entries) = std::fs::read_dir(ZSH_SHARE_DIR) {
-        for entry in entries.flatten() {
-            dirs.push(entry.path().join("functions"));
-        }
-    }
-
-    for dir in &dirs {
+    for dir in resolve_fpath_dirs() {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
@@ -57,22 +75,10 @@ pub fn scan_available_commands() -> std::collections::HashSet<String> {
 pub fn find_completion_file(command: &str) -> Option<PathBuf> {
     let target = format!("_{command}");
 
-    // Check literal directories first.
-    for dir in FPATH_DIRS {
-        let candidate = Path::new(dir).join(&target);
+    for dir in resolve_fpath_dirs() {
+        let candidate = dir.join(&target);
         if candidate.is_file() {
             return Some(candidate);
-        }
-    }
-
-    // Expand /usr/share/zsh/*/functions — iterate version subdirs.
-    if let Ok(entries) = std::fs::read_dir(ZSH_SHARE_DIR) {
-        for entry in entries.flatten() {
-            let functions_dir = entry.path().join("functions");
-            let candidate = functions_dir.join(&target);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
         }
     }
 
@@ -220,9 +226,53 @@ pub fn parse_zsh_completion(command: &str, content: &str) -> CommandSpec {
         });
     }
 
+    // Pass 4: Extract subcommands from commands=(...) array blocks.
+    // Zsh completion files commonly define subcommands like:
+    //   local -a commands=(
+    //       'build:Compile the current package'
+    //       'test:Run tests'
+    //   )
+    static SUBCMD_ENTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
+        // Match 'name:description' entries inside a commands array
+        Regex::new(r"'([\w][\w.-]+):([^']*)'").unwrap()
+    });
+
+    let mut subcommands = Vec::new();
+    let mut seen_subcmds: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut in_commands_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect start of a commands=( block
+        if trimmed.contains("commands=(") || trimmed.contains("commands =(") {
+            in_commands_block = true;
+        }
+
+        if in_commands_block {
+            for caps in SUBCMD_ENTRY_RE.captures_iter(line) {
+                let name = caps.get(1).unwrap().as_str().to_string();
+                let desc = caps.get(2).unwrap().as_str().trim().to_string();
+                if !seen_subcmds.contains(&name) {
+                    seen_subcmds.insert(name.clone());
+                    subcommands.push(SubcommandSpec {
+                        name,
+                        description: if desc.is_empty() { None } else { Some(desc) },
+                        ..Default::default()
+                    });
+                }
+            }
+            // Detect end of block: a line with ) that isn't the opening =(
+            if trimmed.ends_with(')') && !trimmed.contains("=(") {
+                in_commands_block = false;
+            }
+        }
+    }
+
     CommandSpec {
         name: command.to_string(),
         options,
+        subcommands,
         source: SpecSource::Discovered,
         ..Default::default()
     }
@@ -443,5 +493,130 @@ _arguments -s -S : $args && ret=0
         }
         // Non-existent command should return None.
         assert!(find_completion_file("nonexistent_command_xyz_12345").is_none());
+    }
+
+    #[test]
+    fn test_resolve_fpath_dirs_uses_env() {
+        use std::sync::Mutex;
+        static FPATH_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = FPATH_LOCK.lock().unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir1 = tmp.path().join("dir1");
+        let dir2 = tmp.path().join("dir2");
+        std::fs::create_dir_all(&dir1).unwrap();
+        std::fs::create_dir_all(&dir2).unwrap();
+
+        let fpath_val = format!("{}:{}", dir1.display(), dir2.display());
+        unsafe { std::env::set_var("FPATH", &fpath_val) };
+
+        let dirs = resolve_fpath_dirs();
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], dir1);
+        assert_eq!(dirs[1], dir2);
+
+        unsafe { std::env::remove_var("FPATH") };
+    }
+
+    #[test]
+    fn test_resolve_fpath_dirs_fallback_when_empty() {
+        use std::sync::Mutex;
+        static FPATH_LOCK2: Mutex<()> = Mutex::new(());
+        let _guard = FPATH_LOCK2.lock().unwrap();
+
+        unsafe { std::env::set_var("FPATH", "") };
+        let dirs = resolve_fpath_dirs();
+        // Should fall back to hardcoded dirs
+        assert!(!dirs.is_empty(), "fallback should produce non-empty dirs");
+        unsafe { std::env::remove_var("FPATH") };
+    }
+
+    #[test]
+    fn test_scan_with_fpath_env() {
+        use std::sync::Mutex;
+        static FPATH_LOCK3: Mutex<()> = Mutex::new(());
+        let _guard = FPATH_LOCK3.lock().unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        // Create fake completion files
+        std::fs::write(tmp.path().join("_mytool"), "#compdef mytool\n").unwrap();
+        std::fs::write(tmp.path().join("_othertool"), "#compdef othertool\n").unwrap();
+        std::fs::write(tmp.path().join("not_a_completion"), "").unwrap();
+
+        unsafe { std::env::set_var("FPATH", tmp.path().to_str().unwrap()) };
+        let commands = scan_available_commands();
+        assert!(commands.contains("mytool"), "should find _mytool");
+        assert!(commands.contains("othertool"), "should find _othertool");
+        assert!(
+            !commands.contains("not_a_completion"),
+            "should skip files without _ prefix"
+        );
+        unsafe { std::env::remove_var("FPATH") };
+    }
+
+    #[test]
+    fn test_parse_subcommands_from_commands_array() {
+        let content = r#"
+_myapp() {
+    local -a commands=(
+        'build:Compile the project'
+        'test:Run the tests'
+        'deploy:Deploy to production'
+    )
+    _describe 'command' commands
+}
+"#;
+        let spec = parse_zsh_completion("myapp", content);
+        assert_eq!(spec.subcommands.len(), 3);
+
+        let names: Vec<&str> = spec.subcommands.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"build"), "missing build: {names:?}");
+        assert!(names.contains(&"test"), "missing test: {names:?}");
+        assert!(names.contains(&"deploy"), "missing deploy: {names:?}");
+
+        let build = spec.subcommands.iter().find(|s| s.name == "build").unwrap();
+        assert_eq!(build.description.as_deref(), Some("Compile the project"));
+    }
+
+    #[test]
+    fn test_parse_mixed_options_and_subcommands() {
+        let content = r#"
+_mytool() {
+    _arguments -C \
+        '(-v --verbose)'{-v,--verbose}'[Enable verbose output]' \
+        '1:command:->cmd'
+
+    case $state in
+        (cmd)
+            local -a commands=(
+                'serve:Start the server'
+                'init:Initialize config'
+            )
+            _describe 'command' commands
+            ;;
+    esac
+}
+"#;
+        let spec = parse_zsh_completion("mytool", content);
+        assert!(!spec.options.is_empty(), "should have options");
+        assert!(!spec.subcommands.is_empty(), "should have subcommands");
+        assert_eq!(spec.subcommands.len(), 2);
+        assert_eq!(spec.subcommands[0].name, "serve");
+    }
+
+    #[test]
+    fn test_htop_has_no_subcommands() {
+        let content = r#"#compdef htop pcp-htop
+args=(
+  '(-d --delay)'{-d+,--delay=}'[specify update frequency]'
+  '(-t --tree)'{-t,--tree}'[show tree view]'
+)
+_arguments -s -S : $args && ret=0
+"#;
+        let spec = parse_zsh_completion("htop", content);
+        assert!(
+            spec.subcommands.is_empty(),
+            "htop should have no subcommands"
+        );
     }
 }
