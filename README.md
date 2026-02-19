@@ -137,7 +137,7 @@ Spec resolution (for the `Complete` handler):
 
 1. Project auto-generated specs (Makefile, package.json, etc.)
 
-Discovery of unknown commands (triggered by `command_executed`) writes compsys completion files directly to `~/.local/share/synapse/completions/`. The compsys file IS the persistent cache.
+Discovery of unknown commands (triggered by `command_executed`) writes compsys completion files directly to `~/.synapse/completions/`. The compsys file IS the persistent cache.
 
 ## Development
 
