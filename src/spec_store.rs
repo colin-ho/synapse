@@ -63,6 +63,8 @@ pub struct SpecStore {
     zsh_index: HashSet<String>,
     /// Directory for generated compsys completion files.
     completions_dir: PathBuf,
+    /// Write compsys files automatically when project specs are generated.
+    auto_regenerate: bool,
 }
 
 impl SpecStore {
@@ -97,7 +99,13 @@ impl SpecStore {
             llm_client,
             zsh_index,
             completions_dir,
+            auto_regenerate: false,
         }
+    }
+
+    pub fn with_auto_regenerate(mut self, enabled: bool) -> Self {
+        self.auto_regenerate = enabled;
+        self
     }
 
     /// Look up a spec by command name. Only returns project-level specs
@@ -575,6 +583,32 @@ impl SpecStore {
             }
         }
 
+        // Write compsys completion files for project specs on cache miss.
+        if self.auto_regenerate {
+            let dir = self.completions_dir.clone();
+            for spec in specs.values() {
+                // Don't overwrite existing system completions.
+                if self.zsh_index.contains(&spec.name) {
+                    continue;
+                }
+                match crate::compsys_export::write_completion_file(spec, &dir) {
+                    Ok(path) => {
+                        tracing::debug!(
+                            "Auto-wrote compsys completion for {} at {}",
+                            spec.name,
+                            path.display()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to auto-write compsys completion for {}: {e}",
+                            spec.name
+                        );
+                    }
+                }
+            }
+        }
+
         let specs = Arc::new(specs);
         self.project_cache.insert(key, specs.clone()).await;
         specs
@@ -818,5 +852,44 @@ Released under the GNU GPLv2+.
             sub_names.contains(&"compose"),
             "missing 'compose': {sub_names:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_auto_regenerate_writes_compsys_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let completions_dir = tmp.path().join("completions");
+
+        // Create a justfile in cwd (less likely than `make` to have system completions)
+        let cwd = tmp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("justfile"), "build:\n\techo ok\n").unwrap();
+
+        let config = SpecConfig::default();
+        let store = SpecStore::with_completions_dir(config, None, completions_dir.clone())
+            .with_auto_regenerate(true);
+
+        // Trigger cache population
+        let specs = store.lookup_all_project_specs(&cwd).await;
+        assert!(!specs.is_empty(), "should have project specs");
+
+        // If `just` is not in the system zsh index, the compsys file should be written.
+        // If it IS in the index, auto_regenerate correctly skips it to avoid
+        // overwriting system completions.
+        let just_file = completions_dir.join("_just");
+        if !store.zsh_index.contains("just") {
+            assert!(
+                just_file.exists(),
+                "auto_regenerate should write _just compsys file"
+            );
+            let content = std::fs::read_to_string(&just_file).unwrap();
+            assert!(
+                content.contains("#compdef just"),
+                "should be a valid compsys file"
+            );
+            assert!(
+                content.contains("compadd"),
+                "should contain generator-based compadd"
+            );
+        }
     }
 }

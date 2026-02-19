@@ -709,6 +709,14 @@ _synapse_preexec() {
     _synapse_clear_dropdown
 }
 
+# chpwd: runs when the working directory changes
+_synapse_chpwd() {
+    if [[ $_SYNAPSE_CONNECTED -eq 1 ]]; then
+        local escaped_cwd="$(_synapse_json_escape "$PWD")"
+        print -u "$_SYNAPSE_SOCKET_FD" "{\"type\":\"cwd_changed\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"cwd\":\"${escaped_cwd}\"}" 2>/dev/null
+    fi
+}
+
 # --- Cleanup (for dev reload) ---
 
 _synapse_cleanup() {
@@ -717,6 +725,7 @@ _synapse_cleanup() {
     _synapse_reset_nl
     add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
+    add-zsh-hook -d chpwd _synapse_chpwd 2>/dev/null
     bindkey -D synapse-dropdown &>/dev/null
     unset _SYNAPSE_LOADED
 }
@@ -760,6 +769,7 @@ _synapse_init() {
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _synapse_precmd
     add-zsh-hook preexec _synapse_preexec
+    add-zsh-hook chpwd _synapse_chpwd
 
     # Initial connection
     _synapse_ensure_daemon

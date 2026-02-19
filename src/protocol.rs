@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub enum Request {
     NaturalLanguage(NaturalLanguageRequest),
     CommandExecuted(CommandExecutedReport),
+    CwdChanged(CwdChangedReport),
     Complete(CompleteRequest),
     Ping,
     Shutdown,
@@ -21,6 +22,12 @@ pub struct CommandExecutedReport {
     pub session_id: String,
     pub command: String,
     #[serde(default)]
+    pub cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CwdChangedReport {
+    pub session_id: String,
     pub cwd: String,
 }
 
@@ -382,6 +389,19 @@ mod tests {
                 assert_eq!(report.cwd, "");
             }
             _ => panic!("Expected CommandExecuted request"),
+        }
+    }
+
+    #[test]
+    fn test_cwd_changed_deserialization() {
+        let json = r#"{"type":"cwd_changed","session_id":"abc","cwd":"/home/user/project"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::CwdChanged(report) => {
+                assert_eq!(report.session_id, "abc");
+                assert_eq!(report.cwd, "/home/user/project");
+            }
+            _ => panic!("Expected CwdChanged request"),
         }
     }
 }
