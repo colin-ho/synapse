@@ -1,4 +1,3 @@
-pub mod completion_context;
 pub mod compsys_export;
 pub mod config;
 pub mod daemon;
@@ -7,7 +6,6 @@ pub mod logging;
 pub mod nl_cache;
 pub mod project;
 pub mod protocol;
-pub mod session;
 pub mod spec;
 pub mod spec_autogen;
 pub mod spec_store;

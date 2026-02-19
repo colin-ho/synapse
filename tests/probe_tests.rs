@@ -46,13 +46,7 @@ async fn stop_child(child: &mut Child) {
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
-#[tokio::test]
-async fn test_probe_end_to_end_ping_and_command_executed() {
-    let bin = synapse_bin();
-    let temp = tempfile::tempdir().unwrap();
-    let socket_path = temp.path().join("probe.sock");
-
-    let config_home = temp.path().join("config");
+fn write_test_config(config_home: &Path) {
     let config_dir = config_home.join("synapse");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
@@ -67,18 +61,31 @@ discover_from_help = false
 "#,
     )
     .unwrap();
+}
 
-    let mut daemon = Command::new(&bin)
+fn spawn_daemon(bin: &Path, socket_path: &Path, config_home: &Path) -> Child {
+    Command::new(bin)
         .arg("start")
         .arg("--foreground")
         .arg("--socket-path")
-        .arg(&socket_path)
-        .env("XDG_CONFIG_HOME", &config_home)
+        .arg(socket_path)
+        .env("XDG_CONFIG_HOME", config_home)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .spawn()
-        .expect("Failed to start synapse daemon");
+        .expect("Failed to start synapse daemon")
+}
+
+#[tokio::test]
+async fn test_probe_end_to_end_ping_and_command_executed() {
+    let bin = synapse_bin();
+    let temp = tempfile::tempdir().unwrap();
+    let socket_path = temp.path().join("probe.sock");
+
+    let config_home = temp.path().join("config");
+    write_test_config(&config_home);
+    let mut daemon = spawn_daemon(&bin, &socket_path, &config_home);
 
     wait_for_socket(&socket_path).await;
 
@@ -124,32 +131,8 @@ async fn test_probe_run_generator_returns_complete_result() {
     let socket_path = temp.path().join("run-gen.sock");
 
     let config_home = temp.path().join("config");
-    let config_dir = config_home.join("synapse");
-    std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(
-        config_dir.join("config.toml"),
-        r#"
-[llm]
-enabled = false
-natural_language = false
-
-[spec]
-discover_from_help = false
-"#,
-    )
-    .unwrap();
-
-    let mut daemon = Command::new(&bin)
-        .arg("start")
-        .arg("--foreground")
-        .arg("--socket-path")
-        .arg(&socket_path)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("Failed to start synapse daemon");
+    write_test_config(&config_home);
+    let mut daemon = spawn_daemon(&bin, &socket_path, &config_home);
 
     wait_for_socket(&socket_path).await;
 

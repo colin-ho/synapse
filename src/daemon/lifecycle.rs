@@ -7,7 +7,6 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::logging::InteractionLogger;
-use crate::session::SessionManager;
 use crate::spec_store::SpecStore;
 
 use super::server::run_server;
@@ -203,7 +202,6 @@ pub(super) async fn start_daemon(
             .with_auto_regenerate(config.completions.auto_regenerate),
     );
 
-    let session_manager = SessionManager::new();
     let interaction_logger = InteractionLogger::new(
         config.interaction_log_path(),
         config.logging.max_log_size_mb,
@@ -216,7 +214,6 @@ pub(super) async fn start_daemon(
     let state = Arc::new(
         RuntimeState::new(
             spec_store,
-            session_manager,
             interaction_logger,
             config.clone(),
             llm_client,
@@ -302,74 +299,24 @@ pub(super) async fn run_generator_query(
 ) -> anyhow::Result<()> {
     let config = Config::load();
     let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
-
-    // Try to connect to running daemon first
     let socket_path = config.socket_path();
-    if socket_path.exists() {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-        if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
-            let mut request_obj = serde_json::json!({
-                "type": "run_generator",
-                "command": command,
-                "cwd": cwd.to_string_lossy(),
-            });
-            if let Some(ref sp) = split_on {
-                request_obj["split_on"] = serde_json::Value::String(sp.clone());
-            }
-            if let Some(ref sp) = strip_prefix {
-                request_obj["strip_prefix"] = serde_json::Value::String(sp.clone());
-            }
-            let mut request_line = serde_json::to_string(&request_obj)?;
-            request_line.push('\n');
-            stream.write_all(request_line.as_bytes()).await?;
-
-            let (reader, _) = stream.into_split();
-            let mut reader = BufReader::new(reader);
-            let mut line = String::new();
-            if let Ok(Ok(n)) = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                reader.read_line(&mut line),
-            )
-            .await
-            {
-                if n > 0 {
-                    print_complete_result_values(line.trim());
-                    return Ok(());
-                }
-            }
-        }
+    let mut request = serde_json::json!({
+        "type": "run_generator",
+        "command": command,
+        "cwd": cwd.to_string_lossy(),
+    });
+    if let Some(ref value) = split_on {
+        request["split_on"] = serde_json::Value::String(value.clone());
+    }
+    if let Some(ref value) = strip_prefix {
+        request["strip_prefix"] = serde_json::Value::String(value.clone());
     }
 
-    // Offline fallback: run the generator command directly with timeout
-    let timeout = std::time::Duration::from_millis(crate::config::GENERATOR_TIMEOUT_MS);
-    let result = tokio::time::timeout(
-        timeout,
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .current_dir(&cwd)
-            .output(),
-    )
-    .await;
-
-    if let Ok(Ok(output)) = result {
-        if output.status.success() {
-            let split_on = split_on.as_deref().unwrap_or("\n");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for item in stdout.split(split_on) {
-                let item = item.trim();
-                let item = match strip_prefix.as_deref() {
-                    Some(p) => item.strip_prefix(p).unwrap_or(item),
-                    None => item,
-                };
-                if !item.is_empty() {
-                    println!("{item}");
-                }
-            }
-        }
-    }
-
+    let line =
+        super::rpc::request_tsv_json(&socket_path, &request, std::time::Duration::from_secs(5))
+            .await?;
+    print_complete_result_values(&line);
     Ok(())
 }
 
@@ -395,98 +342,34 @@ pub(super) async fn run_complete_query(
 ) -> anyhow::Result<()> {
     let config = Config::load();
     let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
-
-    // Try to connect to running daemon first
     let socket_path = config.socket_path();
-    if socket_path.exists() {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let request = serde_json::json!({
+        "type": "complete",
+        "command": command,
+        "context": context,
+        "cwd": cwd.to_string_lossy(),
+    });
 
-        if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
-            let request = serde_json::json!({
-                "type": "complete",
-                "command": command,
-                "context": context,
-                "cwd": cwd.to_string_lossy(),
-            });
-            let mut request_line = serde_json::to_string(&request)?;
-            request_line.push('\n');
-            stream.write_all(request_line.as_bytes()).await?;
-
-            let (reader, _) = stream.into_split();
-            let mut reader = BufReader::new(reader);
-            let mut line = String::new();
-            let timeout = std::time::Duration::from_secs(5);
-            match tokio::time::timeout(timeout, reader.read_line(&mut line)).await {
-                Ok(Ok(n)) if n > 0 => {
-                    let line = line.trim();
-                    // Parse TSV: complete_result\tN\tval1\tdesc1\tval2\tdesc2...
-                    let fields: Vec<&str> = line.split('\t').collect();
-                    if fields.first() == Some(&"complete_result") {
-                        let count: usize = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-                        for i in 0..count {
-                            let val = fields.get(2 + i * 2).unwrap_or(&"");
-                            let desc = fields.get(3 + i * 2).unwrap_or(&"");
-                            if desc.is_empty() {
-                                println!("{val}");
-                            } else {
-                                println!("{val}\t{desc}");
-                            }
-                        }
-                    }
-                    return Ok(());
-                }
-                _ => {
-                    // Daemon didn't respond, fall through to offline mode
-                }
-            }
-        }
-    }
-
-    // Offline fallback: use spec store directly
-    let spec_store = SpecStore::new(config.spec.clone(), None);
-    if let Some(spec) = spec_store.lookup(&command, &cwd).await {
-        // Walk context to find the right level
-        let mut current_subs = &spec.subcommands;
-        let mut current_args = &spec.args;
-
-        for ctx_part in &context {
-            if ctx_part == "target" || ctx_part == "subcommand" {
-                for sub in current_subs {
-                    if let Some(ref desc) = sub.description {
-                        println!("{}\t{desc}", sub.name);
-                    } else {
-                        println!("{}", sub.name);
-                    }
-                }
-                return Ok(());
-            }
-            if let Some(sub) = current_subs
-                .iter()
-                .find(|s| s.name == *ctx_part || s.aliases.iter().any(|a| a == ctx_part))
-            {
-                current_subs = &sub.subcommands;
-                current_args = &sub.args;
-            }
-        }
-
-        // Return subcommands if at current level
-        if !current_subs.is_empty() {
-            for sub in current_subs {
-                if let Some(ref desc) = sub.description {
-                    println!("{}\t{desc}", sub.name);
-                } else {
-                    println!("{}", sub.name);
-                }
-            }
-        }
-
-        // Return static suggestions from args
-        for arg in current_args {
-            for s in &arg.suggestions {
-                println!("{s}");
-            }
-        }
-    }
-
+    let line =
+        super::rpc::request_tsv_json(&socket_path, &request, std::time::Duration::from_secs(5))
+            .await?;
+    print_complete_result_values_with_descriptions(&line);
     Ok(())
+}
+
+fn print_complete_result_values_with_descriptions(line: &str) {
+    let fields: Vec<&str> = line.split('\t').collect();
+    if fields.first() != Some(&"complete_result") {
+        return;
+    }
+    let count: usize = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    for i in 0..count {
+        let val = fields.get(2 + i * 2).unwrap_or(&"");
+        let desc = fields.get(3 + i * 2).unwrap_or(&"");
+        if desc.is_empty() {
+            println!("{val}");
+        } else {
+            println!("{val}\t{desc}");
+        }
+    }
 }

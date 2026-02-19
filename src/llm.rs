@@ -724,60 +724,19 @@ fn extract_command(response: &str) -> String {
 /// Extract multiple shell commands from an LLM response.
 /// Handles numbered lists, bullets, markdown fences, and bare commands.
 fn extract_commands(response: &str, max: usize) -> Vec<String> {
-    use std::sync::LazyLock;
-    static NUM_PREFIX: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"^\d+\.\s+").unwrap());
-
-    let trimmed = response.trim();
-
-    // If wrapped in a single fenced block, extract the block content and parse lines within
-    let content = extract_fenced_block(trimmed).unwrap_or(trimmed);
-
-    let mut commands = Vec::new();
-
-    for line in content.lines() {
-        let mut line = line.trim();
-        if line.is_empty() || line.starts_with("```") {
-            continue;
-        }
-
-        // Strip numbered prefix: "1. ", "2. ", "10. ", etc. using regex
-        if let Some(m) = NUM_PREFIX.find(line) {
-            line = &line[m.end()..];
-            line = line.trim();
-        }
-
-        // Strip bullet prefix
-        if let Some(rest) = line.strip_prefix("- ") {
-            line = rest.trim();
-        }
-
-        // Strip backtick wrapping
-        line = line.trim_matches('`').trim();
-
-        // Skip comment lines and empty results
-        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
-            continue;
-        }
-
-        let candidate = line.to_string();
-        if !commands.contains(&candidate) {
-            commands.push(candidate);
-            if commands.len() >= max {
-                break;
-            }
-        }
-    }
+    let commands = parse_unique_lines(response, max, FenceMode::PreferFirstFence, true, false);
 
     // Fallback: if parsing found nothing, try the old single-command extraction
     if commands.is_empty() {
         let single = extract_command(response);
-        if !single.is_empty() {
-            commands.push(single);
+        if single.is_empty() {
+            Vec::new()
+        } else {
+            vec![single]
         }
+    } else {
+        commands
     }
-
-    commands
 }
 
 /// Check if a command contains potentially destructive operations.
@@ -873,30 +832,55 @@ fn glob_matches(text: &str, pattern: &str) -> bool {
 }
 
 fn parse_argument_values(response: &str, max_values: usize) -> Vec<String> {
+    parse_unique_lines(
+        response,
+        max_values,
+        FenceMode::SkipFencedBlocks,
+        false,
+        true,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum FenceMode {
+    PreferFirstFence,
+    SkipFencedBlocks,
+}
+
+fn parse_unique_lines(
+    response: &str,
+    max_values: usize,
+    fence_mode: FenceMode,
+    skip_comments: bool,
+    strip_quotes: bool,
+) -> Vec<String> {
+    let trimmed = response.trim();
+    let content = match fence_mode {
+        FenceMode::PreferFirstFence => extract_fenced_block(trimmed).unwrap_or(trimmed),
+        FenceMode::SkipFencedBlocks => trimmed,
+    };
+
     let mut values = Vec::new();
     let mut in_fence = false;
 
-    for raw_line in response.lines() {
+    for raw_line in content.lines() {
         let mut line = raw_line.trim();
-        if line.starts_with("```") {
+
+        if matches!(fence_mode, FenceMode::SkipFencedBlocks) && line.starts_with("```") {
             in_fence = !in_fence;
             continue;
         }
-        if in_fence || line.is_empty() {
+        if in_fence || line.is_empty() || line.starts_with("```") {
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("- ") {
-            line = rest.trim();
-        } else if let Some((num, rest)) = line.split_once(". ") {
-            if num.parse::<usize>().is_ok() {
-                line = rest.trim();
-            }
+        line = strip_list_marker(line).trim_matches('`').trim();
+        if strip_quotes {
+            line = strip_wrapping_quotes(line);
         }
-
-        line = line.trim_matches('`').trim();
-        line = strip_wrapping_quotes(line);
-
+        if skip_comments && (line.starts_with('#') || line.starts_with("//")) {
+            continue;
+        }
         if line.is_empty() {
             continue;
         }
@@ -911,6 +895,28 @@ fn parse_argument_values(response: &str, max_values: usize) -> Vec<String> {
     }
 
     values
+}
+
+fn strip_list_marker(line: &str) -> &str {
+    let line = if let Some(rest) = line.strip_prefix("- ") {
+        rest.trim()
+    } else {
+        line
+    };
+    strip_numeric_prefix(line).trim()
+}
+
+fn strip_numeric_prefix(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
+        &line[i + 2..]
+    } else {
+        line
+    }
 }
 
 fn parse_single_shell_line(text: &str) -> String {

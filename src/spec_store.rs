@@ -181,7 +181,7 @@ impl SpecStore {
     /// Returns immediately — a compsys completion file will be written
     /// to the completions directory when discovery completes.
     pub async fn trigger_discovery(self: &Arc<Self>, command: &str, cwd: Option<&Path>) {
-        if !self.config.discover_from_help {
+        if !self.can_discover_command(command) {
             return;
         }
 
@@ -190,14 +190,6 @@ impl SpecStore {
 
         // Skip if a completion already exists (system or generated)
         if self.has_completion(&command) {
-            return;
-        }
-
-        // Check blocklist
-        if DISCOVERY_BLOCKLIST.contains(&command.as_str()) {
-            return;
-        }
-        if self.config.discover_blocklist.contains(&command) {
             return;
         }
 
@@ -245,6 +237,44 @@ impl SpecStore {
             .await;
     }
 
+    fn can_discover_command(&self, command: &str) -> bool {
+        self.config.discover_from_help
+            && !DISCOVERY_BLOCKLIST.contains(&command)
+            && !self
+                .config
+                .discover_blocklist
+                .iter()
+                .any(|blocked| blocked == command)
+    }
+
+    async fn discover_with_generator(&self, command: &str) -> Option<CommandSpec> {
+        let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
+        let mut spec = crate::zsh_completion::try_completion_generator(command, timeout).await?;
+        spec.source = SpecSource::Discovered;
+        tracing::info!("Completion generator produced spec for {command}");
+        Some(spec)
+    }
+
+    async fn discover_with_help(
+        &self,
+        command: &str,
+        cwd: Option<&Path>,
+        llm_budget: Option<&AtomicUsize>,
+    ) -> Option<CommandSpec> {
+        let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
+        let args: Vec<String> = Vec::new();
+        let help_text = self.fetch_help_output(command, &args, timeout, cwd).await?;
+
+        let mut spec = if let Some(budget) = llm_budget {
+            self.parse_with_llm_or_regex(command, &help_text, budget)
+                .await
+        } else {
+            parse_help_basic(command, &help_text)
+        };
+        spec.source = SpecSource::Discovered;
+        (!spec.subcommands.is_empty() || !spec.options.is_empty()).then_some(spec)
+    }
+
     /// Run fast discovery inline and return whether a spec was produced.
     /// Tries completion generators first (structured), then `--help` regex.
     /// No LLM, no subcommand recursion — suitable for the dropdown path.
@@ -266,49 +296,20 @@ impl SpecStore {
         }
 
         // Same guards as trigger_discovery.
-        if !self.config.discover_from_help {
-            return false;
-        }
-        if DISCOVERY_BLOCKLIST.contains(&command) {
-            return false;
-        }
-        if self
-            .config
-            .discover_blocklist
-            .contains(&command.to_string())
-        {
+        if !self.can_discover_command(command) {
             return false;
         }
 
         // Strategy 1: Try completion generator (structured output from the tool itself).
-        let gen_timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
-        if let Some(mut spec) =
-            crate::zsh_completion::try_completion_generator(command, gen_timeout).await
-        {
-            spec.source = SpecSource::Discovered;
-            tracing::info!("Completion generator produced spec for {command}");
+        if let Some(spec) = self.discover_with_generator(command).await {
             self.save_discovered_spec(command, &spec).await;
             return true;
         }
 
         // Strategy 2: Parse --help with regex (no LLM, no subcommand recursion).
-        let help_timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
-        let args: Vec<String> = Vec::new();
-        let help_text = match self
-            .fetch_help_output(command, &args, help_timeout, cwd)
-            .await
-        {
-            Some(text) => text,
-            None => return false,
-        };
-
-        let mut spec = parse_help_basic(command, &help_text);
-        spec.source = SpecSource::Discovered;
-
-        if spec.subcommands.is_empty() && spec.options.is_empty() {
+        let Some(spec) = self.discover_with_help(command, cwd, None).await else {
             return false;
-        }
-
+        };
         self.save_discovered_spec(command, &spec).await;
         tracing::info!("Fast-discovered spec for {command}");
         true
@@ -317,29 +318,13 @@ impl SpecStore {
     /// Run the actual discovery process for a command.
     async fn discover_command_impl(&self, command: &str, cwd: Option<&Path>) {
         // Strategy 1: Try completion generator (structured output from the tool itself).
-        let gen_timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
-        if let Some(mut spec) =
-            crate::zsh_completion::try_completion_generator(command, gen_timeout).await
-        {
-            spec.source = SpecSource::Discovered;
-            tracing::info!("Completion generator produced spec for {command}");
+        if let Some(spec) = self.discover_with_generator(command).await {
             self.save_discovered_spec(command, &spec).await;
             tracing::info!("Discovered spec for {command}");
             return;
         }
 
         // Strategy 2: Parse --help output (LLM then regex fallback).
-        let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
-        let args: Vec<String> = Vec::new();
-
-        let help_text = match self.fetch_help_output(command, &args, timeout, cwd).await {
-            Some(text) => text,
-            None => {
-                tracing::debug!("No help output for {command}");
-                return;
-            }
-        };
-
         let llm_budget = AtomicUsize::new(
             self.llm_client
                 .as_ref()
@@ -347,16 +332,13 @@ impl SpecStore {
                 .unwrap_or(0),
         );
 
-        let mut spec = self
-            .parse_with_llm_or_regex(command, &help_text, &llm_budget)
-            .await;
-        spec.source = SpecSource::Discovered;
-
-        // Skip if we got nothing useful
-        if spec.subcommands.is_empty() && spec.options.is_empty() {
+        let Some(mut spec) = self
+            .discover_with_help(command, cwd, Some(&llm_budget))
+            .await
+        else {
             tracing::debug!("No useful spec data from --help for {command}");
             return;
-        }
+        };
 
         // Recurse into subcommands if configured
         if crate::config::DISCOVER_MAX_DEPTH > 0 && !spec.subcommands.is_empty() {

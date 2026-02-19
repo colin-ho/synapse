@@ -40,12 +40,11 @@ typeset -g _SYNAPSE_DROPDOWN_INSERT_KEY=""
 # --- Natural Language State ---
 typeset -gi _SYNAPSE_NL_MODE=0
 typeset -g _SYNAPSE_NL_PREFIX="?"
-typeset -g _SYNAPSE_ASYNC_BUFFER=""
 
 # --- Modules ---
 zmodload zsh/net/socket 2>/dev/null || { return; }
 zmodload zsh/zle 2>/dev/null || { return; }
-zmodload zsh/system 2>/dev/null  # for sysread/syswrite
+zmodload zsh/system 2>/dev/null  # for zsystem flock
 zmodload zsh/datetime 2>/dev/null  # for EPOCHSECONDS
 
 # --- Helpers ---
@@ -155,22 +154,16 @@ _synapse_connect() {
     _SYNAPSE_SOCKET_FD="$REPLY"
     _SYNAPSE_CONNECTED=1
     _SYNAPSE_REQUEST_FAILURES=0
-    _SYNAPSE_ASYNC_BUFFER=""
-
-    # Register async handler for pushed updates (NL responses)
-    zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler
 
     return 0
 }
 
 _synapse_disconnect() {
     if [[ -n "$_SYNAPSE_SOCKET_FD" ]]; then
-        zle -F "$_SYNAPSE_SOCKET_FD" 2>/dev/null  # Unregister handler
         exec {_SYNAPSE_SOCKET_FD}>&- 2>/dev/null   # Close fd
         _SYNAPSE_SOCKET_FD=""
     fi
     _SYNAPSE_CONNECTED=0
-    _SYNAPSE_ASYNC_BUFFER=""
     POSTDISPLAY=""
 }
 
@@ -209,9 +202,6 @@ _synapse_request() {
     [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return 1
     [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return 1
 
-    # Temporarily disable async fd handler while waiting for this request's response.
-    zle -F "$_SYNAPSE_SOCKET_FD" 2>/dev/null
-
     # Write request
     print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || {
         _synapse_disconnect
@@ -237,7 +227,6 @@ _synapse_request() {
             fi
 
             _SYNAPSE_REQUEST_FAILURES=0
-            zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler 2>/dev/null
             echo "$response"
             return 0
         fi
@@ -248,8 +237,6 @@ _synapse_request() {
     (( _SYNAPSE_REQUEST_FAILURES++ ))
     if (( _SYNAPSE_REQUEST_FAILURES >= 3 )); then
         _synapse_disconnect
-    else
-        zle -F "$_SYNAPSE_SOCKET_FD" _synapse_async_handler 2>/dev/null
     fi
 
     return 1
@@ -311,33 +298,6 @@ _synapse_build_nl_request() {
     _synapse_json_common "$2"
 
     echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${_sj_cwd}\",\"recent_commands\":${_sj_recent},\"env_hints\":${_sj_env}}"
-}
-
-# --- Async Handler ---
-
-# Called by zle -F when the daemon pushes data
-_synapse_async_handler() {
-    local fd="$1"
-
-    # Check for error condition
-    if [[ "$2" == *err* ]] || [[ "$2" == *hup* ]]; then
-        _synapse_disconnect
-        return
-    fi
-
-    # Read available bytes with sysread
-    local raw_data=""
-    if sysread -i "$fd" -c 4096 raw_data 2>/dev/null; then
-        _SYNAPSE_ASYNC_BUFFER+="$raw_data"
-        while [[ "$_SYNAPSE_ASYNC_BUFFER" == *$'\n'* ]]; do
-            local line="${_SYNAPSE_ASYNC_BUFFER%%$'\n'*}"
-            _SYNAPSE_ASYNC_BUFFER="${_SYNAPSE_ASYNC_BUFFER#*$'\n'}"
-            # Discard unsolicited frames (no ghost text to update)
-        done
-    else
-        # EOF or read error — daemon connection lost
-        _synapse_disconnect
-    fi
 }
 
 # --- Dropdown Rendering (NL results) ---
@@ -495,12 +455,19 @@ _synapse_parse_suggestion_list() {
 
 # --- NL Translation ---
 
+# Show a one-line status message under the prompt using a highlight color.
+_synapse_set_status_message() {
+    local text="$1"
+    local color="${2:-8}"
+    POSTDISPLAY=$'\n'"  ${text}"
+    local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
+    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=${color}")
+}
+
 # Mark NL mode active and show hint
 _synapse_nl_suggest() {
     _SYNAPSE_NL_MODE=1
-    POSTDISPLAY=$'\n'"  > press Enter to translate"
-    local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
-    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=8")
+    _synapse_set_status_message "> press Enter to translate" 8
 }
 
 # Execute NL query synchronously
@@ -515,9 +482,7 @@ _synapse_nl_execute() {
     fi
 
     # Show thinking indicator
-    POSTDISPLAY=$'\n'"  thinking..."
-    local base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
-    region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=8")
+    _synapse_set_status_message "thinking..." 8
     zle -R
 
     # Build and send NL request
@@ -526,9 +491,7 @@ _synapse_nl_execute() {
 
     local response
     response="$(_synapse_request "$json" "" 30.0)" || {
-        POSTDISPLAY=$'\n'"  [timed out waiting for translation]"
-        base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
-        region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=1")
+        _synapse_set_status_message "[timed out waiting for translation]" 1
         zle -R
         _synapse_reset_nl
         return
@@ -537,18 +500,14 @@ _synapse_nl_execute() {
     local -a _tsv_fields
     IFS=$'\t' read -rA _tsv_fields <<< "$response"
     if [[ "${_tsv_fields[1]}" == "error" ]]; then
-        POSTDISPLAY=$'\n'"  [${_tsv_fields[2]}]"
-        base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
-        region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=1")
+        _synapse_set_status_message "[${_tsv_fields[2]}]" 1
         zle -R
         _synapse_reset_nl
         return
     fi
 
     if [[ "${_tsv_fields[1]}" != "list" ]]; then
-        POSTDISPLAY=$'\n'"  [unexpected NL response]"
-        base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
-        region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=1")
+        _synapse_set_status_message "[unexpected NL response]" 1
         zle -R
         _synapse_reset_nl
         return
@@ -557,9 +516,7 @@ _synapse_nl_execute() {
     _synapse_parse_suggestion_list "$response"
 
     if (( _SYNAPSE_DROPDOWN_COUNT == 0 )); then
-        POSTDISPLAY=$'\n'"  [no results]"
-        base_offset=$(( ${#BUFFER} + ${#PREDISPLAY} ))
-        region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=1")
+        _synapse_set_status_message "[no results]" 1
         zle -R
         _synapse_reset_nl
         return
