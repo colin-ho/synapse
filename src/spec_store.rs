@@ -60,11 +60,16 @@ pub struct SpecStore {
     config: SpecConfig,
     llm_client: Option<Arc<LlmClient>>,
     /// Set of command names that have zsh completion files available.
-    zsh_index: HashSet<String>,
+    /// Wrapped in RwLock to allow periodic refresh when new tools are installed.
+    zsh_index: std::sync::RwLock<HashSet<String>>,
     /// Directory for generated compsys completion files.
     completions_dir: PathBuf,
     /// Write compsys files automatically when project specs are generated.
     auto_regenerate: bool,
+    /// Cache of parsed system zsh completion files (from find_and_parse).
+    /// Used as a fallback when no project spec exists — provides flag info
+    /// for the NL translator.
+    parsed_system_specs: Cache<String, Option<CommandSpec>>,
 }
 
 impl SpecStore {
@@ -91,15 +96,21 @@ impl SpecStore {
             .expire_after(GeneratorExpiry)
             .build();
 
+        let parsed_system_specs = Cache::builder()
+            .max_capacity(200)
+            .time_to_live(Duration::from_secs(3600))
+            .build();
+
         Self {
             discovering: RwLock::new(HashSet::new()),
             project_cache,
             generator_cache,
             config,
             llm_client,
-            zsh_index,
+            zsh_index: std::sync::RwLock::new(zsh_index),
             completions_dir,
             auto_regenerate: false,
+            parsed_system_specs,
         }
     }
 
@@ -129,13 +140,21 @@ impl SpecStore {
 
     /// Check if a command already has a completion file (system or generated).
     fn has_completion(&self, command: &str) -> bool {
-        self.zsh_index.contains(command)
-            || self.completions_dir.join(format!("_{command}")).exists()
+        let in_index = self
+            .zsh_index
+            .read()
+            .map(|idx| idx.contains(command))
+            .unwrap_or(false);
+        in_index || self.completions_dir.join(format!("_{command}")).exists()
     }
 
     /// Get all available command names for a given cwd.
     pub async fn all_command_names(&self, cwd: &Path) -> Vec<String> {
-        let mut seen: HashSet<String> = self.zsh_index.clone();
+        let mut seen: HashSet<String> = self
+            .zsh_index
+            .read()
+            .map(|idx| idx.clone())
+            .unwrap_or_default();
 
         let project_specs = self.get_project_specs(cwd).await;
         for key in project_specs.keys() {
@@ -187,7 +206,12 @@ impl SpecStore {
     /// Write a discovered spec as a compsys completion file.
     /// The compsys file IS the persistent cache — no TOML intermediate.
     fn save_discovered_spec(&self, command: &str, spec: &CommandSpec) {
-        if self.zsh_index.contains(command) {
+        let in_index = self
+            .zsh_index
+            .read()
+            .map(|idx| idx.contains(command))
+            .unwrap_or(false);
+        if in_index {
             return; // Don't overwrite existing system completions
         }
         match crate::compsys_export::write_completion_file(spec, &self.completions_dir) {
@@ -588,7 +612,12 @@ impl SpecStore {
             let dir = self.completions_dir.clone();
             for spec in specs.values() {
                 // Don't overwrite existing system completions.
-                if self.zsh_index.contains(&spec.name) {
+                let in_index = self
+                    .zsh_index
+                    .read()
+                    .map(|idx| idx.contains(&spec.name))
+                    .unwrap_or(false);
+                if in_index {
                     continue;
                 }
                 match crate::compsys_export::write_completion_file(spec, &dir) {
@@ -694,6 +723,152 @@ impl SpecStore {
         self.generator_cache.insert(cache_key, entry).await;
 
         result
+    }
+
+    /// Refresh the zsh_index by re-scanning fpath directories.
+    /// Picks up newly-installed completions (e.g. from `brew install`).
+    pub fn refresh_zsh_index(&self) {
+        let new_index = crate::zsh_completion::scan_available_commands();
+        let count = new_index.len();
+        if let Ok(mut idx) = self.zsh_index.write() {
+            *idx = new_index;
+        }
+        tracing::info!("Refreshed zsh_index: {count} completion files");
+    }
+
+    /// Look up a spec with system zsh completion files as fallback.
+    /// Tries project specs first, then parses the system completion file.
+    /// Results are cached to avoid re-parsing on every request.
+    pub async fn lookup_with_system_fallback(
+        &self,
+        command: &str,
+        cwd: &Path,
+    ) -> Option<CommandSpec> {
+        // Try project specs first
+        if let Some(spec) = self.lookup(command, cwd).await {
+            return Some(spec);
+        }
+
+        // Try cached system spec
+        let key = command.to_string();
+        if let Some(cached) = self.parsed_system_specs.get(&key).await {
+            return cached;
+        }
+
+        // Try parsing the system completion file (blocking I/O)
+        let cmd = command.to_string();
+        let result =
+            tokio::task::spawn_blocking(move || crate::zsh_completion::find_and_parse(&cmd))
+                .await
+                .unwrap_or(None);
+
+        self.parsed_system_specs.insert(key, result.clone()).await;
+        result
+    }
+
+    /// Get the completions directory path.
+    pub fn completions_dir(&self) -> &Path {
+        &self.completions_dir
+    }
+
+    /// Get the spec config.
+    pub fn config(&self) -> &SpecConfig {
+        &self.config
+    }
+
+    /// Scan PATH directories for executables and return their names.
+    fn scan_path_executables() -> Vec<String> {
+        let path_var = match std::env::var("PATH") {
+            Ok(p) => p,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut seen = HashSet::new();
+        for dir in path_var.split(':') {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                // Skip hidden files and names with dots (helper scripts)
+                if name.starts_with('.') || name.contains('.') {
+                    continue;
+                }
+                // Quick check: must be executable (on unix)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.permissions().mode() & 0o111 == 0 {
+                            continue;
+                        }
+                    }
+                }
+                seen.insert(name.to_string());
+            }
+        }
+        seen.into_iter().collect()
+    }
+
+    /// Run startup PATH scan: discover specs for all undiscovered executables.
+    /// Uses bounded concurrency and inter-batch delays to avoid CPU spikes.
+    /// Only tries completion generators (no LLM, no --help parsing).
+    pub async fn run_startup_scan(self: &Arc<Self>) {
+        if !self.config.discover_from_help {
+            tracing::debug!("Startup scan disabled (discover_from_help = false)");
+            return;
+        }
+
+        let executables = tokio::task::spawn_blocking(Self::scan_path_executables)
+            .await
+            .unwrap_or_default();
+
+        // Filter to commands without existing completions
+        let undiscovered: Vec<String> = executables
+            .into_iter()
+            .filter(|cmd| {
+                !self.has_completion(cmd)
+                    && !DISCOVERY_BLOCKLIST.contains(&cmd.as_str())
+                    && !self.config.discover_blocklist.contains(cmd)
+            })
+            .collect();
+
+        if undiscovered.is_empty() {
+            tracing::info!("Startup scan: all PATH commands already have completions");
+            return;
+        }
+
+        tracing::info!(
+            "Startup scan: {} undiscovered commands on PATH",
+            undiscovered.len()
+        );
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+        let delay = Duration::from_millis(100);
+
+        for cmd in undiscovered {
+            let permit = semaphore.clone().acquire_owned().await;
+            let Ok(permit) = permit else { break };
+
+            let store = Arc::clone(self);
+            tokio::spawn(async move {
+                // Only try completion generators during startup scan (cheapest strategy)
+                let gen_timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
+                if let Some(mut spec) =
+                    crate::zsh_completion::try_completion_generator(&cmd, gen_timeout).await
+                {
+                    spec.source = SpecSource::Discovered;
+                    store.save_discovered_spec(&cmd, &spec);
+                    tracing::debug!("Startup scan: discovered spec for {cmd}");
+                }
+                drop(permit);
+            });
+
+            tokio::time::sleep(delay).await;
+        }
+
+        tracing::info!("Startup scan complete");
     }
 }
 
@@ -876,7 +1051,12 @@ Released under the GNU GPLv2+.
         // If it IS in the index, auto_regenerate correctly skips it to avoid
         // overwriting system completions.
         let just_file = completions_dir.join("_just");
-        if !store.zsh_index.contains("just") {
+        let in_index = store
+            .zsh_index
+            .read()
+            .map(|idx| idx.contains("just"))
+            .unwrap_or(false);
+        if !in_index {
             assert!(
                 just_file.exists(),
                 "auto_regenerate should write _just compsys file"
@@ -891,5 +1071,105 @@ Released under the GNU GPLv2+.
                 "should contain generator-based compadd"
             );
         }
+    }
+
+    #[test]
+    fn test_refresh_zsh_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SpecConfig::default();
+        let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
+
+        // Initial index has system completions
+        let initial_count = store.zsh_index.read().unwrap().len();
+        assert!(initial_count > 0, "expected some system completions");
+
+        // Refresh should succeed and produce the same count
+        store.refresh_zsh_index();
+        let refreshed_count = store.zsh_index.read().unwrap().len();
+        assert_eq!(initial_count, refreshed_count);
+    }
+
+    #[test]
+    fn test_has_completion_checks_both_index_and_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SpecConfig::default();
+        let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
+
+        // A command in the system zsh_index should have completion
+        let has_system = store.zsh_index.read().unwrap().iter().next().cloned();
+        if let Some(cmd) = has_system {
+            assert!(
+                store.has_completion(&cmd),
+                "system command should have completion"
+            );
+        }
+
+        // A command with a generated file should also be found
+        std::fs::write(tmp.path().join("_mytest"), "# test").unwrap();
+        assert!(
+            store.has_completion("mytest"),
+            "generated file should count as having completion"
+        );
+
+        // A totally unknown command should not
+        assert!(
+            !store.has_completion("nonexistent_xyz_99999"),
+            "unknown command should not have completion"
+        );
+    }
+
+    #[test]
+    fn test_scan_path_executables_returns_commands() {
+        let executables = SpecStore::scan_path_executables();
+        // Should find at least some common commands
+        assert!(!executables.is_empty(), "PATH scan should find executables");
+        // ls should be on PATH on any unix system
+        assert!(
+            executables.contains(&"ls".to_string()),
+            "should find ls on PATH: got {} executables",
+            executables.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lookup_with_system_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SpecConfig::default();
+        let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
+
+        // ls should have a system zsh completion file on macOS
+        let spec = store.lookup_with_system_fallback("ls", tmp.path()).await;
+        // This may or may not succeed depending on the system, but it shouldn't panic
+        if let Some(spec) = spec {
+            assert_eq!(spec.name, "ls");
+        }
+
+        // A nonexistent command should return None
+        let spec = store
+            .lookup_with_system_fallback("nonexistent_xyz_99999", tmp.path())
+            .await;
+        assert!(spec.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_lookup_with_system_fallback_caches_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SpecConfig::default();
+        let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
+
+        // First call populates the cache
+        let _ = store
+            .lookup_with_system_fallback("nonexistent_xyz_99999", tmp.path())
+            .await;
+
+        // Second call should hit the cache (None is cached too)
+        let cached = store
+            .parsed_system_specs
+            .get(&"nonexistent_xyz_99999".to_string())
+            .await;
+        assert!(
+            cached.is_some(),
+            "None result should be cached to avoid re-parsing"
+        );
     }
 }
