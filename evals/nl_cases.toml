@@ -1,0 +1,564 @@
+# NL Eval Cases — 25 cases across 4 difficulty tiers
+# 5 easy, 5 medium, 5 hard, 10 extremely hard
+
+# =============================================================================
+# EASY (5) — single commands, explicit intent
+# =============================================================================
+
+[[cases]]
+id = "git-uncommit"
+query = "undo the last commit but keep the changes"
+tags = ["easy", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["git"]
+git_branch = "feature/wip"
+
+[[cases.expected]]
+command = "git reset --soft HEAD~1"
+match_mode = "exact"
+
+[[cases.expected]]
+command = "git reset --soft HEAD^"
+match_mode = "exact"
+
+[[cases.expected]]
+command = "git reset HEAD~1"
+match_mode = "exact"
+
+[[cases.expected]]
+command = "git reset.*HEAD[~^]1?.*--soft"
+match_mode = "regex"
+
+[[cases]]
+id = "cargo-run-tests"
+query = "run the tests"
+tags = ["easy", "build", "rust"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+project_type = "rust"
+available_tools = ["cargo", "rustc"]
+cwd_entries = ["src/", "tests/", "Cargo.toml"]
+
+[[cases.expected]]
+command = "cargo test"
+match_mode = "starts_with"
+
+[[cases]]
+id = "kill-by-port"
+query = "kill whatever is running on port 3000"
+tags = ["easy", "process"]
+cwd = "/home/user"
+os = "macOS 14.5"
+available_tools = ["lsof", "kill"]
+
+[[cases.expected]]
+command = "lsof.*:3000.*kill"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "kill.*lsof.*:3000"
+match_mode = "regex"
+
+[[cases]]
+id = "extract-csv-column"
+query = "extract the second column from data.csv"
+tags = ["easy", "text"]
+cwd = "/home/user/data"
+os = "macOS 14.5"
+available_tools = ["awk", "cut"]
+cwd_entries = ["data.csv", "output/"]
+
+[[cases.expected]]
+command = "awk.*-F.*,.*\\{print \\$2\\}.*data\\.csv"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "cut.*-d.*,.*-f.*2.*data\\.csv"
+match_mode = "regex"
+
+[[cases]]
+id = "git-delete-branch"
+query = "delete the feature/old-auth branch"
+tags = ["easy", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["git"]
+git_branch = "main"
+
+[[cases.expected]]
+command = "git branch -d feature/old-auth"
+match_mode = "exact"
+
+[[cases.expected]]
+command = "git branch -D feature/old-auth"
+match_mode = "exact"
+
+# =============================================================================
+# MEDIUM (5) — vague phrasing, context-dependent, or multi-step
+# =============================================================================
+
+[[cases]]
+id = "format-code"
+query = "format the code"
+tags = ["medium", "build", "rust"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+project_type = "rust"
+available_tools = ["cargo", "rustfmt"]
+cwd_entries = ["src/", "Cargo.toml"]
+
+[[cases.expected]]
+command = "cargo fmt"
+match_mode = "starts_with"
+
+[[cases.expected]]
+command = "rustfmt"
+match_mode = "starts_with"
+
+[[cases]]
+id = "undo-git-mess"
+query = "I accidentally committed to main, move it to a new branch"
+tags = ["medium", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["git"]
+git_branch = "main"
+
+[[cases.expected]]
+command = "git (branch|checkout -b).*&&.*git reset"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "git checkout -b.*&&.*git checkout main.*&&.*git reset"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "git stash.*&&.*git checkout -b"
+match_mode = "regex"
+
+[[cases]]
+id = "whats-eating-disk"
+query = "what's using all my disk space"
+tags = ["medium", "file-ops"]
+cwd = "/home/user"
+os = "macOS 14.5"
+available_tools = ["du", "df", "ncdu"]
+cwd_entries = ["projects/", "Downloads/", ".config/"]
+
+[[cases.expected]]
+command = "du.*sort.*-.*[rh]"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "du -sh"
+match_mode = "starts_with"
+
+[[cases.expected]]
+command = "ncdu"
+match_mode = "starts_with"
+
+[[cases]]
+id = "replace-in-files"
+query = "replace all occurrences of 'old_name' with 'new_name' in all rust files"
+tags = ["medium", "file-ops", "pipes"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+project_type = "rust"
+available_tools = ["sed", "find", "rg", "fd"]
+cwd_entries = ["src/", "tests/", "Cargo.toml"]
+
+[[cases.expected]]
+command = "sed.*s/old_name/new_name/g"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "find.*\\.rs.*sed.*old_name.*new_name"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "rg.*old_name.*--replace.*new_name"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "fd.*\\.rs.*-x.*sed.*old_name.*new_name"
+match_mode = "regex"
+
+[[cases]]
+id = "codebase-size"
+query = "how big is this codebase"
+tags = ["medium", "file-ops"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+project_type = "rust"
+available_tools = ["find", "wc", "tokei", "cloc"]
+cwd_entries = ["src/", "tests/", "Cargo.toml"]
+
+[[cases.expected]]
+command = "tokei"
+match_mode = "starts_with"
+
+[[cases.expected]]
+command = "cloc"
+match_mode = "starts_with"
+
+[[cases.expected]]
+command = "wc -l"
+match_mode = "contains"
+
+[[cases.expected]]
+command = "find.*wc.*-l"
+match_mode = "regex"
+
+# =============================================================================
+# HARD (5) — domain knowledge, less common operations
+# =============================================================================
+
+[[cases]]
+id = "squash-commits"
+query = "squash my last 3 commits into one"
+tags = ["hard", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["git"]
+git_branch = "feature/cleanup"
+
+[[cases.expected]]
+command = "git rebase -i HEAD~3"
+match_mode = "exact"
+
+[[cases.expected]]
+command = "git reset --soft HEAD~3"
+match_mode = "starts_with"
+
+[[cases]]
+id = "cherry-pick"
+query = "grab the latest commit from the hotfix branch"
+tags = ["hard", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["git"]
+git_branch = "main"
+
+[[cases.expected]]
+command = "git cherry-pick hotfix"
+match_mode = "starts_with"
+
+[[cases.expected]]
+command = "git cherry-pick.*hotfix"
+match_mode = "regex"
+
+[[cases]]
+id = "git-stash-staged"
+query = "stash only the changes I've staged"
+tags = ["hard", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["git"]
+git_branch = "feature/wip"
+
+[[cases.expected]]
+command = "git stash.*--staged"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "git stash push --staged"
+match_mode = "starts_with"
+
+[[cases.expected]]
+command = "git stash.*-S"
+match_mode = "regex"
+
+[[cases]]
+id = "extract-ips"
+query = "find all unique IP addresses in access.log sorted by how often they appear"
+tags = ["hard", "text", "pipes"]
+cwd = "/var/log"
+os = "macOS 14.5"
+available_tools = ["grep", "sort", "uniq", "awk", "head"]
+cwd_entries = ["access.log", "error.log", "system.log"]
+
+[[cases.expected]]
+command = "grep.*-[oE]+.*[0-9].*access\\.log.*sort.*uniq.*-c.*sort"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "awk.*\\{print \\$1\\}.*access\\.log.*sort.*uniq.*-c.*sort"
+match_mode = "regex"
+
+[[cases]]
+id = "dedup-preserve-order"
+query = "remove duplicate lines from output.log but keep the first occurrence of each"
+tags = ["hard", "text"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["awk", "sort", "uniq"]
+cwd_entries = ["output.log", "src/"]
+
+# The awk '!seen[$0]++' idiom is the only correct way to dedup preserving order.
+# sort -u does NOT preserve order.
+[[cases.expected]]
+command = "awk.*!.*\\$0.*\\+\\+.*output\\.log"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "cat output\\.log.*awk.*!.*\\$0.*\\+\\+"
+match_mode = "regex"
+
+# =============================================================================
+# EXTREMELY HARD (10) — obscure flags, shell idioms, multi-step reasoning
+# =============================================================================
+
+[[cases]]
+id = "git-find-deleted-file"
+query = "which commit deleted the file src/old_module.rs"
+tags = ["xhard", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+project_type = "rust"
+available_tools = ["git"]
+git_branch = "main"
+cwd_entries = ["src/", "Cargo.toml"]
+
+# Precise: --diff-filter=D shows only deletions
+[[cases.expected]]
+command = "git log.*--diff-filter.*D.*src/old_module.rs"
+match_mode = "regex"
+
+# git rev-list for the last commit affecting the file
+[[cases.expected]]
+command = "git rev-list.*src/old_module.rs"
+match_mode = "regex"
+
+# Acceptable: git log -- <deleted-path> shows history including deletion
+[[cases.expected]]
+command = "git log.*--.*src/old_module.rs"
+match_mode = "regex"
+
+[[cases]]
+id = "swap-stdout-stderr"
+query = "run ./deploy.sh but swap its stdout and stderr"
+tags = ["xhard", "shell"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["bash"]
+cwd_entries = ["deploy.sh", "src/"]
+
+# The fd3 swap idiom: cmd 3>&1 1>&2 2>&3 3>&-
+# Must use a third fd to swap — any pattern involving 3>&1 or 3>&2 with reassignment
+[[cases.expected]]
+command = "deploy.sh.*3>&[12].*[12]>&[12].*[12]>&3"
+match_mode = "regex"
+
+[[cases]]
+id = "compress-each-subdir"
+query = "create a separate tar.gz for each subdirectory in the current folder"
+tags = ["xhard", "shell", "file-ops"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["tar", "find", "bash"]
+cwd_entries = ["module-a/", "module-b/", "module-c/", "README.md"]
+
+# for loop: for d in */; do tar czf "${d%/}.tar.gz" "$d"; done
+[[cases.expected]]
+command = "for.*in.*\\*/.*do.*tar.*czf.*done"
+match_mode = "regex"
+
+# find -maxdepth 1 -type d with tar
+[[cases.expected]]
+command = "find.*-maxdepth 1.*-type d.*tar"
+match_mode = "regex"
+
+# find -type d -exec tar
+[[cases.expected]]
+command = "find.*-type d.*-exec.*tar"
+match_mode = "regex"
+
+# ls piped to xargs/while with tar
+[[cases.expected]]
+command = "ls.*\\|.*while.*tar"
+match_mode = "regex"
+
+[[cases]]
+id = "git-pickaxe"
+query = "find who last removed the call to validate_input in src/auth.rs"
+tags = ["xhard", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+project_type = "rust"
+available_tools = ["git"]
+git_branch = "main"
+cwd_entries = ["src/", "Cargo.toml"]
+
+# Pickaxe search: -S finds commits that change occurrence count of a string
+[[cases.expected]]
+command = "git log.*-S.*validate_input.*src/auth.rs"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "git log.*-S.*validate_input"
+match_mode = "regex"
+
+# Regex pickaxe: -G matches diffs against a regex
+[[cases.expected]]
+command = "git log.*-G.*validate_input"
+match_mode = "regex"
+
+# Acceptable: git log -p with grep (less precise but finds it)
+[[cases.expected]]
+command = "git log.*-p.*src/auth.rs.*grep.*validate_input"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "git log.*-p.*grep.*validate_input.*src/auth.rs"
+match_mode = "regex"
+
+[[cases]]
+id = "rename-extension"
+query = "rename all .jpeg files to .jpg recursively"
+tags = ["xhard", "file-ops", "shell"]
+cwd = "/home/user/photos"
+os = "macOS 14.5"
+available_tools = ["find", "mv", "rename", "bash"]
+cwd_entries = ["vacation/", "family/", "work/"]
+
+# find -exec with bash -c for parameter expansion
+[[cases.expected]]
+command = "find.*\\.jpeg.*bash.*-c.*mv"
+match_mode = "regex"
+
+# find -exec mv (may use shell expansion in the mv target)
+[[cases.expected]]
+command = "find.*\\.jpeg.*-exec.*mv"
+match_mode = "regex"
+
+# perl rename / prename
+[[cases.expected]]
+command = "rename.*\\.jpeg.*\\.jpg"
+match_mode = "regex"
+
+# for loop approach
+[[cases.expected]]
+command = "for.*\\.jpeg.*mv.*\\.jpg"
+match_mode = "regex"
+
+# fd with -x
+[[cases.expected]]
+command = "fd.*\\.jpeg.*-x.*mv"
+match_mode = "regex"
+
+[[cases]]
+id = "diff-command-outputs"
+query = "compare the output of 'ls src/' and 'ls backup/src/'"
+tags = ["xhard", "shell"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["diff", "ls", "bash"]
+cwd_entries = ["src/", "backup/"]
+
+# Process substitution: diff <(cmd1) <(cmd2)
+[[cases.expected]]
+command = "diff.*<\\(ls.*src.*\\).*<\\(ls.*backup"
+match_mode = "regex"
+
+# Temp file approach: ls > /tmp/a && ls > /tmp/b && diff
+[[cases.expected]]
+command = "ls src.*>.*&&.*ls backup.*>.*&&.*diff"
+match_mode = "regex"
+
+[[cases]]
+id = "parallel-xargs"
+query = "run shellcheck on all .sh files using 4 parallel jobs"
+tags = ["xhard", "system", "pipes"]
+cwd = "/home/user/scripts"
+os = "macOS 14.5"
+available_tools = ["find", "xargs", "shellcheck", "fd", "parallel"]
+cwd_entries = ["deploy/", "ci/", "utils/"]
+
+# find + xargs -P
+[[cases.expected]]
+command = "find.*\\.sh.*xargs.*-P.*4.*shellcheck"
+match_mode = "regex"
+
+# fd + xargs -P
+[[cases.expected]]
+command = "fd.*\\.sh.*xargs.*-P.*4.*shellcheck"
+match_mode = "regex"
+
+# GNU parallel -j
+[[cases.expected]]
+command = "find.*\\.sh.*parallel.*-j.*4.*shellcheck"
+match_mode = "regex"
+
+[[cases.expected]]
+command = "parallel.*-j.*4.*shellcheck"
+match_mode = "regex"
+
+# fd -j (parallel flag) with -x
+[[cases.expected]]
+command = "fd.*\\.sh.*-j.*4.*-x.*shellcheck"
+match_mode = "regex"
+
+[[cases]]
+id = "git-worktree"
+query = "check out the release branch in a separate directory without switching my current branch"
+tags = ["xhard", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+available_tools = ["git"]
+git_branch = "feature/dev"
+
+# git worktree is the only correct approach here
+[[cases.expected]]
+command = "git worktree add.*release"
+match_mode = "regex"
+
+[[cases]]
+id = "range-log-extract"
+query = "show all lines from access.log with timestamps between 14:00:00 and 15:30:00"
+tags = ["xhard", "text"]
+cwd = "/var/log"
+os = "macOS 14.5"
+available_tools = ["awk", "sed", "grep"]
+cwd_entries = ["access.log", "error.log"]
+
+# awk range pattern: /start/,/end/
+[[cases.expected]]
+command = "awk.*/14:00/,/15:30/.*access\\.log"
+match_mode = "regex"
+
+# sed range pattern
+[[cases.expected]]
+command = "sed.*-n.*/14:00/,/15:30/p.*access\\.log"
+match_mode = "regex"
+
+# awk with time comparison
+[[cases.expected]]
+command = "awk.*14:00.*15:30.*access\\.log"
+match_mode = "regex"
+
+# sed range (any form)
+[[cases.expected]]
+command = "sed.*/14:00/,/15:30/.*access\\.log"
+match_mode = "regex"
+
+[[cases]]
+id = "git-bisect"
+query = "use git bisect to automatically find which commit broke 'cargo test'"
+tags = ["xhard", "git"]
+cwd = "/home/user/project"
+os = "macOS 14.5"
+project_type = "rust"
+available_tools = ["git", "cargo"]
+git_branch = "main"
+cwd_entries = ["src/", "tests/", "Cargo.toml"]
+
+# The key part: git bisect run <command>
+[[cases.expected]]
+command = "git bisect.*run.*cargo test"
+match_mode = "regex"
+
+# Full sequence with start/bad/good
+[[cases.expected]]
+command = "git bisect start.*&&.*git bisect.*&&.*git bisect run"
+match_mode = "regex"

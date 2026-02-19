@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "synapse"
 path = "src/main.rs"
 
+[[bin]]
+name = "eval-nl"
+path = "src/bin/eval_nl.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

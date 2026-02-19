@@ -587,7 +587,7 @@ fn build_workflow_prompt(
 }
 
 /// Build NL translation prompt as (system_message, user_message).
-fn build_nl_prompt(
+pub fn build_nl_prompt(
     ctx: &NlTranslationContext,
     cwd: &str,
     max_suggestions: usize,
@@ -723,7 +723,7 @@ fn extract_command(response: &str) -> String {
 
 /// Extract multiple shell commands from an LLM response.
 /// Handles numbered lists, bullets, markdown fences, and bare commands.
-fn extract_commands(response: &str, max: usize) -> Vec<String> {
+pub fn extract_commands(response: &str, max: usize) -> Vec<String> {
     let commands = parse_unique_lines(response, max, FenceMode::PreferFirstFence, true, false);
 
     // Fallback: if parsing found nothing, try the old single-command extraction
@@ -745,7 +745,7 @@ fn extract_commands(response: &str, max: usize) -> Vec<String> {
 /// Uses simple substring matching — these are user-facing warnings, not security gates
 /// (the blocklist handles actual blocking). Simple checks are more robust and catch
 /// cases like `sudo rm` that position-anchored regexes would miss.
-fn detect_destructive_command(command: &str) -> Option<String> {
+pub fn detect_destructive_command(command: &str) -> Option<String> {
     let patterns: &[(&str, &str)] = &[
         ("rm ", "deletes files"),
         ("rmdir ", "removes directories"),
