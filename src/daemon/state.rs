@@ -13,7 +13,6 @@ use crate::config::Config;
 use crate::llm::LlmClient;
 use crate::logging::InteractionLogger;
 use crate::nl_cache::NlCache;
-use crate::session::SessionManager;
 use crate::spec_store::SpecStore;
 
 pub(super) type SharedWriter =
@@ -21,7 +20,6 @@ pub(super) type SharedWriter =
 
 pub(super) struct RuntimeState {
     pub(super) spec_store: Arc<SpecStore>,
-    pub(super) session_manager: SessionManager,
     pub(super) interaction_logger: InteractionLogger,
     pub(super) config: Config,
     pub(super) llm_client: Option<Arc<LlmClient>>,
@@ -91,7 +89,6 @@ const MAX_INTERACTION_EXAMPLES: usize = 50;
 impl RuntimeState {
     pub(super) fn new(
         spec_store: Arc<SpecStore>,
-        session_manager: SessionManager,
         interaction_logger: InteractionLogger,
         config: Config,
         llm_client: Option<Arc<LlmClient>>,
@@ -112,7 +109,6 @@ impl RuntimeState {
 
         Self {
             spec_store,
-            session_manager,
             interaction_logger,
             config,
             llm_client,

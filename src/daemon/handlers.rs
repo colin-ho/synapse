@@ -7,20 +7,16 @@ use crate::protocol::{
     SuggestionItem, SuggestionKind, SuggestionListResponse, SuggestionSource,
 };
 
-use super::state::{RuntimeState, SharedWriter};
+use super::state::RuntimeState;
 
 /// Maximum entries in the directory listing included in NL context.
 const MAX_CWD_ENTRIES: usize = 50;
 /// Maximum flags per tool to include in NL context.
 const MAX_FLAGS_PER_TOOL: usize = 20;
 
-pub(super) async fn handle_request(
-    request: Request,
-    state: &RuntimeState,
-    writer: SharedWriter,
-) -> Response {
+pub(super) async fn handle_request(request: Request, state: &RuntimeState) -> Response {
     match request {
-        Request::NaturalLanguage(req) => handle_natural_language(req, state, writer).await,
+        Request::NaturalLanguage(req) => handle_natural_language(req, state).await,
         Request::CommandExecuted(report) => handle_command_executed(report, state).await,
         Request::CwdChanged(report) => handle_cwd_changed(report, state).await,
         Request::Complete(req) => handle_complete(req, state).await,
@@ -248,11 +244,7 @@ async fn handle_run_generator(req: RunGeneratorRequest, state: &RuntimeState) ->
     Response::CompleteResult(CompleteResultResponse { values: items })
 }
 
-async fn handle_natural_language(
-    req: NaturalLanguageRequest,
-    state: &RuntimeState,
-    _writer: SharedWriter,
-) -> Response {
+async fn handle_natural_language(req: NaturalLanguageRequest, state: &RuntimeState) -> Response {
     tracing::debug!(
         session = %req.session_id,
         query = %req.query,
@@ -680,16 +672,12 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use futures_util::StreamExt;
-    use tokio_util::codec::{Framed, LinesCodec};
-
     use super::super::state::CompiledBlocklist;
-    use super::{detect_os, handle_natural_language, RuntimeState, SharedWriter};
+    use super::{detect_os, handle_natural_language, RuntimeState};
     use crate::config::Config;
     use crate::logging::InteractionLogger;
     use crate::nl_cache::{NlCache, NlCacheEntry, NlCacheItem};
     use crate::protocol::{NaturalLanguageRequest, Response};
-    use crate::session::SessionManager;
     use crate::spec_store::SpecStore;
 
     const TEST_NL_MIN_QUERY_LENGTH: usize = crate::config::NL_MIN_QUERY_LENGTH;
@@ -709,18 +697,11 @@ mod tests {
 
         RuntimeState::new(
             Arc::new(SpecStore::new(config.spec.clone(), llm_client.clone())),
-            SessionManager::new(),
             InteractionLogger::new(log_path, 1),
             config,
             llm_client,
             NlCache::new(),
         )
-    }
-
-    fn test_shared_writer() -> SharedWriter {
-        let (stream, _) = tokio::net::UnixStream::pair().expect("UnixStream::pair");
-        let (sink, _) = Framed::new(stream, LinesCodec::new()).split();
-        Arc::new(tokio::sync::Mutex::new(sink))
     }
 
     #[test]
@@ -754,7 +735,6 @@ mod tests {
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config.clone());
-        let writer = test_shared_writer();
 
         assert!(TEST_NL_MIN_QUERY_LENGTH > 4, "test assumes min length > 4");
         let resp = handle_natural_language(
@@ -766,7 +746,6 @@ mod tests {
                 env_hints: HashMap::new(),
             },
             &state,
-            writer,
         )
         .await;
 
@@ -788,7 +767,6 @@ mod tests {
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config);
-        let writer = test_shared_writer();
 
         let query = "find rust files".to_string();
         let cwd = "/tmp".to_string();
@@ -824,7 +802,6 @@ mod tests {
                 env_hints: HashMap::new(),
             },
             &state,
-            writer,
         )
         .await;
 
@@ -848,7 +825,6 @@ mod tests {
         config.llm.base_url = Some("http://127.0.0.1:1".to_string());
         config.llm.timeout_ms = 100;
         let state = test_runtime_state(config);
-        let writer = test_shared_writer();
 
         let resp = handle_natural_language(
             NaturalLanguageRequest {
@@ -859,7 +835,6 @@ mod tests {
                 env_hints: HashMap::new(),
             },
             &state,
-            writer,
         )
         .await;
         match resp {

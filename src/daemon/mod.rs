@@ -6,6 +6,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 mod handlers;
 mod lifecycle;
 mod probe;
+mod rpc;
 mod server;
 mod shell;
 mod state;

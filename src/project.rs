@@ -7,6 +7,17 @@ pub struct ProjectCliTool {
     pub binary_path: Option<PathBuf>,
 }
 
+pub(crate) fn has_any_file(root: &Path, candidates: &[&str]) -> bool {
+    candidates.iter().any(|name| root.join(name).exists())
+}
+
+fn first_existing_file(root: &Path, candidates: &[&str]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .map(|name| root.join(name))
+        .find(|path| path.exists())
+}
+
 // --- Project root discovery ---
 
 /// Walk up from `cwd` to find the project root.
@@ -30,13 +41,15 @@ pub fn find_project_root(cwd: &Path, max_depth: usize) -> Option<PathBuf> {
 
     // No git root found — walk up max_depth levels looking for project files
     let mut current = cwd.to_path_buf();
+    const PROJECT_MARKERS: &[&str] = &[
+        "Makefile",
+        "package.json",
+        "Cargo.toml",
+        "pyproject.toml",
+        "docker-compose.yml",
+    ];
     for _ in 0..max_depth {
-        let has_project_file = current.join("Makefile").exists()
-            || current.join("package.json").exists()
-            || current.join("Cargo.toml").exists()
-            || current.join("pyproject.toml").exists()
-            || current.join("docker-compose.yml").exists();
-        if has_project_file {
+        if has_any_file(&current, PROJECT_MARKERS) {
             return Some(current);
         }
         if !current.pop() {
@@ -50,19 +63,18 @@ pub fn find_project_root(cwd: &Path, max_depth: usize) -> Option<PathBuf> {
 // --- Project metadata ---
 
 pub fn detect_project_type(root: &Path) -> Option<String> {
-    if root.join("Cargo.toml").exists() {
-        Some("rust".into())
-    } else if root.join("package.json").exists() {
-        Some("node".into())
-    } else if root.join("pyproject.toml").exists() || root.join("setup.py").exists() {
-        Some("python".into())
-    } else if root.join("go.mod").exists() {
-        Some("go".into())
-    } else if root.join("Makefile").exists() {
-        Some("make".into())
-    } else {
-        None
+    for (kind, markers) in [
+        ("rust", &["Cargo.toml"][..]),
+        ("node", &["package.json"][..]),
+        ("python", &["pyproject.toml", "setup.py"][..]),
+        ("go", &["go.mod"][..]),
+        ("make", &["Makefile"][..]),
+    ] {
+        if has_any_file(root, markers) {
+            return Some(kind.to_string());
+        }
     }
+    None
 }
 
 pub fn read_git_branch_for_path(path: &Path) -> Option<String> {
@@ -200,15 +212,15 @@ pub fn parse_cargo_info(root: &Path) -> Option<(bool, bool)> {
 
 /// Parse docker-compose services. Returns None if no compose file exists.
 pub fn parse_docker_services(root: &Path) -> Option<Vec<String>> {
-    let compose_path = [
-        "docker-compose.yml",
-        "docker-compose.yaml",
-        "compose.yml",
-        "compose.yaml",
-    ]
-    .iter()
-    .map(|f| root.join(f))
-    .find(|p| p.exists())?;
+    let compose_path = first_existing_file(
+        root,
+        &[
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "compose.yml",
+            "compose.yaml",
+        ],
+    )?;
 
     let content = std::fs::read_to_string(compose_path).ok()?;
     let yaml: serde_yml::Value = serde_yml::from_str(&content).ok()?;

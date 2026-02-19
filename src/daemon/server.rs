@@ -16,25 +16,6 @@ pub(super) async fn run_server(
     state: Arc<RuntimeState>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    // Spawn periodic session pruning (every 5 minutes, prune sessions idle > 1 hour)
-    {
-        let session_manager = state.session_manager.clone();
-        let token = shutdown.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(300));
-            interval.tick().await; // Skip the initial immediate tick
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        session_manager.prune_inactive(Duration::from_secs(3600)).await;
-                        tracing::debug!("Pruned inactive sessions");
-                    }
-                    _ = token.cancelled() => break,
-                }
-            }
-        });
-    }
-
     // Spawn periodic zsh_index refresh (every 5 minutes)
     // Catches newly-installed tools (e.g. `brew install` while daemon is running)
     {
@@ -132,7 +113,7 @@ async fn handle_connection(
         tracing::trace!("Received: {trimmed}");
 
         let response = match serde_json::from_str::<Request>(trimmed) {
-            Ok(request) => handle_request(request, &state, writer.clone()).await,
+            Ok(request) => handle_request(request, &state).await,
             Err(e) => {
                 tracing::warn!("Parse error: {e}");
                 Response::Error {

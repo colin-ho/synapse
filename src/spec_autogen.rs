@@ -14,13 +14,18 @@ use crate::spec::{ArgSpec, ArgTemplate, CommandSpec, GeneratorSpec, OptionSpec, 
 /// (important in monorepos where subdirectories have their own config files).
 pub fn generate_specs(root: &Path, cwd: &Path) -> Vec<CommandSpec> {
     let mut specs = Vec::new();
+    const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
+    const COMPOSE_FILES: &[&str] = &[
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+    ];
+    const JUSTFILES: &[&str] = &["justfile", "Justfile", ".justfile"];
 
     // Dynamic tools: detect file existence only, completions use generators
     // that run at completion time (always current for the cwd).
-    if cwd.join("Makefile").exists()
-        || cwd.join("makefile").exists()
-        || cwd.join("GNUmakefile").exists()
-    {
+    if crate::project::has_any_file(cwd, MAKEFILES) {
         specs.push(make_spec());
     }
 
@@ -29,18 +34,11 @@ pub fn generate_specs(root: &Path, cwd: &Path) -> Vec<CommandSpec> {
         specs.push(package_json_spec(manager));
     }
 
-    if cwd.join("docker-compose.yml").exists()
-        || cwd.join("docker-compose.yaml").exists()
-        || cwd.join("compose.yml").exists()
-        || cwd.join("compose.yaml").exists()
-    {
+    if crate::project::has_any_file(cwd, COMPOSE_FILES) {
         specs.push(docker_compose_spec());
     }
 
-    if cwd.join("justfile").exists()
-        || cwd.join("Justfile").exists()
-        || cwd.join(".justfile").exists()
-    {
+    if crate::project::has_any_file(cwd, JUSTFILES) {
         specs.push(justfile_spec());
     }
 
@@ -64,57 +62,73 @@ pub fn generate_specs(root: &Path, cwd: &Path) -> Vec<CommandSpec> {
     specs
 }
 
+fn opt(short: Option<&str>, long: Option<&str>, description: &str, takes_arg: bool) -> OptionSpec {
+    OptionSpec {
+        short: short.map(str::to_string),
+        long: long.map(str::to_string),
+        description: Some(description.to_string()),
+        takes_arg,
+        ..Default::default()
+    }
+}
+
+fn sub(name: &str, description: &str) -> SubcommandSpec {
+    SubcommandSpec {
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        ..Default::default()
+    }
+}
+
+fn generated_arg(name: &str, command: &str, variadic: bool) -> ArgSpec {
+    ArgSpec {
+        name: name.to_string(),
+        variadic,
+        generator: Some(GeneratorSpec {
+            command: command.to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 fn make_spec() -> CommandSpec {
     CommandSpec {
         name: "make".to_string(),
         options: vec![
-            OptionSpec {
-                short: Some("-j".into()),
-                long: Some("--jobs".into()),
-                takes_arg: true,
-                description: Some("Parallel jobs".into()),
-                ..Default::default()
-            },
-            OptionSpec {
-                short: Some("-n".into()),
-                long: Some("--dry-run".into()),
-                description: Some("Print commands without executing".into()),
-                ..Default::default()
-            },
+            opt(
+                Some("-j"),
+                Some("--jobs"),
+                "Parallel jobs",
+                true,
+            ),
+            opt(
+                Some("-n"),
+                Some("--dry-run"),
+                "Print commands without executing",
+                false,
+            ),
         ],
-        args: vec![ArgSpec {
-            name: "target".into(),
-            variadic: true,
-            generator: Some(GeneratorSpec {
-                command: "make -qp 2>/dev/null | awk -F: '/^[a-zA-Z][^$#\\/\\t=]*:([^=]|$)/{split($1,a,/ /);for(i in a)print a[i]}'".into(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }],
+        args: vec![generated_arg(
+            "target",
+            "make -qp 2>/dev/null | awk -F: '/^[a-zA-Z][^$#\\/\\t=]*:([^=]|$)/{split($1,a,/ /);for(i in a)print a[i]}'",
+            true,
+        )],
         ..Default::default()
     }
 }
 
 fn package_json_spec(manager: &str) -> CommandSpec {
-    let script_generator = GeneratorSpec {
-        command: r#"node -e "Object.keys(require('./package.json').scripts||{}).forEach(s=>console.log(s))""#.into(),
-        ..Default::default()
-    };
-
-    let script_arg = ArgSpec {
-        name: "script".into(),
-        variadic: true,
-        generator: Some(script_generator),
-        ..Default::default()
-    };
+    let script_arg = generated_arg(
+        "script",
+        r#"node -e "Object.keys(require('./package.json').scripts||{}).forEach(s=>console.log(s))""#,
+        true,
+    );
 
     let subcommands = if manager == "npm" {
-        vec![SubcommandSpec {
-            name: "run".to_string(),
-            description: Some("Run a script".into()),
-            args: vec![script_arg.clone()],
-            ..Default::default()
-        }]
+        let mut run = sub("run", "Run a script");
+        run.args = vec![script_arg.clone()];
+        vec![run]
     } else {
         // yarn/pnpm/bun: scripts are top-level args
         Vec::new()
@@ -155,11 +169,12 @@ fn cargo_spec(is_workspace: bool, has_bin_targets: bool) -> CommandSpec {
     if is_workspace {
         for sub in &mut subcommands {
             if matches!(sub.name.as_str(), "build" | "test" | "check") {
-                sub.options.push(OptionSpec {
-                    long: Some("--workspace".into()),
-                    description: Some("Apply to all workspace members".into()),
-                    ..Default::default()
-                });
+                sub.options.push(opt(
+                    None,
+                    Some("--workspace"),
+                    "Apply to all workspace members",
+                    false,
+                ));
             }
         }
     }
@@ -167,12 +182,8 @@ fn cargo_spec(is_workspace: bool, has_bin_targets: bool) -> CommandSpec {
     if has_bin_targets {
         for sub in &mut subcommands {
             if sub.name == "run" {
-                sub.options.push(OptionSpec {
-                    long: Some("--bin".into()),
-                    takes_arg: true,
-                    description: Some("Run specific binary".into()),
-                    ..Default::default()
-                });
+                sub.options
+                    .push(opt(None, Some("--bin"), "Run specific binary", true));
             }
         }
     }
@@ -185,70 +196,37 @@ fn cargo_spec(is_workspace: bool, has_bin_targets: bool) -> CommandSpec {
 }
 
 fn docker_compose_spec() -> CommandSpec {
-    let service_arg = || ArgSpec {
-        name: "service".into(),
-        variadic: true,
-        generator: Some(GeneratorSpec {
-            command: "docker compose config --services 2>/dev/null".into(),
-            ..Default::default()
-        }),
-        ..Default::default()
+    let service_arg = || {
+        generated_arg(
+            "service",
+            "docker compose config --services 2>/dev/null",
+            true,
+        )
     };
+    let mut up = sub("up", "Start services");
+    up.args = vec![service_arg()];
+    up.options = vec![
+        opt(Some("-d"), Some("--detach"), "Run in background", false),
+        opt(None, Some("--build"), "Build before starting", false),
+    ];
+
+    let mut logs = sub("logs", "View logs");
+    logs.args = vec![service_arg()];
+    logs.options = vec![opt(Some("-f"), Some("--follow"), "Follow output", false)];
+
+    let mut restart = sub("restart", "Restart services");
+    restart.args = vec![service_arg()];
+
+    let mut build = sub("build", "Build services");
+    build.args = vec![service_arg()];
 
     let subcommands = vec![
-        SubcommandSpec {
-            name: "up".into(),
-            description: Some("Start services".into()),
-            args: vec![service_arg()],
-            options: vec![
-                OptionSpec {
-                    short: Some("-d".into()),
-                    long: Some("--detach".into()),
-                    description: Some("Run in background".into()),
-                    ..Default::default()
-                },
-                OptionSpec {
-                    long: Some("--build".into()),
-                    description: Some("Build before starting".into()),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "down".into(),
-            description: Some("Stop services".into()),
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "logs".into(),
-            description: Some("View logs".into()),
-            args: vec![service_arg()],
-            options: vec![OptionSpec {
-                short: Some("-f".into()),
-                long: Some("--follow".into()),
-                description: Some("Follow output".into()),
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "restart".into(),
-            description: Some("Restart services".into()),
-            args: vec![service_arg()],
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "ps".into(),
-            description: Some("List containers".into()),
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "build".into(),
-            description: Some("Build services".into()),
-            args: vec![service_arg()],
-            ..Default::default()
-        },
+        up,
+        sub("down", "Stop services"),
+        logs,
+        restart,
+        sub("ps", "List containers"),
+        build,
     ];
 
     CommandSpec {
@@ -266,15 +244,11 @@ fn docker_compose_spec() -> CommandSpec {
 fn justfile_spec() -> CommandSpec {
     CommandSpec {
         name: "just".to_string(),
-        args: vec![ArgSpec {
-            name: "recipe".into(),
-            variadic: true,
-            generator: Some(GeneratorSpec {
-                command: "just --summary 2>/dev/null | tr ' ' '\\n'".into(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }],
+        args: vec![generated_arg(
+            "recipe",
+            "just --summary 2>/dev/null | tr ' ' '\\n'",
+            true,
+        )],
         ..Default::default()
     }
 }
@@ -312,29 +286,21 @@ fn ruff_spec() -> CommandSpec {
         ..Default::default()
     };
 
-    let subcommands = vec![
-        SubcommandSpec {
-            name: "check".into(),
-            description: Some("Run linting".into()),
-            args: vec![path_arg.clone()],
-            options: vec![OptionSpec {
-                long: Some("--fix".into()),
-                description: Some("Fix auto-fixable violations".into()),
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-        SubcommandSpec {
-            name: "format".into(),
-            description: Some("Format code".into()),
-            args: vec![path_arg],
-            ..Default::default()
-        },
-    ];
+    let mut check = sub("check", "Run linting");
+    check.args = vec![path_arg.clone()];
+    check.options = vec![opt(
+        None,
+        Some("--fix"),
+        "Fix auto-fixable violations",
+        false,
+    )];
+
+    let mut format = sub("format", "Format code");
+    format.args = vec![path_arg];
 
     CommandSpec {
         name: "ruff".to_string(),
-        subcommands,
+        subcommands: vec![check, format],
         ..Default::default()
     }
 }

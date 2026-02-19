@@ -132,13 +132,7 @@ async fn run_request_mode(
 
 /// Check if a daemon response is an ack (immediate acknowledgement before async processing).
 fn is_ack_response(line: &str) -> bool {
-    // Try to parse as JSON and check for ack-like types
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-        if let Some(typ) = value.get("type").and_then(|v| v.as_str()) {
-            return typ == "ack";
-        }
-    }
-    false
+    line.trim() == "ack"
 }
 
 async fn drain_until_idle(reader: &mut ProbeReader, wait_ms: u64) -> anyhow::Result<()> {

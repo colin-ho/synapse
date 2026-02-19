@@ -24,78 +24,24 @@ fn test_daemon_status_no_daemon() {
 
 #[tokio::test]
 async fn test_daemon_lifecycle() {
-    // Use a unique socket path for this test
     let dir = tempfile::tempdir().unwrap();
     let socket_path = dir.path().join("test-synapse.sock");
     let pid_path = dir.path().join("test-synapse.pid");
 
-    // Start daemon as a background task
-    let sock = socket_path.clone();
-    let pid = pid_path.clone();
-    let daemon = tokio::spawn(async move {
-        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
-        std::fs::write(&pid, std::process::id().to_string()).unwrap();
+    let daemon = spawn_mock_daemon(socket_path.clone(), pid_path.clone());
+    wait_for_socket(&socket_path).await;
 
-        // Accept one connection for the test
-        if let Ok((stream, _)) = listener.accept().await {
-            let (reader, mut writer) = stream.into_split();
-            let mut reader = BufReader::new(reader);
-            let mut line = String::new();
-
-            while reader.read_line(&mut line).await.unwrap() > 0 {
-                let trimmed = line.trim();
-                let response = if trimmed.contains("\"type\":\"ping\"") {
-                    "pong"
-                } else {
-                    "ack"
-                };
-                writer
-                    .write_all(format!("{response}\n").as_bytes())
-                    .await
-                    .unwrap();
-                writer.flush().await.unwrap();
-                line.clear();
-            }
-        }
-    });
-
-    // Wait for socket to appear
-    for _ in 0..50 {
-        if socket_path.exists() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(socket_path.exists(), "Socket not created");
-
-    // Connect and send ping
     let stream = UnixStream::connect(&socket_path).await.unwrap();
     let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
+    let mut lines = BufReader::new(reader).lines();
 
-    writer.write_all(b"{\"type\":\"ping\"}\n").await.unwrap();
-    writer.flush().await.unwrap();
-
-    let mut response = String::new();
-    reader.read_line(&mut response).await.unwrap();
+    let response = roundtrip(&mut lines, &mut writer, r#"{"type":"ping"}"#).await;
     assert!(response.contains("pong"), "Expected pong, got: {response}");
 
-    // Send shutdown
-    writer
-        .write_all(b"{\"type\":\"shutdown\"}\n")
-        .await
-        .unwrap();
-    writer.flush().await.unwrap();
-
-    let mut ack = String::new();
-    reader.read_line(&mut ack).await.unwrap();
+    let ack = roundtrip(&mut lines, &mut writer, r#"{"type":"shutdown"}"#).await;
     assert!(ack.contains("ack"), "Expected ack, got: {ack}");
 
-    // Cleanup
-    drop(writer);
     daemon.abort();
-    let _ = std::fs::remove_file(&socket_path);
-    let _ = std::fs::remove_file(&pid_path);
 }
 
 #[test]
