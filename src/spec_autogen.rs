@@ -312,6 +312,9 @@ pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<Com
     let mut specs = Vec::new();
     let timeout = Duration::from_millis(timeout_ms);
 
+    let scratch = std::env::temp_dir().join("synapse-discovery");
+    let _ = std::fs::create_dir_all(&scratch);
+
     for tool in tools {
         let Some(binary_path) = tool.binary_path else {
             tracing::debug!("Project CLI tool {} not built yet, skipping", tool.name);
@@ -319,13 +322,10 @@ pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<Com
         };
 
         let result = tokio::time::timeout(timeout, async {
-            tokio::process::Command::new(&binary_path)
-                .arg("--help")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-                .await
+            let mut cmd = tokio::process::Command::new(&binary_path);
+            cmd.arg("--help");
+            crate::spec_store::sandbox_command(&mut cmd, &scratch);
+            cmd.output().await
         })
         .await;
 
