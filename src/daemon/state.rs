@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use futures_util::stream::SplitSink;
@@ -37,6 +37,8 @@ pub(super) struct RuntimeState {
     pub(super) compiled_blocklist: CompiledBlocklist,
     /// Cancellation token for graceful shutdown.
     pub(super) shutdown_token: Option<CancellationToken>,
+    /// Recent accepted NL translations for few-shot examples: (query, command).
+    pub(super) interaction_examples: RwLock<Vec<(String, String)>>,
 }
 
 /// Pre-compiled blocklist patterns, built once at config load.
@@ -83,6 +85,9 @@ impl CompiledBlocklist {
     }
 }
 
+/// Maximum number of few-shot examples to store.
+const MAX_INTERACTION_EXAMPLES: usize = 50;
+
 impl RuntimeState {
     pub(super) fn new(
         spec_store: Arc<SpecStore>,
@@ -94,6 +99,17 @@ impl RuntimeState {
     ) -> Self {
         let context_ttl = Duration::from_secs(300); // 5 min
         let compiled_blocklist = CompiledBlocklist::new(&config.security.command_blocklist);
+
+        // Load interaction examples from log
+        let examples = crate::logging::read_recent_accepted(
+            &config.interaction_log_path(),
+            MAX_INTERACTION_EXAMPLES,
+        );
+        tracing::debug!(
+            "Loaded {} interaction examples for few-shot",
+            examples.len()
+        );
+
         Self {
             spec_store,
             session_manager,
@@ -115,11 +131,63 @@ impl RuntimeState {
                 .build(),
             compiled_blocklist,
             shutdown_token: None,
+            interaction_examples: RwLock::new(examples),
         }
     }
 
     pub(super) fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
         self.shutdown_token = Some(token);
         self
+    }
+
+    /// Record a new accepted NL translation for future few-shot use.
+    pub(super) fn record_interaction_example(&self, query: String, command: String) {
+        let mut examples = match self.interaction_examples.write() {
+            Ok(guard) => guard,
+            Err(e) => e.into_inner(),
+        };
+        // Avoid duplicates (by query)
+        if examples.iter().any(|(q, _)| q == &query) {
+            return;
+        }
+        examples.insert(0, (query, command)); // newest first
+        examples.truncate(MAX_INTERACTION_EXAMPLES);
+    }
+
+    /// Select the most relevant few-shot examples for a query.
+    /// Uses simple token overlap scoring, returns up to 5 examples.
+    pub(super) fn get_few_shot_examples(&self, query: &str) -> Vec<(String, String)> {
+        let examples = self
+            .interaction_examples
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        if examples.is_empty() {
+            return Vec::new();
+        }
+
+        let query_tokens: Vec<String> =
+            query.split_whitespace().map(|t| t.to_lowercase()).collect();
+
+        let mut scored: Vec<(usize, &(String, String))> = examples
+            .iter()
+            .map(|ex| {
+                let score =
+                    ex.0.split_whitespace()
+                        .filter(|t| {
+                            let lower = t.to_lowercase();
+                            query_tokens.iter().any(|qt| qt == &lower)
+                        })
+                        .count();
+                (score, ex)
+            })
+            .filter(|(score, _)| *score > 0)
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored
+            .into_iter()
+            .take(5)
+            .map(|(_, ex)| ex.clone())
+            .collect()
     }
 }

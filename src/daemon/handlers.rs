@@ -9,6 +9,11 @@ use crate::protocol::{
 
 use super::state::{RuntimeState, SharedWriter};
 
+/// Maximum entries in the directory listing included in NL context.
+const MAX_CWD_ENTRIES: usize = 50;
+/// Maximum flags per tool to include in NL context.
+const MAX_FLAGS_PER_TOOL: usize = 20;
+
 pub(super) async fn handle_request(
     request: Request,
     state: &RuntimeState,
@@ -287,22 +292,6 @@ async fn handle_natural_language(
     let scrubbed_env_hints: std::collections::HashMap<String, String> =
         crate::llm::scrub_env_values(&req.env_hints, &state.config.security.scrub_env_keys);
 
-    // Check cache first
-    if let Some(cached) = state.nl_cache.get(&req.query, &req.cwd, &os).await {
-        let suggestions = cached
-            .items
-            .into_iter()
-            .map(|item| SuggestionItem {
-                text: item.command,
-                source: SuggestionSource::Llm,
-                confidence: 0.95,
-                description: item.warning,
-                kind: SuggestionKind::Command,
-            })
-            .collect();
-        return Response::SuggestionList(SuggestionListResponse { suggestions });
-    }
-
     let query = req.query.clone();
     let cwd = req.cwd.clone();
     let env_hints = scrubbed_env_hints;
@@ -314,7 +303,12 @@ async fn handle_natural_language(
     let cwd_for_cache = cwd.clone();
     let env_hints_for_cache = env_hints.clone();
 
-    let (project_root, available_tools) = tokio::join!(
+    // Gather project root + available tools + git branch + cwd entries concurrently
+    let cwd_path = std::path::PathBuf::from(&cwd);
+    let cwd_for_readdir = cwd_path.clone();
+    let cwd_for_git = cwd_path.clone();
+
+    let (project_root, available_tools, git_branch, cwd_entries) = tokio::join!(
         project_root_cache.get_with(cwd_for_cache, async {
             crate::project::find_project_root(std::path::Path::new(&cwd), scan_depth)
         }),
@@ -322,6 +316,8 @@ async fn handle_natural_language(
             env_hints_for_cache.get("PATH").cloned().unwrap_or_default(),
             async { extract_available_tools(&env_hints_for_cache) }
         ),
+        async { crate::project::read_git_branch_for_path(&cwd_for_git) },
+        async { read_cwd_entries(&cwd_for_readdir).await },
     );
 
     let project_type = match project_root.as_ref() {
@@ -336,20 +332,64 @@ async fn handle_natural_language(
         None => None,
     };
 
+    let project_type_str = project_type.as_deref().unwrap_or("").to_string();
+
+    // Check cache (now includes project_type in key)
+    if let Some(cached) = state
+        .nl_cache
+        .get(&query, &cwd, &os, &project_type_str)
+        .await
+    {
+        let suggestions = cached
+            .items
+            .into_iter()
+            .map(|item| SuggestionItem {
+                text: item.command,
+                source: SuggestionSource::Llm,
+                confidence: 0.95,
+                description: item.warning,
+                kind: SuggestionKind::Command,
+            })
+            .collect();
+        return Response::SuggestionList(SuggestionListResponse { suggestions });
+    }
+
+    // Gather project commands from spec store
+    let project_commands = extract_project_commands(state, &cwd_path).await;
+
+    // Extract relevant spec flags for tools mentioned in the query
+    let relevant_specs = extract_relevant_specs(state, &query, &cwd_path).await;
+
+    // Get few-shot examples from interaction history
+    let few_shot_examples = state.get_few_shot_examples(&query);
+
     let ctx = crate::llm::NlTranslationContext {
         query: query.clone(),
         cwd: cwd.clone(),
         os: os.clone(),
-        project_type,
+        project_type: project_type.clone(),
         available_tools,
         recent_commands: req.recent_commands.clone(),
+        git_branch,
+        project_commands,
+        cwd_entries,
+        relevant_specs,
+        few_shot_examples,
     };
 
     let max_suggestions = state.config.llm.nl_max_suggestions;
+    let temperature = if max_suggestions <= 1 {
+        state.config.llm.temperature
+    } else {
+        state.config.llm.temperature_multi
+    };
     let compiled_blocklist =
         super::state::CompiledBlocklist::new(&state.config.security.command_blocklist);
 
-    let result = match llm_client.translate_command(&ctx, max_suggestions).await {
+    let result = match llm_client
+        .translate_command(&ctx, max_suggestions, temperature)
+        .await
+    {
         Ok(result) => result,
         Err(e) => {
             tracing::warn!("NL translation failed: {e}");
@@ -380,6 +420,7 @@ async fn handle_natural_language(
             &query,
             &cwd,
             &os,
+            &project_type_str,
             crate::nl_cache::NlCacheEntry {
                 items: valid_items
                     .iter()
@@ -403,6 +444,8 @@ async fn handle_natural_language(
             &cwd,
             Some(&query),
         );
+        // Update in-memory few-shot examples so new translations are available immediately
+        state.record_interaction_example(query.clone(), first.command.clone());
     }
 
     let suggestions = valid_items
@@ -417,6 +460,81 @@ async fn handle_natural_language(
         .collect();
 
     Response::SuggestionList(SuggestionListResponse { suggestions })
+}
+
+/// Read top-level directory entries (max MAX_CWD_ENTRIES).
+async fn read_cwd_entries(cwd: &std::path::Path) -> Vec<String> {
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut entries = Vec::new();
+        let Ok(read_dir) = std::fs::read_dir(&cwd) else {
+            return entries;
+        };
+        for entry in read_dir {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Append / for directories
+            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                entries.push(format!("{name}/"));
+            } else {
+                entries.push(name);
+            }
+            if entries.len() >= MAX_CWD_ENTRIES {
+                break;
+            }
+        }
+        entries.sort();
+        entries
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Extract project commands (runner → subcommand names) from project specs.
+async fn extract_project_commands(
+    state: &RuntimeState,
+    cwd: &std::path::Path,
+) -> HashMap<String, Vec<String>> {
+    let specs = state.spec_store.get_project_specs(cwd).await;
+    let mut commands: HashMap<String, Vec<String>> = HashMap::new();
+    for (name, spec) in specs.as_ref() {
+        let sub_names: Vec<String> = spec.subcommands.iter().map(|s| s.name.clone()).collect();
+        if !sub_names.is_empty() {
+            commands.insert(name.clone(), sub_names);
+        } else {
+            // Include the command itself even without subcommands
+            commands.insert(name.clone(), Vec::new());
+        }
+    }
+    commands
+}
+
+/// Extract relevant spec flags for tools mentioned in the query.
+async fn extract_relevant_specs(
+    state: &RuntimeState,
+    query: &str,
+    cwd: &std::path::Path,
+) -> HashMap<String, Vec<String>> {
+    let query_tokens: Vec<&str> = query.split_whitespace().collect();
+    let all_names = state.spec_store.all_command_names(cwd).await;
+    let mut result = HashMap::new();
+
+    for name in &all_names {
+        if query_tokens.iter().any(|t| t.eq_ignore_ascii_case(name)) {
+            if let Some(spec) = state.spec_store.lookup(name, cwd).await {
+                let flags: Vec<String> = spec
+                    .options
+                    .iter()
+                    .take(MAX_FLAGS_PER_TOOL)
+                    .filter_map(|opt| opt.long.as_ref().or(opt.short.as_ref()).cloned())
+                    .collect();
+                if !flags.is_empty() {
+                    result.insert(name.clone(), flags);
+                }
+            }
+        }
+    }
+    result
 }
 
 fn detect_os() -> String {
@@ -457,9 +575,87 @@ fn detect_os_inner() -> String {
 
 fn extract_available_tools(env_hints: &HashMap<String, String>) -> Vec<String> {
     const NOTABLE: &[&str] = &[
-        "git", "cargo", "npm", "yarn", "pnpm", "docker", "kubectl", "python", "python3", "pip",
-        "node", "go", "rustc", "java", "make", "cmake", "just", "brew", "ffmpeg", "jq", "rg", "fd",
-        "bat", "eza", "fzf", "tmux",
+        // VCS
+        "git",
+        // Rust
+        "cargo",
+        "rustc",
+        // JavaScript/TypeScript
+        "npm",
+        "yarn",
+        "pnpm",
+        "node",
+        "bun",
+        "deno",
+        // Python
+        "python",
+        "python3",
+        "pip",
+        "poetry",
+        "uv",
+        "pdm",
+        // Go
+        "go",
+        // Java/JVM
+        "java",
+        "gradle",
+        "mvn",
+        // Ruby
+        "ruby",
+        "bundle",
+        "rails",
+        // PHP
+        "php",
+        "composer",
+        // Elixir
+        "elixir",
+        "mix",
+        // Build tools
+        "make",
+        "cmake",
+        "just",
+        "ninja",
+        // Containers & orchestration
+        "docker",
+        "kubectl",
+        "helm",
+        "podman",
+        // Cloud CLIs
+        "aws",
+        "gcloud",
+        "az",
+        "fly",
+        "railway",
+        "vercel",
+        "netlify",
+        "heroku",
+        // IaC
+        "terraform",
+        "ansible",
+        // GitHub / CI
+        "gh",
+        "act",
+        // Dev environment
+        "mise",
+        "direnv",
+        // System / utilities
+        "brew",
+        "ffmpeg",
+        "jq",
+        "rg",
+        "fd",
+        "bat",
+        "eza",
+        "fzf",
+        "tmux",
+        "curl",
+        "wget",
+        // Swift / Apple
+        "swift",
+        "xcodebuild",
+        // Other languages
+        "zig",
+        "gleam",
     ];
 
     let Some(path) = env_hints.get("PATH") else {
@@ -603,6 +799,7 @@ mod tests {
                 &query,
                 &cwd,
                 &os,
+                "", // no project type for test
                 NlCacheEntry {
                     items: vec![
                         NlCacheItem {

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,15 @@ pub struct NlTranslationContext {
     pub project_type: Option<String>,
     pub available_tools: Vec<String>,
     pub recent_commands: Vec<String>,
+    pub git_branch: Option<String>,
+    /// Project commands: e.g. {"make": ["build","test"], "npm run": ["dev","lint"]}
+    pub project_commands: HashMap<String, Vec<String>>,
+    /// Top-level entries in the working directory.
+    pub cwd_entries: Vec<String>,
+    /// Known flags for tools mentioned in the query.
+    pub relevant_specs: HashMap<String, Vec<String>>,
+    /// Few-shot examples from accepted interaction history: (query, command).
+    pub few_shot_examples: Vec<(String, String)>,
 }
 
 pub struct NlTranslationItem {
@@ -229,12 +239,26 @@ impl LlmClient {
         &self,
         ctx: &NlTranslationContext,
         max_suggestions: usize,
+        temperature: f32,
     ) -> Result<NlTranslationResult, LlmError> {
         let cwd = self.scrub_if_enabled(&ctx.cwd);
-        let prompt = build_nl_prompt(ctx, &cwd, max_suggestions);
+        let (system_prompt, user_prompt) = build_nl_prompt(ctx, &cwd, max_suggestions);
+
+        let messages = vec![
+            OpenAIMessage {
+                role: "system".to_string(),
+                content: system_prompt,
+            },
+            OpenAIMessage {
+                role: "user".to_string(),
+                content: user_prompt,
+            },
+        ];
 
         let max_tokens = (max_suggestions as u32 * 80).max(512);
-        let response_text = self.request_completion(&prompt, max_tokens).await?;
+        let response_text = self
+            .request_completion_raw(messages, max_tokens, Some(temperature))
+            .await?;
         let commands = extract_commands(&response_text, max_suggestions);
         if commands.is_empty() {
             return Err(LlmError::EmptyResponse);
@@ -329,10 +353,24 @@ impl LlmClient {
     }
 
     async fn request_completion(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
+        let messages = vec![OpenAIMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }];
+        self.request_completion_raw(messages, max_tokens, None)
+            .await
+    }
+
+    async fn request_completion_raw(
+        &self,
+        messages: Vec<OpenAIMessage>,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, LlmError> {
         self.check_backoff().await?;
         self.rate_limit().await;
 
-        let result = self.call_openai(prompt, max_tokens).await;
+        let result = self.call_openai(messages, max_tokens, temperature).await;
 
         let should_backoff = result
             .as_ref()
@@ -394,14 +432,17 @@ impl LlmClient {
         Ok(resp.json().await?)
     }
 
-    async fn call_openai(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
+    async fn call_openai(
+        &self,
+        messages: Vec<OpenAIMessage>,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, LlmError> {
         let body = OpenAIRequest {
             model: self.model.clone(),
-            messages: vec![OpenAIMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
+            messages,
             max_tokens,
+            temperature,
         };
 
         let resp = self
@@ -436,9 +477,11 @@ struct OpenAIRequest {
     model: String,
     messages: Vec<OpenAIMessage>,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct OpenAIMessage {
     role: String,
     content: String,
@@ -543,90 +586,107 @@ fn build_workflow_prompt(
     )
 }
 
-fn build_nl_prompt(ctx: &NlTranslationContext, cwd: &str, max_suggestions: usize) -> String {
-    let tools_str = if ctx.available_tools.is_empty() {
-        "standard POSIX utilities".to_string()
-    } else {
-        ctx.available_tools.join(", ")
-    };
-
-    let recent_str = if ctx.recent_commands.is_empty() {
-        "(none)".to_string()
-    } else {
-        ctx.recent_commands
-            .iter()
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    let project_type = ctx.project_type.as_deref().unwrap_or("unknown");
-
-    if max_suggestions <= 1 {
-        format!(
-            r#"You are a shell command generator. Convert the user's natural language request into a single shell command.
-
-Environment:
-- Shell: zsh
-- OS: {os}
-- Working directory: {cwd}
-- Project type: {project_type}
-- Available tools: {tools}
-- Recent commands:
-{recent}
-
-User request: {query}
-
-Rules:
-- Return ONLY the shell command, nothing else
-- Use tools available on the system (prefer common POSIX utilities)
-- Use the working directory context (don't use absolute paths unless necessary)
-- If the request is ambiguous, prefer the most common interpretation
-- If the request requires multiple commands, chain them with && or |
-- Never generate destructive commands (rm -rf /, dd, mkfs) without explicit safeguards
-- For file operations, prefer relative paths from the working directory"#,
-            os = ctx.os,
-            cwd = cwd,
-            project_type = project_type,
-            tools = tools_str,
-            recent = recent_str,
-            query = ctx.query,
-        )
+/// Build NL translation prompt as (system_message, user_message).
+fn build_nl_prompt(
+    ctx: &NlTranslationContext,
+    cwd: &str,
+    max_suggestions: usize,
+) -> (String, String) {
+    // --- System prompt: behavioral rules and output format ---
+    let system = if max_suggestions <= 1 {
+        "You are a shell command generator. Convert the user's natural language request into a single shell command.\n\n\
+         Rules:\n\
+         - Return ONLY the shell command, nothing else\n\
+         - Use tools available on the system (prefer common POSIX utilities)\n\
+         - Use the working directory context (don't use absolute paths unless necessary)\n\
+         - If the request is ambiguous, prefer the most common interpretation\n\
+         - If the request requires multiple commands, chain them with && or |\n\
+         - Never generate destructive commands (rm -rf /, dd, mkfs) without explicit safeguards\n\
+         - For file operations, prefer relative paths from the working directory".to_string()
     } else {
         format!(
-            r#"You are a shell command generator. Convert the user's natural language request into {n} alternative shell commands, ranked from most likely to least likely.
-
-Environment:
-- Shell: zsh
-- OS: {os}
-- Working directory: {cwd}
-- Project type: {project_type}
-- Available tools: {tools}
-- Recent commands:
-{recent}
-
-User request: {query}
-
-Rules:
-- Return up to {n} alternative commands, one per line, numbered 1. 2. 3. etc.
-- Each line must contain ONLY the number and shell command (no explanations)
-- Vary the approaches: use different tools, flags, or techniques for each alternative
-- Rank from most likely correct interpretation to least likely
-- Use tools available on the system (prefer common POSIX utilities)
-- Use the working directory context (don't use absolute paths unless necessary)
-- If the request requires multiple commands, chain them with && or |
-- Never generate destructive commands (rm -rf /, dd, mkfs) without explicit safeguards
-- For file operations, prefer relative paths from the working directory"#,
+            "You are a shell command generator. Convert the user's natural language request into {n} alternative shell commands, ranked from most likely to least likely.\n\n\
+             Rules:\n\
+             - Return up to {n} alternative commands, one per line, numbered 1. 2. 3. etc.\n\
+             - Each line must contain ONLY the number and shell command (no explanations)\n\
+             - Vary the approaches: use different tools, flags, or techniques for each alternative\n\
+             - Rank from most likely correct interpretation to least likely\n\
+             - Use tools available on the system (prefer common POSIX utilities)\n\
+             - Use the working directory context (don't use absolute paths unless necessary)\n\
+             - If the request requires multiple commands, chain them with && or |\n\
+             - Never generate destructive commands (rm -rf /, dd, mkfs) without explicit safeguards\n\
+             - For file operations, prefer relative paths from the working directory",
             n = max_suggestions,
-            os = ctx.os,
-            cwd = cwd,
-            project_type = project_type,
-            tools = tools_str,
-            recent = recent_str,
-            query = ctx.query,
         )
+    };
+
+    // --- User prompt: environment context + query ---
+    let mut user = String::with_capacity(1024);
+    user.push_str("Environment:\n");
+    user.push_str("- Shell: zsh\n");
+    user.push_str(&format!("- OS: {}\n", ctx.os));
+    user.push_str(&format!("- Working directory: {cwd}\n"));
+    user.push_str(&format!(
+        "- Project type: {}\n",
+        ctx.project_type.as_deref().unwrap_or("unknown")
+    ));
+
+    if let Some(ref branch) = ctx.git_branch {
+        user.push_str(&format!("- Git branch: {branch}\n"));
     }
+
+    if ctx.available_tools.is_empty() {
+        user.push_str("- Available tools: standard POSIX utilities\n");
+    } else {
+        user.push_str(&format!(
+            "- Available tools: {}\n",
+            ctx.available_tools.join(", ")
+        ));
+    }
+
+    if !ctx.project_commands.is_empty() {
+        user.push_str("- Project commands:\n");
+        for (runner, commands) in &ctx.project_commands {
+            let cmds: Vec<_> = commands.iter().take(10).cloned().collect();
+            user.push_str(&format!("  {runner}: {}\n", cmds.join(", ")));
+        }
+    }
+
+    if !ctx.cwd_entries.is_empty() {
+        let entries: Vec<_> = ctx.cwd_entries.iter().take(50).cloned().collect();
+        user.push_str(&format!("- Files in cwd: {}\n", entries.join(", ")));
+    }
+
+    if !ctx.relevant_specs.is_empty() {
+        for (tool, flags) in &ctx.relevant_specs {
+            let flags_str: Vec<_> = flags.iter().take(20).cloned().collect();
+            user.push_str(&format!(
+                "- Known flags for `{tool}`: {}\n",
+                flags_str.join(", ")
+            ));
+        }
+    }
+
+    if ctx.recent_commands.is_empty() {
+        user.push_str("- Recent commands: (none)\n");
+    } else {
+        user.push_str("- Recent commands:\n");
+        for cmd in ctx.recent_commands.iter().take(5) {
+            user.push_str(&format!("{cmd}\n"));
+        }
+    }
+
+    // Few-shot examples
+    if !ctx.few_shot_examples.is_empty() {
+        user.push_str("\nExamples of commands you've previously generated:\n");
+        for (q, a) in ctx.few_shot_examples.iter().take(5) {
+            user.push_str(&format!("Q: \"{q}\"\nA: {a}\n\n"));
+        }
+    }
+
+    user.push_str(&format!("\nUser request: {}", ctx.query));
+
+    (system, user)
 }
 
 /// Extract the content of a markdown fenced code block, skipping the language tag.
@@ -664,6 +724,10 @@ fn extract_command(response: &str) -> String {
 /// Extract multiple shell commands from an LLM response.
 /// Handles numbered lists, bullets, markdown fences, and bare commands.
 fn extract_commands(response: &str, max: usize) -> Vec<String> {
+    use std::sync::LazyLock;
+    static NUM_PREFIX: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^\d+\.\s+").unwrap());
+
     let trimmed = response.trim();
 
     // If wrapped in a single fenced block, extract the block content and parse lines within
@@ -677,11 +741,10 @@ fn extract_commands(response: &str, max: usize) -> Vec<String> {
             continue;
         }
 
-        // Strip numbered prefix: "1. ", "2. ", etc.
-        if let Some((num, rest)) = line.split_once(". ") {
-            if num.trim().parse::<usize>().is_ok() {
-                line = rest.trim();
-            }
+        // Strip numbered prefix: "1. ", "2. ", "10. ", etc. using regex
+        if let Some(m) = NUM_PREFIX.find(line) {
+            line = &line[m.end()..];
+            line = line.trim();
         }
 
         // Strip bullet prefix
@@ -719,21 +782,23 @@ fn extract_commands(response: &str, max: usize) -> Vec<String> {
 
 /// Check if a command contains potentially destructive operations.
 /// Returns a warning description if so.
+///
+/// Uses simple substring matching — these are user-facing warnings, not security gates
+/// (the blocklist handles actual blocking). Simple checks are more robust and catch
+/// cases like `sudo rm` that position-anchored regexes would miss.
 fn detect_destructive_command(command: &str) -> Option<String> {
     let patterns: &[(&str, &str)] = &[
         ("rm ", "deletes files"),
-        ("rm\t", "deletes files"),
         ("rmdir ", "removes directories"),
-        ("chmod 777", "makes files world-writable"),
-        ("chmod -R", "changes permissions recursively"),
         ("dd ", "raw disk write"),
         ("mkfs", "formats filesystem"),
-        ("> ", "overwrites file"),
         ("truncate ", "truncates file"),
-        ("kill -9", "force-kills process"),
-        ("pkill ", "kills processes by name"),
-        ("-delete", "deletes files (find -delete)"),
         ("shred ", "overwrites file data"),
+        ("pkill ", "kills processes by name"),
+        ("chmod 777", "makes files world-writable"),
+        ("chmod -R", "changes permissions recursively"),
+        ("kill -9", "force-kills process"),
+        ("-delete", "deletes files (find -delete)"),
     ];
 
     for (pattern, description) in patterns {
@@ -741,6 +806,15 @@ fn detect_destructive_command(command: &str) -> Option<String> {
             return Some(description.to_string());
         }
     }
+
+    // Detect truncating redirects: `> file` but not `>>` (append).
+    // Look for `> ` not preceded by another `>`.
+    if let Some(pos) = command.find("> ") {
+        if pos == 0 || command.as_bytes()[pos - 1] != b'>' {
+            return Some("overwrites file".to_string());
+        }
+    }
+
     None
 }
 
@@ -1110,53 +1184,92 @@ ignored = true
         );
     }
 
-    #[test]
-    fn test_build_nl_prompt_contains_query() {
-        let ctx = NlTranslationContext {
-            query: "find large files".into(),
+    fn test_ctx(query: &str) -> NlTranslationContext {
+        NlTranslationContext {
+            query: query.into(),
             cwd: "/home/user/project".into(),
             os: "macOS 14.5".into(),
             project_type: Some("rust".into()),
             available_tools: vec!["git".into(), "cargo".into()],
             recent_commands: vec!["cargo build".into()],
-        };
-        let prompt = build_nl_prompt(&ctx, &ctx.cwd, 3);
-        assert!(prompt.contains("find large files"));
-        assert!(prompt.contains("macOS 14.5"));
-        assert!(prompt.contains("rust"));
-        assert!(prompt.contains("git, cargo"));
-        assert!(prompt.contains("cargo build"));
-        assert!(prompt.contains("3 alternative"));
+            git_branch: None,
+            project_commands: HashMap::new(),
+            cwd_entries: Vec::new(),
+            relevant_specs: HashMap::new(),
+            few_shot_examples: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_build_nl_prompt_contains_query() {
+        let ctx = test_ctx("find large files");
+        let (system, user) = build_nl_prompt(&ctx, &ctx.cwd, 3);
+        assert!(user.contains("find large files"));
+        assert!(user.contains("macOS 14.5"));
+        assert!(user.contains("rust"));
+        assert!(user.contains("git, cargo"));
+        assert!(user.contains("cargo build"));
+        assert!(system.contains("3 alternative"));
     }
 
     #[test]
     fn test_build_nl_prompt_single_mode() {
-        let ctx = NlTranslationContext {
-            query: "list files".into(),
-            cwd: "/tmp".into(),
-            os: "Linux".into(),
-            project_type: None,
-            available_tools: vec![],
-            recent_commands: vec![],
-        };
-        let prompt = build_nl_prompt(&ctx, &ctx.cwd, 1);
-        assert!(prompt.contains("single shell command"));
-        assert!(prompt.contains("standard POSIX utilities"));
+        let mut ctx = test_ctx("list files");
+        ctx.cwd = "/tmp".into();
+        ctx.os = "Linux".into();
+        ctx.project_type = None;
+        ctx.available_tools = vec![];
+        ctx.recent_commands = vec![];
+        let (system, user) = build_nl_prompt(&ctx, &ctx.cwd, 1);
+        assert!(system.contains("single shell command"));
+        assert!(user.contains("standard POSIX utilities"));
     }
 
     #[test]
     fn test_build_nl_prompt_empty_tools() {
-        let ctx = NlTranslationContext {
-            query: "list files".into(),
-            cwd: "/tmp".into(),
-            os: "Linux".into(),
-            project_type: None,
-            available_tools: vec![],
-            recent_commands: vec![],
-        };
-        let prompt = build_nl_prompt(&ctx, &ctx.cwd, 3);
-        assert!(prompt.contains("standard POSIX utilities"));
-        assert!(prompt.contains("unknown"));
+        let mut ctx = test_ctx("list files");
+        ctx.cwd = "/tmp".into();
+        ctx.os = "Linux".into();
+        ctx.project_type = None;
+        ctx.available_tools = vec![];
+        ctx.recent_commands = vec![];
+        let (_system, user) = build_nl_prompt(&ctx, &ctx.cwd, 3);
+        assert!(user.contains("standard POSIX utilities"));
+        assert!(user.contains("unknown"));
+    }
+
+    #[test]
+    fn test_build_nl_prompt_includes_git_branch() {
+        let mut ctx = test_ctx("rebase onto main");
+        ctx.git_branch = Some("feature/auth-flow".into());
+        let (_system, user) = build_nl_prompt(&ctx, &ctx.cwd, 1);
+        assert!(user.contains("Git branch: feature/auth-flow"));
+    }
+
+    #[test]
+    fn test_build_nl_prompt_includes_project_commands() {
+        let mut ctx = test_ctx("run tests");
+        ctx.project_commands
+            .insert("make".into(), vec!["build".into(), "test".into()]);
+        let (_system, user) = build_nl_prompt(&ctx, &ctx.cwd, 1);
+        assert!(user.contains("make: build, test"));
+    }
+
+    #[test]
+    fn test_build_nl_prompt_includes_cwd_entries() {
+        let mut ctx = test_ctx("compress logs");
+        ctx.cwd_entries = vec!["src/".into(), "logs/".into(), "Cargo.toml".into()];
+        let (_system, user) = build_nl_prompt(&ctx, &ctx.cwd, 1);
+        assert!(user.contains("src/, logs/, Cargo.toml"));
+    }
+
+    #[test]
+    fn test_build_nl_prompt_includes_few_shot() {
+        let mut ctx = test_ctx("find rust files");
+        ctx.few_shot_examples = vec![("find python files".into(), "fd -e py".into())];
+        let (_system, user) = build_nl_prompt(&ctx, &ctx.cwd, 1);
+        assert!(user.contains("find python files"));
+        assert!(user.contains("fd -e py"));
     }
 
     #[test]
