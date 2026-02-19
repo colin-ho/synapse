@@ -20,108 +20,82 @@ These run synchronously in zsh with **no timeout wrapper**. If the command hangs
 
 ## Design
 
-### Phase 1: Add timeout wrappers to inline generators
+### Phase 1: ~~Add timeout wrappers to inline generators~~ (Skipped)
 
-Modify `compsys_export.rs` to wrap generator commands in a timeout:
-
-**Before:**
-```zsh
-{local -a vals; vals=(${(f)"$(git branch --no-color 2>/dev/null)"}); compadd -a vals}
-```
-
-**After:**
-```zsh
-{local -a vals; vals=(${(f)"$(timeout 2 git branch --no-color 2>/dev/null)"}); compadd -a vals}
-```
-
-Use `timeout` (coreutils) or `gtimeout` (macOS via Homebrew) if available, or fall back to a zsh-native approach using `zsh/system` with `sysread -t`.
-
-Alternatively, emit `synapse complete` calls instead of inline generators — this routes through the daemon's existing timeout and caching infrastructure.
-
-**Key files:**
-- `src/compsys_export.rs` — modify `format_generator_action` to wrap in timeout or emit `synapse complete` calls
+Superseded by Phase 2. Inline timeout wrappers (`timeout` or `gtimeout`) would only be a stop-gap — routing through the daemon provides timeout, caching, and centralized error handling in one step.
 
 ### Phase 2: Route all generators through the daemon
 
-Instead of embedding shell commands inline in compsys files, emit `synapse complete` calls for all generator-backed args. This provides:
+Instead of embedding shell commands inline in compsys files, emit `synapse run-generator` calls. This provides:
 
 - Consistent timeout enforcement (daemon-side 500ms/5s cap)
 - Generator output caching (moka, 10s default TTL)
 - Centralized error handling and logging
-- Offline fallback to static suggestions
+- Offline fallback via direct execution with timeout
 
-**Generated compsys output would change from:**
+**Why `synapse run-generator` instead of `synapse complete`:** The original plan proposed routing through `synapse complete`, but this has two problems:
+
+1. **Arg disambiguation:** `handle_complete` returns ALL generators for the current command level. If a subcommand has multiple positional args with generators (e.g., branch + path), results get mixed. The `_arguments` spec dispatches to different actions per positional arg, so each action needs only its specific generator's output.
+
+2. **Daemon restart bootstrapping:** The discovered_cache is populated in-memory during discovery. After daemon restart, it's empty. Compsys files that call `synapse complete` for discovered commands would get nothing until re-discovery. `synapse run-generator` doesn't depend on spec lookup — it takes the generator command directly.
+
+**Generated compsys output changes from:**
 ```zsh
 ':branch:{local -a vals; vals=(${(f)"$(git branch --no-color 2>/dev/null)"}); compadd -a vals}'
 ```
 
 **To:**
 ```zsh
-':branch:{local -a vals; vals=(${(f)"$(synapse complete git checkout --cwd $PWD 2>/dev/null)"}); compadd -a vals}'
+':branch:{local -a vals; vals=(${(f)"$(synapse run-generator "git branch --no-color" --cwd "$PWD" --strip-prefix "* " 2>/dev/null)"}); compadd -a vals}'
 ```
 
-This requires the daemon to be aware of discovered specs (currently it only looks up project specs). See Phase 3.
+The `synapse run-generator` CLI:
+- Connects to the daemon and sends a `RunGenerator` protocol request
+- Daemon runs the command via `SpecStore::run_generator` (timeout + caching)
+- If daemon is down, falls back to direct execution with timeout (`GENERATOR_TIMEOUT_MS`)
+- Outputs one value per line (compsys action always splits on newlines)
+- `strip_prefix` and `split_on` are handled daemon-side, not in the compsys file
 
 **Key files:**
-- `src/compsys_export.rs` — change `format_generator_action` to emit `synapse complete` calls
-- `src/spec.rs` — no changes
+- `src/protocol.rs` — add `RunGenerator` request type
+- `src/daemon/handlers.rs` — add `handle_run_generator`
+- `src/daemon/mod.rs` — add `RunGenerator` CLI subcommand
+- `src/daemon/lifecycle.rs` — add `run_generator_query` with offline fallback
+- `src/compsys_export.rs` — change `format_generator_action` to emit `synapse run-generator` calls
 
-### Phase 3: Make discovered specs available to the daemon
+### Phase 3: Make discovered specs available to the daemon (implemented)
 
-Currently `spec_store.lookup()` only searches `project_cache`. Discovered specs exist only as compsys files on disk — the daemon never reads them back. To route generators through the daemon, it needs access to discovered specs.
-
-Two options:
-
-**Option A: Read compsys files on demand.** On `lookup()` miss for project specs, check if `completions_dir/_command` exists, read it, parse via `parse_zsh_completion`, cache the result. Downside: the regex parser only extracts options, not generators or subcommand structure.
-
-**Option B: Cache discovered specs in memory before writing.** When `save_discovered_spec` writes the compsys file, also store the `CommandSpec` in a new `discovered_cache: Cache<String, CommandSpec>`. On `lookup()`, check project cache then discovered cache. This preserves the full spec structure including generators.
-
-**Recommendation: Option B.** It's simpler, preserves full spec fidelity, and the cache can be loaded from disk on startup by re-reading the compsys files (with the limitation that parsed-back specs lose some structure).
+**Option B (as recommended).** When `save_discovered_spec` writes the compsys file, also store the `CommandSpec` in `discovered_cache: Cache<String, CommandSpec>`. `lookup()` checks project cache then discovered cache.
 
 **Key files:**
-- `src/spec_store.rs` — add `discovered_cache: Cache<String, CommandSpec>`, populate in `save_discovered_spec`, check in `lookup`
-- `src/daemon/handlers.rs` — no changes needed (uses `spec_store.lookup`)
+- `src/spec_store.rs` — add `discovered_cache`, populate in `save_discovered_spec`, check in `lookup`, clear in `clear_caches`
 
-### Phase 4: Warm generator cache on `chpwd`
+### Phase 4: Warm generator cache on `chpwd` (deferred)
 
-When the `CwdChanged` event fires (from the proactive-project-completions design), pre-run generators for the new cwd's project specs. This eliminates cold-cache latency on the first Tab press after a directory change.
+Requires a `CwdChanged` protocol event that doesn't exist yet. Deferred until the proactive-project-completions work adds this infrastructure.
 
-1. On `CwdChanged`, load project specs for the new cwd.
-2. For each spec with generators, run `run_generator` in the background (fire-and-forget).
-3. By the time the user presses Tab, the generator cache is warm.
+### Phase 5: ~~Improve offline fallback~~ (partially addressed)
 
-**Key files:**
-- `src/daemon/handlers.rs` — in `handle_cwd_changed`, spawn generator pre-warming tasks
-- `src/spec_store.rs` — add `prewarm_generators(&self, specs: &[CommandSpec], cwd: &Path)` method
+The `synapse run-generator` CLI already provides offline fallback by running the generator command directly with a timeout when the daemon is unreachable. This is simpler than a file-based cache and covers the main use case.
 
-### Phase 5: Improve offline fallback
-
-When the daemon is unreachable, `run_complete_query` falls back to a fresh `SpecStore` with no generators. Improve this:
-
-1. Cache the last successful generator result per `(command, cwd)` to a small file in `completions_dir/cache/`.
-2. On offline fallback, read the cached file and return those values.
-3. This provides stale-but-useful completions when the daemon is down.
-
-**Key files:**
-- `src/daemon/lifecycle.rs` — modify offline fallback in `run_complete_query`
-- `src/spec_store.rs` — add file-based generator result cache (write-through from `run_generator`)
+A file-based stale cache could still be added later for faster offline completions (avoiding generator execution entirely), but the direct-execution fallback is sufficient for now.
 
 ## Implementation Plan
 
-| Step | Description | Files | Est. size |
-|------|------------|-------|-----------|
-| 1 | Add `discovered_cache` to `SpecStore`, populate in `save_discovered_spec` | `src/spec_store.rs` | S |
-| 2 | Extend `lookup()` to check discovered cache after project cache | `src/spec_store.rs` | S |
-| 3 | Change `format_generator_action` to emit `synapse complete` calls instead of inline shell | `src/compsys_export.rs` | M |
-| 4 | Update `handle_complete` to resolve generators from discovered specs | `src/daemon/handlers.rs` | S |
-| 5 | Add `prewarm_generators` method to `SpecStore` | `src/spec_store.rs` | S |
-| 6 | Call `prewarm_generators` from `handle_cwd_changed` handler | `src/daemon/handlers.rs` | S |
-| 7 | Add file-based generator result cache for offline fallback | `src/spec_store.rs`, `src/daemon/lifecycle.rs` | M |
-| 8 | Tests: discovered cache lookup, synapse-complete-based compsys output, offline fallback | `tests/` | M |
+| Step | Description | Files | Status |
+|------|------------|-------|--------|
+| 1 | Add `discovered_cache` to `SpecStore`, populate in `save_discovered_spec` | `src/spec_store.rs` | Done |
+| 2 | Extend `lookup()` to check discovered cache after project cache | `src/spec_store.rs` | Done |
+| 3 | Add `RunGenerator` protocol request + daemon handler | `src/protocol.rs`, `src/daemon/handlers.rs` | Done |
+| 4 | Add `synapse run-generator` CLI with daemon + offline fallback | `src/daemon/mod.rs`, `src/daemon/lifecycle.rs` | Done |
+| 5 | Change `format_generator_action` to emit `synapse run-generator` calls | `src/compsys_export.rs` | Done |
+| 6 | Tests: discovered cache, protocol deserialization, compsys output format | unit tests | Done |
+| — | Add `CwdChanged` event + `prewarm_generators` | `src/protocol.rs`, `src/daemon/handlers.rs`, `src/spec_store.rs` | Deferred |
+| — | File-based generator result cache for offline fallback | `src/spec_store.rs`, `src/daemon/lifecycle.rs` | Deferred |
 
 ## Risks and Mitigations
 
-- **Daemon dependency for all completions:** Routing generators through the daemon means Tab completion for generator-backed args fails silently when the daemon is down (returns empty). Phase 5 mitigates this with a file-based fallback cache. Static completions (options, subcommand names) are still embedded in the compsys file and work without the daemon.
+- **Daemon dependency for generator completions:** When the daemon is down, `synapse run-generator` falls back to direct execution with a 5s timeout. Static completions (options, subcommand names) are still embedded in the compsys file and work without the daemon or synapse binary.
 - **Latency regression from socket round-trip:** Adding a socket call where there was previously an inline shell command adds ~1-5ms overhead. This is negligible compared to generator command execution time (typically 50-500ms). The caching benefit (10s TTL vs. running the command every time) likely makes this faster in practice.
-- **Discovered cache memory usage:** Specs for hundreds of commands could be large. Use a moka cache with a max capacity (e.g., 500 entries) and TTL matching `DISCOVER_MAX_AGE_SECS` (7 days). Entries are small (~1-10KB per spec).
-- **Breaking change in compsys file format:** Existing compsys files with inline generators will continue to work. New/regenerated files will use `synapse complete`. Users need to regenerate files to get the new behavior (`synapse generate-completions --force`).
+- **Discovered cache memory usage:** Specs for hundreds of commands could be large. Uses a moka cache with max capacity 500 entries and TTL matching `DISCOVER_MAX_AGE_SECS` (7 days). Entries are small (~1-10KB per spec). Cache is empty after daemon restart (specs are re-discovered on use).
+- **Breaking change in compsys file format:** Existing compsys files with inline generators continue to work. New/regenerated files use `synapse run-generator`. Users need to regenerate files to get the new behavior (`synapse generate-completions --force`).

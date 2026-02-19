@@ -77,6 +77,23 @@ enum Commands {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
+    /// Run a generator command through the daemon's timeout and caching infrastructure
+    RunGenerator {
+        /// Generator shell command to run
+        command: String,
+
+        /// Working directory
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+
+        /// Strip this prefix from each output line
+        #[arg(long)]
+        strip_prefix: Option<String>,
+
+        /// Split output on this delimiter (default: newline)
+        #[arg(long)]
+        split_on: Option<String>,
+    },
     /// Send protocol requests directly to a running daemon (for testing/debugging)
     Probe {
         /// Override the socket path
@@ -158,6 +175,14 @@ pub async fn run() -> anyhow::Result<()> {
             cwd,
         }) => {
             lifecycle::run_complete_query(command, context, cwd).await?;
+        }
+        Some(Commands::RunGenerator {
+            command,
+            cwd,
+            strip_prefix,
+            split_on,
+        }) => {
+            lifecycle::run_generator_query(command, cwd, strip_prefix, split_on).await?;
         }
         None => {
             if std::io::stdout().is_terminal() {
