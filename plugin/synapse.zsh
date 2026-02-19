@@ -31,8 +31,6 @@ typeset -ga _SYNAPSE_DROPDOWN_SOURCES=()
 typeset -ga _SYNAPSE_DROPDOWN_DESCS=()
 typeset -gi _SYNAPSE_DROPDOWN_MAX_VISIBLE=8
 typeset -gi _SYNAPSE_DROPDOWN_SCROLL=0
-typeset -g _SYNAPSE_DROPDOWN_SELECTED=""
-typeset -g _SYNAPSE_DROPDOWN_INSERT_KEY=""
 
 # --- Natural Language ---
 typeset -g _SYNAPSE_NL_PREFIX="?"
@@ -341,10 +339,15 @@ _synapse_clear_dropdown() {
     _SYNAPSE_DROPDOWN_SOURCES=()
     _SYNAPSE_DROPDOWN_DESCS=()
     _SYNAPSE_DROPDOWN_SCROLL=0
-    _SYNAPSE_DROPDOWN_SELECTED=""
-    _SYNAPSE_DROPDOWN_INSERT_KEY=""
     POSTDISPLAY=""
     region_highlight=()
+}
+
+# Common cleanup when leaving the dropdown keymap.
+_synapse_dropdown_exit() {
+    _synapse_clear_dropdown
+    zle -K main
+    zle reset-prompt
 }
 
 # --- Dropdown Protocol ---
@@ -455,21 +458,9 @@ _synapse_nl_execute() {
     _synapse_render_dropdown
     zle -R
 
-    # Enter modal dropdown navigation
-    zle recursive-edit -K synapse-dropdown
-    _synapse_dropdown_finish
-}
-
-# Finish dropdown after recursive-edit
-_synapse_dropdown_finish() {
-    if [[ -n "$_SYNAPSE_DROPDOWN_SELECTED" ]]; then
-        BUFFER="$_SYNAPSE_DROPDOWN_SELECTED"
-        CURSOR=${#BUFFER}
-    elif [[ -n "$_SYNAPSE_DROPDOWN_INSERT_KEY" ]]; then
-        LBUFFER+="$_SYNAPSE_DROPDOWN_INSERT_KEY"
-    fi
-    _synapse_clear_dropdown
-    zle reset-prompt
+    # Switch to dropdown keymap — each dropdown widget handles its own
+    # cleanup and switches back to main via _synapse_dropdown_exit.
+    zle -K synapse-dropdown
 }
 
 # --- Key Widgets ---
@@ -481,7 +472,7 @@ _synapse_accept_line() {
     if _synapse_buffer_has_nl_prefix; then
         _synapse_nl_execute
     else
-        zle .accept-line
+        zle accept-line
     fi
 }
 
@@ -513,19 +504,18 @@ _synapse_dropdown_up() {
 }
 
 _synapse_dropdown_accept() {
-    _SYNAPSE_DROPDOWN_SELECTED="${_SYNAPSE_DROPDOWN_ITEMS[$(( _SYNAPSE_DROPDOWN_INDEX + 1 ))]}"
-    zle .send-break
+    BUFFER="${_SYNAPSE_DROPDOWN_ITEMS[$(( _SYNAPSE_DROPDOWN_INDEX + 1 ))]}"
+    CURSOR=${#BUFFER}
+    _synapse_dropdown_exit
 }
 
 _synapse_dropdown_dismiss() {
-    _SYNAPSE_DROPDOWN_SELECTED=""
-    zle .send-break
+    _synapse_dropdown_exit
 }
 
 _synapse_dropdown_close_and_insert() {
-    _SYNAPSE_DROPDOWN_INSERT_KEY="${KEYS}"
-    _SYNAPSE_DROPDOWN_SELECTED=""
-    zle .send-break
+    LBUFFER+="${KEYS}"
+    _synapse_dropdown_exit
 }
 
 # --- Lifecycle Hooks ---
@@ -591,6 +581,8 @@ _synapse_cleanup() {
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
     add-zsh-hook -d chpwd _synapse_chpwd 2>/dev/null
     bindkey -D synapse-dropdown &>/dev/null
+    bindkey '^M' accept-line 2>/dev/null
+    bindkey '^J' accept-line 2>/dev/null
     unset _SYNAPSE_LOADED
 }
 
@@ -606,7 +598,9 @@ _synapse_init() {
     zle -N synapse-dropdown-accept _synapse_dropdown_accept
     zle -N synapse-dropdown-dismiss _synapse_dropdown_dismiss
     zle -N synapse-dropdown-close-and-insert _synapse_dropdown_close_and_insert
-    zle -N accept-line _synapse_accept_line
+    zle -N synapse-accept-line _synapse_accept_line
+    bindkey '^M' synapse-accept-line
+    bindkey '^J' synapse-accept-line
 
     # Create dropdown keymap from scratch (NOT from main) so we don't
     # inherit accept-line or other widgets that interfere with the modal UI.
@@ -622,9 +616,9 @@ _synapse_init() {
         bindkey -M synapse-dropdown "${seq}A" synapse-dropdown-up
         bindkey -M synapse-dropdown "${seq}C" synapse-dropdown-accept
     done
-    # Accept
+    # Accept (^M only — ^J left unbound so a trailing LF from CR+LF
+    # terminals doesn't immediately accept on the Enter that started the query)
     bindkey -M synapse-dropdown '^M' synapse-dropdown-accept     # CR (Enter)
-    bindkey -M synapse-dropdown '^J' synapse-dropdown-accept     # NL (Enter)
     bindkey -M synapse-dropdown '\t' synapse-dropdown-accept     # Tab
     # Dismiss
     bindkey -M synapse-dropdown '^[' synapse-dropdown-dismiss    # Escape
