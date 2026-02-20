@@ -110,6 +110,7 @@ async fn handle_connection(
         let response_line = response.to_tsv();
         let mut w = writer.lock().await;
         w.send(response_line).await?;
+        w.flush().await?;
         drop(w);
     }
 
