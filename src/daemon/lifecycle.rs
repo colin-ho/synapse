@@ -263,6 +263,11 @@ pub(super) async fn add_command(
         std::process::exit(1);
     }
 
+    if spec_store.has_system_completion(&command) {
+        eprintln!("'{command}' already has completions installed (found in zsh fpath)");
+        std::process::exit(1);
+    }
+
     let cwd = std::env::current_dir().ok();
     match spec_store.discover_command(&command, cwd.as_deref()).await {
         Some((spec, path)) => {

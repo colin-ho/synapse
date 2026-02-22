@@ -257,6 +257,13 @@ impl SpecStore {
         }
     }
 
+    pub fn has_system_completion(&self, command: &str) -> bool {
+        self.zsh_index
+            .read()
+            .map(|idx| idx.contains(command))
+            .unwrap_or(false)
+    }
+
     pub fn can_discover_command(&self, command: &str) -> bool {
         self.config.discover_from_help
             && !DISCOVERY_BLOCKLIST.contains(&command)
