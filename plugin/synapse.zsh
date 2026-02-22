@@ -604,6 +604,45 @@ _synapse_cleanup() {
     unset _SYNAPSE_LOADED
 }
 
+# --- Shell wrapper ---
+# Intercepts `synapse add` and `synapse scan` to auto-register completions
+# so they take effect immediately without restarting the shell.
+synapse() {
+    local bin="${SYNAPSE_BIN:-synapse}"
+    if [[ "$1" == "add" ]]; then
+        command "$bin" "$@" || return $?
+        # Extract command name (first positional arg after "add")
+        shift
+        local cmd=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --output-dir) shift ;;
+                --*) ;;
+                *) cmd="$1"; break ;;
+            esac
+            shift
+        done
+        if [[ -n "$cmd" ]] && (( $+functions[compdef] )); then
+            autoload -Uz "_${cmd}"
+            compdef "_${cmd}" "${cmd}"
+        fi
+    elif [[ "$1" == "scan" ]]; then
+        command "$bin" "$@" || return $?
+        local comp_dir="${HOME}/.synapse/completions"
+        if [[ -d "$comp_dir" ]] && (( $+functions[compdef] )); then
+            local f
+            for f in "$comp_dir"/_*(N); do
+                local func="${f:t}"
+                local cmd="${func#_}"
+                autoload -Uz "$func"
+                compdef "$func" "$cmd"
+            done
+        fi
+    else
+        command "$bin" "$@"
+    fi
+}
+
 # --- Setup ---
 
 _synapse_init() {
