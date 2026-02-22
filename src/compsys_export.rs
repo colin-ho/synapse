@@ -213,13 +213,44 @@ fn export_recursive_command(out: &mut String, fn_name: &str, options: &[OptionSp
 
 /// Export a command with subcommands using _arguments -C and state dispatch.
 fn export_subcommand_command(out: &mut String, fn_name: &str, spec: &CommandSpec) {
+    export_dispatch_command(out, fn_name, &spec.options, &spec.subcommands);
+
+    // Generate subcommand functions
+    for sub in &spec.subcommands {
+        let sub_fn_name = subcommand_fn_name(fn_name, &sub.name);
+        out.push('\n');
+        export_subcommand_fn(out, &sub_fn_name, sub);
+    }
+}
+
+fn subcommand_fn_name(parent_fn_name: &str, subcommand_name: &str) -> String {
+    format!("{parent_fn_name}_{}", subcommand_name.replace('-', "_"))
+}
+
+fn subcommand_pattern(sub: &SubcommandSpec) -> String {
+    if sub.aliases.is_empty() {
+        format!("({})", sub.name)
+    } else {
+        let all: Vec<&str> = std::iter::once(sub.name.as_str())
+            .chain(sub.aliases.iter().map(|a| a.as_str()))
+            .collect();
+        format!("({})", all.join("|"))
+    }
+}
+
+fn export_dispatch_command(
+    out: &mut String,
+    fn_name: &str,
+    options: &[OptionSpec],
+    subcommands: &[SubcommandSpec],
+) {
     out.push_str(&format!("{fn_name}() {{\n"));
     out.push_str("    local curcontext=\"$curcontext\" state line\n");
     out.push_str("    typeset -A opt_args\n");
     out.push('\n');
     out.push_str("    _arguments -C \\\n");
 
-    for opt in &spec.options {
+    for opt in options {
         let line = format_option(opt);
         out.push_str(&format!("        {line} \\\n"));
     }
@@ -231,7 +262,7 @@ fn export_subcommand_command(out: &mut String, fn_name: &str, spec: &CommandSpec
     out.push_str("        (cmd)\n");
     out.push_str("            local -a commands=(\n");
 
-    for sub in &spec.subcommands {
+    for sub in subcommands {
         let desc = sub.description.as_deref().unwrap_or("");
         let escaped_desc = escape_zsh_string(desc);
         out.push_str(&format!(
@@ -246,16 +277,9 @@ fn export_subcommand_command(out: &mut String, fn_name: &str, spec: &CommandSpec
     out.push_str("        (args)\n");
     out.push_str("            case ${line[1]} in\n");
 
-    for sub in &spec.subcommands {
-        let sub_fn_name = format!("{fn_name}_{}", sub.name.replace('-', "_"));
-        let pattern = if sub.aliases.is_empty() {
-            format!("({})", sub.name)
-        } else {
-            let all: Vec<&str> = std::iter::once(sub.name.as_str())
-                .chain(sub.aliases.iter().map(|a| a.as_str()))
-                .collect();
-            format!("({})", all.join("|"))
-        };
+    for sub in subcommands {
+        let sub_fn_name = subcommand_fn_name(fn_name, &sub.name);
+        let pattern = subcommand_pattern(sub);
         out.push_str(&format!("                {pattern} {sub_fn_name} ;;\n"));
     }
 
@@ -263,73 +287,17 @@ fn export_subcommand_command(out: &mut String, fn_name: &str, spec: &CommandSpec
     out.push_str("            ;;\n");
     out.push_str("    esac\n");
     out.push_str("}\n");
-
-    // Generate subcommand functions
-    for sub in &spec.subcommands {
-        let sub_fn_name = format!("{fn_name}_{}", sub.name.replace('-', "_"));
-        out.push('\n');
-        export_subcommand_fn(out, &sub_fn_name, sub);
-    }
 }
 
 /// Export a subcommand function (recursive for nested subcommands).
 fn export_subcommand_fn(out: &mut String, fn_name: &str, sub: &SubcommandSpec) {
     if !sub.subcommands.is_empty() {
         // Nested subcommands — use _arguments -C with state dispatch
-        out.push_str(&format!("{fn_name}() {{\n"));
-        out.push_str("    local curcontext=\"$curcontext\" state line\n");
-        out.push_str("    typeset -A opt_args\n");
-        out.push('\n');
-        out.push_str("    _arguments -C \\\n");
-
-        for opt in &sub.options {
-            let line = format_option(opt);
-            out.push_str(&format!("        {line} \\\n"));
-        }
-
-        out.push_str("        '1:command:->cmd' \\\n");
-        out.push_str("        '*::args:->args'\n");
-        out.push('\n');
-        out.push_str("    case $state in\n");
-        out.push_str("        (cmd)\n");
-        out.push_str("            local -a commands=(\n");
-
-        for nested in &sub.subcommands {
-            let desc = nested.description.as_deref().unwrap_or("");
-            let escaped_desc = escape_zsh_string(desc);
-            out.push_str(&format!(
-                "                '{}:{}'\n",
-                nested.name, escaped_desc
-            ));
-        }
-
-        out.push_str("            )\n");
-        out.push_str("            _describe 'command' commands\n");
-        out.push_str("            ;;\n");
-        out.push_str("        (args)\n");
-        out.push_str("            case ${line[1]} in\n");
-
-        for nested in &sub.subcommands {
-            let nested_fn = format!("{fn_name}_{}", nested.name.replace('-', "_"));
-            let pattern = if nested.aliases.is_empty() {
-                format!("({})", nested.name)
-            } else {
-                let all: Vec<&str> = std::iter::once(nested.name.as_str())
-                    .chain(nested.aliases.iter().map(|a| a.as_str()))
-                    .collect();
-                format!("({})", all.join("|"))
-            };
-            out.push_str(&format!("                {pattern} {nested_fn} ;;\n"));
-        }
-
-        out.push_str("            esac\n");
-        out.push_str("            ;;\n");
-        out.push_str("    esac\n");
-        out.push_str("}\n");
+        export_dispatch_command(out, fn_name, &sub.options, &sub.subcommands);
 
         // Recurse into nested subcommands
         for nested in &sub.subcommands {
-            let nested_fn = format!("{fn_name}_{}", nested.name.replace('-', "_"));
+            let nested_fn = subcommand_fn_name(fn_name, &nested.name);
             out.push('\n');
             export_subcommand_fn(out, &nested_fn, nested);
         }
