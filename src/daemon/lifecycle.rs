@@ -323,7 +323,15 @@ pub(super) async fn scan_project(
     let spec_store = SpecStore::new(config.spec.clone(), None);
     let project_specs: Vec<_> = spec_store.lookup_all_project_specs(&cwd).await;
 
-    let report = crate::compsys_export::generate_all(&project_specs, &existing, &output, gap_only)?;
+    let mut report =
+        crate::compsys_export::generate_all(&project_specs, &existing, &output, gap_only)?;
+
+    // Clean up stale project-auto files that weren't regenerated
+    if !force {
+        let generated_set: std::collections::HashSet<String> =
+            report.generated.iter().cloned().collect();
+        report.removed = crate::compsys_export::remove_stale_project_auto(&output, &generated_set)?;
+    }
 
     println!(
         "Generated {} completions in {}",
@@ -338,6 +346,12 @@ pub(super) async fn scan_project(
     }
     for name in &report.generated {
         println!("  _{name}");
+    }
+    if !report.removed.is_empty() {
+        println!("Removed {} stale project completions", report.removed.len());
+        for name in &report.removed {
+            println!("  _{name}");
+        }
     }
 
     Ok(())

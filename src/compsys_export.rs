@@ -74,6 +74,7 @@ pub fn write_completion_file(spec: &CommandSpec, dir: &Path) -> io::Result<PathB
 pub struct GenerationReport {
     pub generated: Vec<String>,
     pub skipped_existing: Vec<String>,
+    pub removed: Vec<String>,
 }
 
 /// Generate completions for all specs, skipping commands with existing compsys functions.
@@ -104,6 +105,56 @@ pub fn generate_all(
     }
 
     Ok(report)
+}
+
+/// Remove stale project-auto completion files that weren't regenerated.
+///
+/// Scans `output_dir` for files with `# Source: project-auto` headers and deletes
+/// any whose command name is not in `generated_names`. Returns the list of removed
+/// command names.
+pub fn remove_stale_project_auto(
+    output_dir: &Path,
+    generated_names: &HashSet<String>,
+) -> io::Result<Vec<String>> {
+    let mut removed = Vec::new();
+    let entries = match std::fs::read_dir(output_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(removed),
+        Err(e) => return Err(e),
+    };
+
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let name_str = file_name.to_string_lossy();
+
+        // Only consider completion files (start with _)
+        if !name_str.starts_with('_') {
+            continue;
+        }
+
+        let cmd_name = &name_str[1..];
+        if generated_names.contains(cmd_name) {
+            continue;
+        }
+
+        // Read first few lines to check for project-auto source header
+        let content = match std::fs::read_to_string(entry.path()) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let is_project_auto = content
+            .lines()
+            .take(5)
+            .any(|line| line == "# Source: project-auto");
+
+        if is_project_auto {
+            std::fs::remove_file(entry.path())?;
+            removed.push(cmd_name.to_string());
+        }
+    }
+
+    Ok(removed)
 }
 
 // --- Internal export functions ---
@@ -878,5 +929,54 @@ mod tests {
     fn test_completions_dir() {
         let dir = completions_dir();
         assert!(dir.ends_with(".synapse/completions"));
+    }
+
+    #[test]
+    fn test_remove_stale_project_auto() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write a project-auto file that will become stale
+        let stale = CommandSpec {
+            name: "make".into(),
+            source: SpecSource::ProjectAuto,
+            ..Default::default()
+        };
+        write_completion_file(&stale, dir.path()).unwrap();
+
+        // Write a project-auto file that will be regenerated
+        let current = CommandSpec {
+            name: "npm".into(),
+            source: SpecSource::ProjectAuto,
+            ..Default::default()
+        };
+        write_completion_file(&current, dir.path()).unwrap();
+
+        // Write a discovered file — should never be removed
+        let discovered = CommandSpec {
+            name: "git".into(),
+            source: SpecSource::Discovered,
+            ..Default::default()
+        };
+        write_completion_file(&discovered, dir.path()).unwrap();
+
+        // Write a non-synapse file — should never be removed
+        std::fs::write(dir.path().join("_custom"), "# custom completion\n").unwrap();
+
+        let generated = HashSet::from(["npm".to_string()]);
+        let removed = remove_stale_project_auto(dir.path(), &generated).unwrap();
+
+        assert_eq!(removed, vec!["make"]);
+        assert!(!dir.path().join("_make").exists());
+        assert!(dir.path().join("_npm").exists());
+        assert!(dir.path().join("_git").exists());
+        assert!(dir.path().join("_custom").exists());
+    }
+
+    #[test]
+    fn test_remove_stale_project_auto_nonexistent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nonexistent");
+        let removed = remove_stale_project_auto(&missing, &HashSet::new()).unwrap();
+        assert!(removed.is_empty());
     }
 }
