@@ -20,14 +20,14 @@ pub(super) fn format_option(opt: &OptionSpec) -> String {
     match (opt.short.as_deref(), opt.long.as_deref()) {
         (Some(short), Some(long)) => {
             let eq = if opt.takes_arg { "=" } else { "" };
-            format!("'({short} {long})'{{{short},{long}{eq}}}'[{desc}]'{arg_suffix}")
+            format!("'({short} {long})'{{{short},{long}{eq}}}'[{desc}]{arg_suffix}'")
         }
         (None, Some(long)) => {
             let eq = if opt.takes_arg { "=" } else { "" };
-            format!("'{long}{eq}[{desc}]'{arg_suffix}")
+            format!("'{long}{eq}[{desc}]{arg_suffix}'")
         }
         (Some(short), None) => {
-            format!("'{short}[{desc}]'{arg_suffix}")
+            format!("'{short}[{desc}]{arg_suffix}'")
         }
         (None, None) => String::new(),
     }
