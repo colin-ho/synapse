@@ -53,7 +53,6 @@ nl_max_suggestions = 3                 # number of alternative commands to gener
 [completions]
 # output_dir = "~/.synapse/completions"              # override output directory
 gap_only = true                        # only generate for commands without existing compsys functions
-auto_regenerate = true                 # automatically regenerate when new specs are discovered
 
 [logging]
 interaction_log = "~/.synapse/interactions.jsonl"

@@ -52,8 +52,8 @@ enum Commands {
     },
     /// Add synapse to your ~/.zshrc
     Install,
-    /// Generate compsys completion files for all known specs
-    GenerateCompletions {
+    /// Scan project files in cwd and write completion files (Makefile, package.json, etc.)
+    Scan {
         /// Output directory (default: ~/.synapse/completions/)
         #[arg(long)]
         output_dir: Option<PathBuf>,
@@ -94,6 +94,15 @@ enum Commands {
         /// Split output on this delimiter (default: newline)
         #[arg(long)]
         split_on: Option<String>,
+    },
+    /// Add completions for a command by running its --help or completion generator
+    Add {
+        /// Command name to add
+        command: String,
+
+        /// Output directory (default: ~/.synapse/completions/)
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
     },
     /// Send protocol requests directly to a running daemon (for testing/debugging)
     Probe {
@@ -142,6 +151,12 @@ pub async fn run() -> anyhow::Result<()> {
         }) => {
             lifecycle::start_daemon(verbose, log_file, foreground, socket_path).await?;
         }
+        Some(Commands::Add {
+            command,
+            output_dir,
+        }) => {
+            lifecycle::add_command(command, output_dir).await?;
+        }
         Some(Commands::Probe {
             socket_path,
             stdio,
@@ -163,12 +178,12 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::Install) => {
             shell::setup_shell_rc("~/.zshrc")?;
         }
-        Some(Commands::GenerateCompletions {
+        Some(Commands::Scan {
             output_dir,
             force,
             no_gap_check,
         }) => {
-            lifecycle::generate_completions(output_dir, force, no_gap_check).await?;
+            lifecycle::scan_project(output_dir, force, no_gap_check).await?;
         }
         Some(Commands::Complete {
             command,

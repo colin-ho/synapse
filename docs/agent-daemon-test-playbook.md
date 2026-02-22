@@ -88,7 +88,6 @@ base_url = "http://127.0.0.1:1234/v1"
 discover_from_help = true
 
 [completions]
-auto_regenerate = true
 gap_only = false
 EOF
 

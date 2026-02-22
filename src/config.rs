@@ -121,8 +121,6 @@ pub struct CompletionsConfig {
     pub output_dir: Option<String>,
     /// Only generate for commands without existing compsys functions
     pub gap_only: bool,
-    /// Automatically regenerate when new specs are discovered
-    pub auto_regenerate: bool,
 }
 
 // --- Defaults ---
@@ -205,7 +203,6 @@ impl Default for CompletionsConfig {
         Self {
             output_dir: None,
             gap_only: true,
-            auto_regenerate: true,
         }
     }
 }

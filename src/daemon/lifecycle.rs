@@ -200,10 +200,11 @@ pub(super) async fn start_daemon(
             PathBuf::from(s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()))
         })
         .unwrap_or_else(crate::compsys_export::completions_dir);
-    let spec_store = Arc::new(
-        SpecStore::with_completions_dir(config.spec.clone(), discovery_llm_client, completions_dir)
-            .with_auto_regenerate(config.completions.auto_regenerate),
-    );
+    let spec_store = Arc::new(SpecStore::with_completions_dir(
+        config.spec.clone(),
+        discovery_llm_client,
+        completions_dir,
+    ));
 
     let interaction_logger = InteractionLogger::new(
         config.interaction_log_path(),
@@ -236,7 +237,50 @@ pub(super) async fn start_daemon(
     result
 }
 
-pub(super) async fn generate_completions(
+pub(super) async fn add_command(
+    command: String,
+    output_dir: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let config = Config::load();
+    let completions_dir = output_dir.unwrap_or_else(|| {
+        config
+            .completions
+            .output_dir
+            .as_ref()
+            .map(|s| {
+                PathBuf::from(
+                    s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()),
+                )
+            })
+            .unwrap_or_else(crate::compsys_export::completions_dir)
+    });
+
+    let spec_store = SpecStore::with_completions_dir(config.spec.clone(), None, completions_dir);
+
+    // Pre-check blocklist
+    if !spec_store.can_discover_command(&command) {
+        eprintln!("Cannot discover '{command}': blocked by safety blocklist or config");
+        std::process::exit(1);
+    }
+
+    let cwd = std::env::current_dir().ok();
+    match spec_store.discover_command(&command, cwd.as_deref()).await {
+        Some((spec, path)) => {
+            let n_opts = spec.options.len();
+            let n_subs = spec.subcommands.len();
+            println!("Discovered {command}: {n_opts} options, {n_subs} subcommands",);
+            println!("  Wrote {}", path.display());
+        }
+        None => {
+            eprintln!("No spec discovered for '{command}' (--help produced no parseable output)");
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) async fn scan_project(
     output_dir: Option<PathBuf>,
     force: bool,
     no_gap_check: bool,

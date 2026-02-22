@@ -58,8 +58,8 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
         "Command executed"
     );
 
-    // Warm caches for the command (safe strategies only: parse system zsh
-    // completion files + allowlisted completion generators).
+    // Warm caches for the command (safe strategy: parse system zsh completion
+    // files into in-memory cache for NL context — no command execution).
     let command_name = report.command.split_whitespace().next().unwrap_or("");
     if !command_name.is_empty() {
         let cwd = if report.cwd.is_empty() {
@@ -76,22 +76,12 @@ async fn handle_command_executed(report: CommandExecutedReport, state: &RuntimeS
     Response::Ack
 }
 
-async fn handle_cwd_changed(report: CwdChangedReport, state: &RuntimeState) -> Response {
+async fn handle_cwd_changed(report: CwdChangedReport, _state: &RuntimeState) -> Response {
     tracing::debug!(
         session = %report.session_id,
         cwd = %report.cwd,
         "CwdChanged"
     );
-
-    // Pre-warm the project spec cache (and auto-write compsys files if enabled).
-    // Fire-and-forget: the lookup populates the cache as a side effect.
-    if !report.cwd.is_empty() {
-        let spec_store = state.spec_store.clone();
-        let cwd = std::path::PathBuf::from(&report.cwd);
-        tokio::spawn(async move {
-            let _ = spec_store.lookup_all_project_specs(&cwd).await;
-        });
-    }
 
     Response::Ack
 }
@@ -112,30 +102,12 @@ async fn handle_complete(req: CompleteRequest, state: &RuntimeState) -> Response
     let cwd_ref = cwd.as_deref();
 
     // Look up the spec for the command.
-    // If no cached spec exists, try inline fast discovery (completion generators
-    // then regex-only --help). This makes discovery demand-driven: only when
-    // the user actually Tab-completes.
+    // Unknown commands return empty results — use `synapse discover` to add specs.
     let lookup_cwd = cwd_ref.unwrap_or(Path::new("/"));
     let spec = match state.spec_store.lookup(&req.command, lookup_cwd).await {
         Some(spec) => spec,
         None => {
-            let timeout = std::time::Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
-            if state
-                .spec_store
-                .discover_and_wait(&req.command, cwd_ref, timeout)
-                .await
-            {
-                match state.spec_store.lookup(&req.command, lookup_cwd).await {
-                    Some(spec) => spec,
-                    None => {
-                        return Response::CompleteResult(CompleteResultResponse {
-                            values: Vec::new(),
-                        });
-                    }
-                }
-            } else {
-                return Response::CompleteResult(CompleteResultResponse { values: Vec::new() });
-            }
+            return Response::CompleteResult(CompleteResultResponse { values: Vec::new() });
         }
     };
 

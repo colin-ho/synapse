@@ -82,48 +82,6 @@ const DISCOVERY_BLOCKLIST: &[&str] = &[
     "sqlite3",
 ];
 
-/// Tools known to safely support `completion zsh`-style subcommands.
-/// Only these tools will have `try_completion_generator` called proactively
-/// (on CommandExecuted). All others require the user to Tab-complete to trigger discovery.
-const COMPLETION_GENERATOR_ALLOWLIST: &[&str] = &[
-    // Cobra-based (Go) tools
-    "kubectl",
-    "helm",
-    "gh",
-    "hugo",
-    "minikube",
-    "kind",
-    "istioctl",
-    "argocd",
-    "kustomize",
-    "stern",
-    "flux",
-    "cilium",
-    "cosign",
-    // Rust tools with clap-based completions
-    "rustup",
-    "starship",
-    "zoxide",
-    "bat",
-    "fd",
-    "rg",
-    "delta",
-    "mise",
-    // Other well-known tools with completion generators
-    "pip",
-    "poetry",
-    "pdm",
-    "uv",
-    "deno",
-    "fly",
-    "terraform",
-    "vault",
-    "consul",
-    "nomad",
-    "packer",
-    "pulumi",
-];
-
 /// Maximum bytes to read from --help stdout.
 const MAX_HELP_OUTPUT_BYTES: usize = 256 * 1024;
 
@@ -157,8 +115,8 @@ impl Expiry<(String, PathBuf), GeneratorCacheEntry> for GeneratorExpiry {
 pub struct SpecStore {
     project_cache: Cache<PathBuf, Arc<HashMap<String, CommandSpec>>>,
     generator_cache: Cache<(String, PathBuf), GeneratorCacheEntry>,
-    /// In-memory cache of specs produced by --help discovery.
-    /// Populated by `save_discovered_spec`, checked by `lookup` after project cache.
+    /// In-memory cache of specs produced by discovery.
+    /// Populated by `write_and_cache_discovered`, checked by `lookup` after project cache.
     discovered_cache: Cache<String, CommandSpec>,
     config: SpecConfig,
     #[allow(dead_code)]
@@ -168,8 +126,6 @@ pub struct SpecStore {
     zsh_index: std::sync::RwLock<HashSet<String>>,
     /// Directory for generated compsys completion files.
     completions_dir: PathBuf,
-    /// Write compsys files automatically when project specs are generated.
-    auto_regenerate: bool,
     /// Cache of parsed system zsh completion files (from find_and_parse).
     /// Used as a fallback when no project spec exists — provides flag info
     /// for the NL translator.
@@ -218,14 +174,8 @@ impl SpecStore {
             llm_client,
             zsh_index: std::sync::RwLock::new(zsh_index),
             completions_dir,
-            auto_regenerate: false,
             parsed_system_specs,
         }
-    }
-
-    pub fn with_auto_regenerate(mut self, enabled: bool) -> Self {
-        self.auto_regenerate = enabled;
-        self
     }
 
     /// Look up a spec by command name.
@@ -252,6 +202,7 @@ impl SpecStore {
     }
 
     /// Check if a command already has a completion file (system or generated).
+    #[cfg(test)]
     fn has_completion(&self, command: &str) -> bool {
         let in_index = self
             .zsh_index
@@ -278,9 +229,8 @@ impl SpecStore {
     }
 
     /// Warm caches for a command after execution. Safe strategies only:
-    /// 1. Parse system zsh completion file into cache (pure file reads, no execution)
-    /// 2. For allowlisted tools, try completion generators in the background
-    pub async fn warm_command_cache(self: &Arc<Self>, command: &str, cwd: Option<&Path>) {
+    /// Parse system zsh completion file into cache (pure file reads, no execution).
+    pub async fn warm_command_cache(&self, command: &str, cwd: Option<&Path>) {
         let lookup_cwd = cwd.unwrap_or(Path::new("/"));
 
         // Already have a project spec? Nothing to do.
@@ -288,7 +238,7 @@ impl SpecStore {
             return;
         }
 
-        // Strategy 1: Parse the system zsh completion file into in-memory cache.
+        // Parse the system zsh completion file into in-memory cache.
         // This is a pure file read — no command execution.
         if self
             .parsed_system_specs
@@ -305,53 +255,9 @@ impl SpecStore {
                 .insert(command.to_string(), result)
                 .await;
         }
-
-        // Strategy 2: For allowlisted tools only, try completion generators in background.
-        if self.config.discover_from_help
-            && COMPLETION_GENERATOR_ALLOWLIST.contains(&command)
-            && !self.has_completion(command)
-        {
-            let store = Arc::clone(self);
-            let command = command.to_string();
-            tokio::spawn(async move {
-                if let Some(spec) = store.discover_with_generator(&command).await {
-                    store.save_discovered_spec(&command, &spec).await;
-                    tracing::info!("Allowlisted generator discovered spec for {command}");
-                }
-            });
-        }
     }
 
-    /// Write a discovered spec as a compsys completion file and cache it in memory.
-    /// The compsys file IS the persistent on-disk cache; the in-memory discovered_cache
-    /// allows the daemon to serve dynamic completions for discovered commands.
-    async fn save_discovered_spec(&self, command: &str, spec: &CommandSpec) {
-        let in_index = self
-            .zsh_index
-            .read()
-            .map(|idx| idx.contains(command))
-            .unwrap_or(false);
-        if in_index {
-            return; // Don't overwrite existing system completions
-        }
-        match crate::compsys_export::write_completion_file(spec, &self.completions_dir) {
-            Ok(path) => {
-                tracing::info!(
-                    "Wrote compsys completion for {command} at {}",
-                    path.display()
-                );
-            }
-            Err(e) => {
-                tracing::warn!("Failed to write compsys completion for {command}: {e}");
-            }
-        }
-        // Also cache in memory so the daemon can serve dynamic completions
-        self.discovered_cache
-            .insert(command.to_string(), spec.clone())
-            .await;
-    }
-
-    fn can_discover_command(&self, command: &str) -> bool {
+    pub fn can_discover_command(&self, command: &str) -> bool {
         self.config.discover_from_help
             && !DISCOVERY_BLOCKLIST.contains(&command)
             && !self
@@ -380,44 +286,64 @@ impl SpecStore {
         (!spec.subcommands.is_empty() || !spec.options.is_empty()).then_some(spec)
     }
 
-    /// Run fast discovery inline and return whether a spec was produced.
+    /// Run discovery for a command and return the spec + compsys file path.
     /// Tries completion generators first (structured), then `--help` regex.
-    /// No LLM, no subcommand recursion — suitable for the dropdown path.
-    pub async fn discover_and_wait(
-        self: &Arc<Self>,
+    /// No LLM, no subcommand recursion.
+    pub async fn discover_command(
+        &self,
         command: &str,
         cwd: Option<&Path>,
-        _timeout: Duration,
-    ) -> bool {
-        // Already have a completion file?
-        if self.has_completion(command) {
-            return true;
-        }
-
-        // Already have a project spec?
-        let lookup_cwd = cwd.unwrap_or(Path::new(""));
-        if self.lookup(command, lookup_cwd).await.is_some() {
-            return true;
-        }
-
+    ) -> Option<(CommandSpec, PathBuf)> {
         // Safety guards: blocklist, config, command-name heuristics.
         if !self.can_discover_command(command) {
-            return false;
+            return None;
         }
 
         // Strategy 1: Try completion generator (structured output from the tool itself).
         if let Some(spec) = self.discover_with_generator(command).await {
-            self.save_discovered_spec(command, &spec).await;
-            return true;
+            return self.write_and_cache_discovered(command, spec).await;
         }
 
         // Strategy 2: Parse --help with regex (no LLM, no subcommand recursion).
-        let Some(spec) = self.discover_with_help(command, cwd).await else {
-            return false;
+        let spec = self.discover_with_help(command, cwd).await?;
+        self.write_and_cache_discovered(command, spec).await
+    }
+
+    /// Write a discovered spec as a compsys completion file, cache it in memory,
+    /// and return the spec + output path.
+    async fn write_and_cache_discovered(
+        &self,
+        command: &str,
+        spec: CommandSpec,
+    ) -> Option<(CommandSpec, PathBuf)> {
+        let in_index = self
+            .zsh_index
+            .read()
+            .map(|idx| idx.contains(command))
+            .unwrap_or(false);
+        if in_index {
+            return None; // Don't overwrite existing system completions
+        }
+
+        let path = match crate::compsys_export::write_completion_file(&spec, &self.completions_dir)
+        {
+            Ok(path) => {
+                tracing::info!(
+                    "Wrote compsys completion for {command} at {}",
+                    path.display()
+                );
+                path
+            }
+            Err(e) => {
+                tracing::warn!("Failed to write compsys completion for {command}: {e}");
+                return None;
+            }
         };
-        self.save_discovered_spec(command, &spec).await;
-        tracing::info!("Fast-discovered spec for {command}");
-        true
+
+        self.discovered_cache
+            .insert(command.to_string(), spec.clone())
+            .await;
+        Some((spec, path))
     }
 
     /// Run `command help_flag` and return the stdout (or stderr as fallback).
@@ -547,37 +473,6 @@ impl SpecStore {
                 if !specs.contains_key(&spec.name) {
                     spec.source = SpecSource::ProjectAuto;
                     specs.insert(spec.name.clone(), spec);
-                }
-            }
-        }
-
-        // Write compsys completion files for project specs on cache miss.
-        if self.auto_regenerate {
-            let dir = self.completions_dir.clone();
-            for spec in specs.values() {
-                // Don't overwrite existing system completions.
-                let in_index = self
-                    .zsh_index
-                    .read()
-                    .map(|idx| idx.contains(&spec.name))
-                    .unwrap_or(false);
-                if in_index {
-                    continue;
-                }
-                match crate::compsys_export::write_completion_file(spec, &dir) {
-                    Ok(path) => {
-                        tracing::debug!(
-                            "Auto-wrote compsys completion for {} at {}",
-                            spec.name,
-                            path.display()
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to auto-write compsys completion for {}: {e}",
-                            spec.name
-                        );
-                    }
                 }
             }
         }
@@ -944,50 +839,6 @@ Released under the GNU GPLv2+.
         );
     }
 
-    #[tokio::test]
-    async fn test_auto_regenerate_writes_compsys_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let completions_dir = tmp.path().join("completions");
-
-        // Create a justfile in cwd (less likely than `make` to have system completions)
-        let cwd = tmp.path().join("project");
-        std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::write(cwd.join("justfile"), "build:\n\techo ok\n").unwrap();
-
-        let config = SpecConfig::default();
-        let store = SpecStore::with_completions_dir(config, None, completions_dir.clone())
-            .with_auto_regenerate(true);
-
-        // Trigger cache population
-        let specs = store.lookup_all_project_specs(&cwd).await;
-        assert!(!specs.is_empty(), "should have project specs");
-
-        // If `just` is not in the system zsh index, the compsys file should be written.
-        // If it IS in the index, auto_regenerate correctly skips it to avoid
-        // overwriting system completions.
-        let just_file = completions_dir.join("_just");
-        let in_index = store
-            .zsh_index
-            .read()
-            .map(|idx| idx.contains("just"))
-            .unwrap_or(false);
-        if !in_index {
-            assert!(
-                just_file.exists(),
-                "auto_regenerate should write _just compsys file"
-            );
-            let content = std::fs::read_to_string(&just_file).unwrap();
-            assert!(
-                content.contains("#compdef just"),
-                "should be a valid compsys file"
-            );
-            assert!(
-                content.contains("compadd"),
-                "should contain generator-based compadd"
-            );
-        }
-    }
-
     #[test]
     fn test_refresh_zsh_index() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1032,7 +883,7 @@ Released under the GNU GPLv2+.
     }
 
     #[tokio::test]
-    async fn test_discovered_cache_populated_by_save() {
+    async fn test_discovered_cache_populated_by_write_and_cache() {
         let tmp = tempfile::tempdir().unwrap();
         let config = SpecConfig::default();
         let store = SpecStore::with_completions_dir(config, None, tmp.path().to_path_buf());
@@ -1040,7 +891,7 @@ Released under the GNU GPLv2+.
         // Discovered cache should be empty initially
         assert!(store.discovered_cache.get("mycommand").await.is_none());
 
-        // Save a discovered spec
+        // Discover a spec using write_and_cache_discovered
         let spec = CommandSpec {
             name: "mycommand".into(),
             options: vec![OptionSpec {
@@ -1051,7 +902,12 @@ Released under the GNU GPLv2+.
             source: SpecSource::Discovered,
             ..Default::default()
         };
-        store.save_discovered_spec("mycommand", &spec).await;
+        let result = store.write_and_cache_discovered("mycommand", spec).await;
+        assert!(
+            result.is_some(),
+            "write_and_cache_discovered should succeed"
+        );
+        let (cached_spec, path) = result.unwrap();
 
         // Should now be in the discovered cache
         let cached = store.discovered_cache.get("mycommand").await;
@@ -1059,10 +915,10 @@ Released under the GNU GPLv2+.
         let cached = cached.unwrap();
         assert_eq!(cached.name, "mycommand");
         assert_eq!(cached.options.len(), 1);
+        assert_eq!(cached_spec.name, "mycommand");
 
         // Should also be written to disk as a compsys file
-        let compsys_path = tmp.path().join("_mycommand");
-        assert!(compsys_path.exists(), "compsys file should be written");
+        assert!(path.exists(), "compsys file should be written");
     }
 
     #[tokio::test]
@@ -1074,13 +930,16 @@ Released under the GNU GPLv2+.
         // Lookup should return None initially
         assert!(store.lookup("mycommand", tmp.path()).await.is_none());
 
-        // Save a discovered spec
+        // Insert into discovered cache directly
         let spec = CommandSpec {
             name: "mycommand".into(),
             source: SpecSource::Discovered,
             ..Default::default()
         };
-        store.save_discovered_spec("mycommand", &spec).await;
+        store
+            .discovered_cache
+            .insert("mycommand".to_string(), spec)
+            .await;
 
         // Lookup should now find the discovered spec
         let result = store.lookup("mycommand", tmp.path()).await;
@@ -1099,7 +958,10 @@ Released under the GNU GPLv2+.
             source: SpecSource::Discovered,
             ..Default::default()
         };
-        store.save_discovered_spec("mycommand", &spec).await;
+        store
+            .discovered_cache
+            .insert("mycommand".to_string(), spec)
+            .await;
         assert!(store.discovered_cache.get("mycommand").await.is_some());
 
         store.clear_caches().await;
