@@ -12,6 +12,42 @@ use crate::spec_store::SpecStore;
 use super::server::run_server;
 use super::state::RuntimeState;
 
+fn resolve_completions_dir(config: &Config, output_dir: Option<PathBuf>) -> PathBuf {
+    output_dir.unwrap_or_else(|| {
+        config
+            .completions
+            .output_dir
+            .as_ref()
+            .map(|s| {
+                PathBuf::from(
+                    s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()),
+                )
+            })
+            .unwrap_or_else(crate::compsys_export::completions_dir)
+    })
+}
+
+fn resolve_cwd(cwd: Option<PathBuf>) -> PathBuf {
+    cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
+}
+
+fn parse_complete_result_line(line: &str) -> Vec<(String, String)> {
+    let fields: Vec<&str> = line.split('\t').collect();
+    if fields.first() != Some(&"complete_result") {
+        return Vec::new();
+    }
+
+    let count: usize = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (0..count)
+        .map(|i| {
+            (
+                fields.get(2 + i * 2).unwrap_or(&"").to_string(),
+                fields.get(3 + i * 2).unwrap_or(&"").to_string(),
+            )
+        })
+        .collect()
+}
+
 pub(super) fn stop_daemon(socket_path: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Config::load().with_socket_override(socket_path);
     let pid_path = config.pid_path();
@@ -30,7 +66,6 @@ pub(super) fn stop_daemon(socket_path: Option<PathBuf>) -> anyhow::Result<()> {
     ) {
         Ok(()) => {
             println!("Sent SIGTERM to daemon (PID {pid})");
-            // Clean up files
             let _ = std::fs::remove_file(&pid_path);
             let _ = std::fs::remove_file(config.socket_path());
         }
@@ -81,7 +116,6 @@ pub(super) async fn start_daemon(
 ) -> anyhow::Result<()> {
     let config = Config::load().with_socket_override(socket_path);
 
-    // Set up tracing
     let level = match verbose {
         0 => config.general.log_level.as_str(),
         1 => "info",
@@ -91,7 +125,6 @@ pub(super) async fn start_daemon(
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
-    // CLI --log-file takes priority, then config daemon_log, then stderr
     let resolved_log = log_file.or_else(|| config.daemon_log_path());
 
     if let Some(log_path) = resolved_log {
@@ -111,12 +144,9 @@ pub(super) async fn start_daemon(
     }
 
     if !foreground {
-        // Simple daemonization: fork and exit parent
-        // For now, just run in foreground — proper daemonize can be added later
         tracing::info!("Starting daemon in foreground mode");
     }
 
-    // Check for existing daemon
     let pid_path = config.pid_path();
     if pid_path.exists() {
         if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
@@ -127,30 +157,24 @@ pub(super) async fn start_daemon(
                 }
             }
         }
-        // Stale PID file
         let _ = std::fs::remove_file(&pid_path);
     }
 
     let socket_path = config.socket_path();
 
-    // Remove stale socket
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)?;
     }
 
-    // Ensure parent directory exists
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Write PID file
     std::fs::write(&pid_path, std::process::id().to_string())?;
 
-    // Bind socket
     let listener = UnixListener::bind(&socket_path)?;
     tracing::info!("Listening on {}", socket_path.display());
 
-    // Init LLM client (if configured)
     let llm_client = if let Some(mut client) =
         crate::llm::LlmClient::from_config(&config.llm, config.security.scrub_paths)
     {
@@ -167,42 +191,9 @@ pub(super) async fn start_daemon(
         None
     };
 
-    // Init discovery LLM client (if configured separately from main LLM)
-    let discovery_llm_client = if let Some(ref discovery_config) = config.llm.discovery {
-        let resolved = discovery_config.resolve(&config.llm);
-        if let Some(mut client) =
-            crate::llm::LlmClient::from_config(&resolved, config.security.scrub_paths)
-        {
-            tracing::info!(
-                "Discovery LLM enabled (provider: {}, model: {})",
-                resolved.provider,
-                resolved.model
-            );
-            client.auto_detect_model().await;
-            client.probe_health().await;
-            Some(Arc::new(client))
-        } else {
-            tracing::warn!(
-                "Discovery LLM config present but client creation failed, using main LLM"
-            );
-            llm_client.clone()
-        }
-    } else {
-        llm_client.clone()
-    };
-
-    // Init spec system
-    let completions_dir = config
-        .completions
-        .output_dir
-        .as_ref()
-        .map(|s| {
-            PathBuf::from(s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()))
-        })
-        .unwrap_or_else(crate::compsys_export::completions_dir);
+    let completions_dir = resolve_completions_dir(&config, None);
     let spec_store = Arc::new(SpecStore::with_completions_dir(
         config.spec.clone(),
-        discovery_llm_client,
         completions_dir,
     ));
 
@@ -226,10 +217,8 @@ pub(super) async fn start_daemon(
         .with_shutdown_token(shutdown.clone()),
     );
 
-    // Main loop
     let result = run_server(listener, state, shutdown).await;
 
-    // Cleanup
     tracing::info!("Shutting down");
     let _ = std::fs::remove_file(config.socket_path());
     let _ = std::fs::remove_file(config.pid_path());
@@ -242,22 +231,10 @@ pub(super) async fn add_command(
     output_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let config = Config::load();
-    let completions_dir = output_dir.unwrap_or_else(|| {
-        config
-            .completions
-            .output_dir
-            .as_ref()
-            .map(|s| {
-                PathBuf::from(
-                    s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()),
-                )
-            })
-            .unwrap_or_else(crate::compsys_export::completions_dir)
-    });
+    let completions_dir = resolve_completions_dir(&config, output_dir);
 
-    let spec_store = SpecStore::with_completions_dir(config.spec.clone(), None, completions_dir);
+    let spec_store = SpecStore::with_completions_dir(config.spec.clone(), completions_dir);
 
-    // Pre-check blocklist
     if !spec_store.can_discover_command(&command) {
         eprintln!("Cannot discover '{command}': blocked by safety blocklist or config");
         std::process::exit(1);
@@ -291,18 +268,7 @@ pub(super) async fn scan_project(
     no_gap_check: bool,
 ) -> anyhow::Result<()> {
     let config = Config::load();
-    let output = output_dir.unwrap_or_else(|| {
-        config
-            .completions
-            .output_dir
-            .as_ref()
-            .map(|s| {
-                PathBuf::from(
-                    s.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy()),
-                )
-            })
-            .unwrap_or_else(crate::compsys_export::completions_dir)
-    });
+    let output = resolve_completions_dir(&config, output_dir);
 
     let gap_only = !no_gap_check && !force;
     let existing = if gap_only {
@@ -311,22 +277,19 @@ pub(super) async fn scan_project(
         std::collections::HashSet::new()
     };
 
-    // If force, remove existing generated files first
     if force && output.exists() {
         for entry in std::fs::read_dir(&output)?.flatten() {
             let _ = std::fs::remove_file(entry.path());
         }
     }
 
-    // Collect project specs for the current working directory
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let spec_store = SpecStore::new(config.spec.clone(), None);
+    let spec_store = SpecStore::new(config.spec.clone());
     let project_specs: Vec<_> = spec_store.lookup_all_project_specs(&cwd).await;
 
     let mut report =
         crate::compsys_export::generate_all(&project_specs, &existing, &output, gap_only)?;
 
-    // Clean up stale project-auto files that weren't regenerated
     if !force {
         let generated_set: std::collections::HashSet<String> =
             report.generated.iter().cloned().collect();
@@ -364,7 +327,7 @@ pub(super) async fn run_generator_query(
     split_on: Option<String>,
 ) -> anyhow::Result<()> {
     let config = Config::load();
-    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    let cwd = resolve_cwd(cwd);
     let socket_path = config.socket_path();
 
     let mut request = serde_json::json!({
@@ -388,15 +351,9 @@ pub(super) async fn run_generator_query(
 
 /// Parse a `complete_result` TSV line and print each non-empty value.
 fn print_complete_result_values(line: &str) {
-    let fields: Vec<&str> = line.split('\t').collect();
-    if fields.first() != Some(&"complete_result") {
-        return;
-    }
-    let count: usize = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    for i in 0..count {
-        let val = fields.get(2 + i * 2).unwrap_or(&"");
-        if !val.is_empty() {
-            println!("{val}");
+    for (value, _) in parse_complete_result_line(line) {
+        if !value.is_empty() {
+            println!("{value}");
         }
     }
 }
@@ -407,7 +364,7 @@ pub(super) async fn run_complete_query(
     cwd: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let config = Config::load();
-    let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    let cwd = resolve_cwd(cwd);
     let socket_path = config.socket_path();
     let request = serde_json::json!({
         "type": "complete",
@@ -424,18 +381,11 @@ pub(super) async fn run_complete_query(
 }
 
 fn print_complete_result_values_with_descriptions(line: &str) {
-    let fields: Vec<&str> = line.split('\t').collect();
-    if fields.first() != Some(&"complete_result") {
-        return;
-    }
-    let count: usize = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    for i in 0..count {
-        let val = fields.get(2 + i * 2).unwrap_or(&"");
-        let desc = fields.get(3 + i * 2).unwrap_or(&"");
+    for (value, desc) in parse_complete_result_line(line) {
         if desc.is_empty() {
-            println!("{val}");
+            println!("{value}");
         } else {
-            println!("{val}\t{desc}");
+            println!("{value}\t{desc}");
         }
     }
 }

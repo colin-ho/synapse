@@ -1,0 +1,395 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+
+use crate::config::LlmConfig;
+
+use super::prompt::{
+    build_nl_prompt, NlTranslationContext, NlTranslationItem, NlTranslationResult,
+};
+use super::response::{detect_destructive_command, extract_commands};
+use super::scrub_home_paths;
+
+#[derive(Debug, thiserror::Error)]
+pub enum LlmError {
+    #[error("HTTP request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("API error ({status}): {body}")]
+    Api { status: u16, body: String },
+    #[error("LLM disabled due to recent API errors (backoff active)")]
+    BackoffActive,
+    #[error("Empty response from LLM")]
+    EmptyResponse,
+}
+
+pub struct LlmClient {
+    api_key: String,
+    base_url: Option<String>,
+    model: String,
+    client: Client,
+    /// Minimum interval between LLM calls.
+    rate_limiter: Mutex<Instant>,
+    rate_limit_duration: Duration,
+    /// Set on API errors, cleared after 5 minutes.
+    backoff_active: AtomicBool,
+    backoff_until: Mutex<Option<Instant>>,
+    scrub_paths: bool,
+}
+
+impl LlmClient {
+    /// Construct an LlmClient from config. Returns `None` if disabled or API key is unset.
+    pub fn from_config(config: &LlmConfig, scrub_paths: bool) -> Option<Self> {
+        if !config.enabled {
+            return None;
+        }
+
+        if config.provider != "openai" {
+            tracing::warn!(
+                "Unsupported LLM provider '{}' (only 'openai' is supported), disabling LLM",
+                config.provider
+            );
+            return None;
+        }
+
+        let base_url = config
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .map(|v| v.trim_end_matches('/').to_string())
+            .filter(|v| !v.is_empty());
+
+        let api_key = match std::env::var(&config.api_key_env) {
+            Ok(v) if !v.is_empty() => v,
+            _ => {
+                // For local OpenAI-compatible endpoints (LM Studio, etc.), allow a placeholder.
+                if base_url.as_deref().is_some_and(is_local_base_url) {
+                    tracing::info!(
+                        "LLM key env {} missing; using placeholder key for local endpoint",
+                        config.api_key_env
+                    );
+                    "lm-studio".to_string()
+                } else {
+                    tracing::debug!("LLM disabled: env var {} is empty", config.api_key_env);
+                    return None;
+                }
+            }
+        };
+
+        let client = Client::builder()
+            .timeout(Duration::from_millis(config.timeout_ms))
+            .build()
+            .ok()?;
+
+        Some(Self {
+            api_key,
+            base_url,
+            model: config.model.clone(),
+            client,
+            rate_limit_duration: Duration::from_millis(crate::config::RATE_LIMIT_MS),
+            rate_limiter: Mutex::new(Instant::now() - Duration::from_secs(1)),
+            backoff_active: AtomicBool::new(false),
+            backoff_until: Mutex::new(None),
+            scrub_paths,
+        })
+    }
+
+    /// For local OpenAI-compatible endpoints, query /v1/models to auto-detect the loaded model.
+    /// If the configured model is in the list, keeps it. Otherwise switches to the first
+    /// available model. Skips non-local endpoints entirely.
+    pub async fn auto_detect_model(&mut self) -> Option<String> {
+        let base = self.base_url.as_deref()?;
+        if !is_local_base_url(base) {
+            return None;
+        }
+
+        let models_url = url_with_v1_path(base, "models");
+        let detect_client = Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .ok()?;
+
+        let resp = match detect_client.get(&models_url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Model auto-detect: failed to reach {models_url}: {e}");
+                return None;
+            }
+        };
+
+        let models_resp: ModelsResponse = match resp.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Model auto-detect: failed to parse /v1/models response: {e}");
+                return None;
+            }
+        };
+
+        if models_resp.data.is_empty() {
+            tracing::warn!("Model auto-detect: no models loaded at {models_url}");
+            return None;
+        }
+
+        if models_resp.data.iter().any(|m| m.id == self.model) {
+            tracing::info!(
+                "Model auto-detect: configured model '{}' is available",
+                self.model
+            );
+            return Some(self.model.clone());
+        }
+
+        let new_model = models_resp.data[0].id.clone();
+        tracing::info!(
+            "Model auto-detect: configured '{}' not found, switching to '{}'",
+            self.model,
+            new_model
+        );
+        self.model = new_model.clone();
+        Some(new_model)
+    }
+
+    /// Startup health check: verify the LLM endpoint is reachable.
+    /// Returns true if any response is received (even errors like 405).
+    /// Does NOT activate backoff — this is a one-time startup check.
+    pub async fn probe_health(&self) -> bool {
+        let url = url_with_v1_path(
+            self.base_url.as_deref().unwrap_or("https://api.openai.com"),
+            "models",
+        );
+
+        let health_client = match Client::builder().timeout(Duration::from_secs(3)).build() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        let result = health_client.get(&url).send().await;
+
+        match result {
+            Ok(_) => {
+                tracing::info!("LLM health check: endpoint reachable at {url}");
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "LLM health check: endpoint unreachable at {url}: {e} — LLM features will be unavailable until the endpoint comes online"
+                );
+                false
+            }
+        }
+    }
+
+    /// Translate a natural language query into one or more shell commands.
+    pub async fn translate_command(
+        &self,
+        ctx: &NlTranslationContext,
+        max_suggestions: usize,
+        temperature: f32,
+    ) -> Result<NlTranslationResult, LlmError> {
+        let cwd = self.scrub_if_enabled(&ctx.cwd);
+        let (system_prompt, user_prompt) = build_nl_prompt(ctx, &cwd, max_suggestions);
+
+        let messages = vec![
+            OpenAIMessage {
+                role: "system".to_string(),
+                content: system_prompt,
+            },
+            OpenAIMessage {
+                role: "user".to_string(),
+                content: user_prompt,
+            },
+        ];
+
+        let max_tokens = (max_suggestions as u32 * 80).max(512);
+        let response_text = self
+            .request_completion_raw(messages, max_tokens, Some(temperature))
+            .await?;
+        let commands = extract_commands(&response_text, max_suggestions);
+        if commands.is_empty() {
+            return Err(LlmError::EmptyResponse);
+        }
+
+        let items = commands
+            .into_iter()
+            .map(|command| NlTranslationItem {
+                warning: detect_destructive_command(&command),
+                command,
+            })
+            .collect();
+
+        Ok(NlTranslationResult { items })
+    }
+
+    fn scrub_if_enabled(&self, value: &str) -> String {
+        if self.scrub_paths {
+            scrub_home_paths(value)
+        } else {
+            value.to_string()
+        }
+    }
+
+    async fn request_completion_raw(
+        &self,
+        messages: Vec<OpenAIMessage>,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, LlmError> {
+        self.check_backoff().await?;
+        self.rate_limit().await;
+
+        let result = self.call_openai(messages, max_tokens, temperature).await;
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(Self::should_activate_backoff)
+        {
+            self.activate_backoff().await;
+        }
+
+        result
+    }
+
+    fn should_activate_backoff(error: &LlmError) -> bool {
+        matches!(error, LlmError::Api { status, .. } if *status == 429 || *status >= 500)
+    }
+
+    async fn rate_limit(&self) {
+        let mut last_call = self.rate_limiter.lock().await;
+        let elapsed = last_call.elapsed();
+        if elapsed < self.rate_limit_duration {
+            tokio::time::sleep(self.rate_limit_duration - elapsed).await;
+        }
+        *last_call = Instant::now();
+    }
+
+    async fn check_backoff(&self) -> Result<(), LlmError> {
+        if !self.backoff_active.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let guard = self.backoff_until.lock().await;
+        if let Some(until) = *guard {
+            if Instant::now() >= until {
+                drop(guard);
+                self.backoff_active.store(false, Ordering::Relaxed);
+                return Ok(());
+            }
+        }
+        Err(LlmError::BackoffActive)
+    }
+
+    async fn activate_backoff(&self) {
+        tracing::warn!("LLM API error, activating 5-minute backoff");
+        *self.backoff_until.lock().await = Some(Instant::now() + Duration::from_secs(300));
+        self.backoff_active.store(true, Ordering::Relaxed);
+    }
+
+    async fn parse_api_response<T: serde::de::DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> Result<T, LlmError> {
+        let status = resp.status().as_u16();
+        if status != 200 {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
+    async fn call_openai(
+        &self,
+        messages: Vec<OpenAIMessage>,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, LlmError> {
+        let body = OpenAIRequest {
+            model: self.model.clone(),
+            messages,
+            max_tokens,
+            temperature,
+        };
+
+        let resp = self
+            .client
+            .post(self.openai_chat_completions_url())
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let parsed: OpenAIResponse = Self::parse_api_response(resp).await?;
+        Ok(parsed
+            .choices
+            .first()
+            .map(|choice| choice.message.content.clone())
+            .unwrap_or_default())
+    }
+
+    fn openai_chat_completions_url(&self) -> String {
+        match self.base_url.as_deref() {
+            Some(base) => url_with_v1_path(base, "chat/completions"),
+            None => "https://api.openai.com/v1/chat/completions".to_string(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct OpenAIRequest {
+    model: String,
+    messages: Vec<OpenAIMessage>,
+    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+}
+
+#[derive(Serialize, Clone)]
+struct OpenAIMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct OpenAIResponse {
+    choices: Vec<OpenAIChoice>,
+}
+
+#[derive(Deserialize)]
+struct OpenAIChoice {
+    message: OpenAIMessageResponse,
+}
+
+#[derive(Deserialize)]
+struct OpenAIMessageResponse {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ModelsResponse {
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Deserialize)]
+struct ModelEntry {
+    id: String,
+}
+
+fn url_with_v1_path(base_url: &str, suffix: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let suffix = suffix.trim_start_matches('/');
+    if base.ends_with("/v1") {
+        format!("{base}/{suffix}")
+    } else {
+        format!("{base}/v1/{suffix}")
+    }
+}
+
+fn is_local_base_url(base_url: &str) -> bool {
+    let lower = base_url.to_ascii_lowercase();
+    let host_part = lower
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&lower);
+    host_part.starts_with("127.0.0.1")
+        || host_part.starts_with("localhost")
+        || host_part.starts_with("[::1]")
+}

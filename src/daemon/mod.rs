@@ -10,6 +10,7 @@ mod rpc;
 mod server;
 mod shell;
 mod state;
+mod use_cases;
 
 #[derive(Parser)]
 #[command(name = "synapse", about = "Intelligent Zsh command suggestions")]

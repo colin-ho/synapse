@@ -1,25 +1,20 @@
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use synapse::protocol::Request;
 
 #[test]
 fn test_cli_help() {
-    Command::cargo_bin("synapse")
-        .unwrap()
-        .arg("--help")
-        .assert()
-        .success();
+    cargo_bin_cmd!("synapse").arg("--help").assert().success();
 }
 
 #[test]
 fn test_daemon_status_no_daemon() {
-    Command::cargo_bin("synapse")
-        .unwrap()
+    cargo_bin_cmd!("synapse")
         .args(["status"])
         .assert()
-        .success(); // Should not crash even with no daemon
+        .success();
 }
 
 #[tokio::test]
@@ -46,8 +41,7 @@ async fn test_daemon_lifecycle() {
 
 #[test]
 fn test_cli_socket_path_flag() {
-    Command::cargo_bin("synapse")
-        .unwrap()
+    cargo_bin_cmd!("synapse")
         .args(["status", "--socket-path", "/tmp/nonexistent.sock"])
         .assert()
         .success();

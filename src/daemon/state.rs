@@ -31,7 +31,6 @@ pub(super) struct RuntimeState {
     /// Cached available tools per PATH string.
     pub(super) tools_cache: Cache<String, Vec<String>>,
     /// Pre-compiled blocklist patterns for command filtering.
-    #[allow(dead_code)]
     pub(super) compiled_blocklist: CompiledBlocklist,
     /// Cancellation token for graceful shutdown.
     pub(super) shutdown_token: Option<CancellationToken>,
