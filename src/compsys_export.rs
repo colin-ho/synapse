@@ -979,4 +979,43 @@ mod tests {
         let removed = remove_stale_project_auto(&missing, &HashSet::new()).unwrap();
         assert!(removed.is_empty());
     }
+
+    #[test]
+    fn test_scan_removes_stale_but_preserves_discovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("completions");
+
+        // First scan: generate a project-auto spec (simulates Makefile present)
+        let specs_v1 = vec![CommandSpec {
+            name: "make".into(),
+            source: SpecSource::ProjectAuto,
+            ..Default::default()
+        }];
+        let report = generate_all(&specs_v1, &HashSet::new(), &output, false).unwrap();
+        assert_eq!(report.generated, vec!["make"]);
+
+        // Simulate `synapse add` by writing a discovered file
+        let discovered = CommandSpec {
+            name: "mycli".into(),
+            source: SpecSource::Discovered,
+            ..Default::default()
+        };
+        write_completion_file(&discovered, &output).unwrap();
+
+        // Second scan: Makefile removed, so no project specs generated
+        let specs_v2: Vec<CommandSpec> = vec![];
+        let report = generate_all(&specs_v2, &HashSet::new(), &output, false).unwrap();
+        let generated_set: HashSet<String> = report.generated.iter().cloned().collect();
+        let removed = remove_stale_project_auto(&output, &generated_set).unwrap();
+
+        assert_eq!(removed, vec!["make"]);
+        assert!(
+            !output.join("_make").exists(),
+            "stale project-auto file should be removed"
+        );
+        assert!(
+            output.join("_mycli").exists(),
+            "discovered file should survive"
+        );
+    }
 }
