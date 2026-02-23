@@ -42,7 +42,6 @@ pub struct SecurityConfig {
 #[serde(default)]
 pub struct LlmConfig {
     pub enabled: bool,
-    pub provider: String,
     pub api_key_env: String,
     /// Optional API base URL override.
     /// Uses {base_url}/v1/chat/completions (or {base_url}/chat/completions if
@@ -50,12 +49,9 @@ pub struct LlmConfig {
     pub base_url: Option<String>,
     pub model: String,
     pub timeout_ms: u64,
-    pub natural_language: bool,
     pub nl_max_suggestions: usize,
-    /// Temperature for single NL suggestion (lower = more deterministic).
+    /// Temperature for NL suggestions (lower = more deterministic).
     pub temperature: f32,
-    /// Temperature for multiple NL suggestions (higher = more variety).
-    pub temperature_multi: f32,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -95,15 +91,12 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            provider: "openai".into(),
             api_key_env: "LMSTUDIO_API_KEY".into(),
             base_url: Some("http://127.0.0.1:1234".into()),
             model: "gpt-4o-mini".into(),
             timeout_ms: 10_000,
-            natural_language: true,
             nl_max_suggestions: 3,
             temperature: 0.3,
-            temperature_multi: 0.7,
         }
     }
 }

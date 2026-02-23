@@ -1,34 +1,38 @@
 # Synapse
 
-Synapse is a spec engine and NL translation layer for Zsh. It auto-discovers CLI specs and exports them as compsys completion functions, with built-in natural language to command translation.
+Tab completions and natural language translation for Zsh.
 
-- A Rust CLI (`src/`) that discovers specs, generates compsys completions, runs generators, and translates NL queries.
-- A Zsh plugin (`plugin/synapse.zsh`) that provides NL translation mode (`? query` prefix) and dropdown UI.
+Most CLI tools ship without Zsh completions. Synapse fills the gap — it generates them automatically from `--help` output and project files, and lets you describe commands in plain English with the `? query` prefix.
 
-## Features
+### Auto-generated completions
 
-- Compsys completion generation from CLI specs (gap-filling for commands without existing zsh completions).
-- Natural language to command translation (`? query` prefix via LLM).
-- Spec system with:
-  - project auto-generated specs (Makefile, package.json, Cargo.toml, docker-compose, Justfile)
-  - command discovery from `--help` (writes compsys files directly)
+Run `synapse add <cmd>` to generate tab completions for any command, or `synapse scan` to pick up project-level targets (Makefile, package.json, Cargo.toml, docker-compose, Justfile).
+
+https://github.com/user-attachments/assets/add.mp4
+
+### Natural language mode
+
+Type `? find large files` and get a dropdown of real shell commands, powered by any OpenAI-compatible LLM (local or cloud).
+
+https://github.com/user-attachments/assets/nl.mp4
+
+Synapse complements [fzf-tab](https://github.com/Aloxaf/fzf-tab), [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions), and [Atuin](https://atuin.sh/). No daemon, no background process.
 
 ## Requirements
 
 - macOS or Linux
 - Zsh
+- An OpenAI-compatible LLM endpoint (for NL mode only — completions work without it)
 
 ## Installation
 
-### Quick install
+**Quick install:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/colin-ho/synapse/main/scripts/install.sh | sh
 ```
 
-### From source
-
-Requires the [Rust toolchain](https://rustup.rs/).
+**From source** (requires the [Rust toolchain](https://rustup.rs/)):
 
 ```bash
 git clone https://github.com/colin-ho/synapse.git
@@ -36,127 +40,82 @@ cd synapse
 cargo install --path .
 ```
 
-### Shell setup
-
-Run the installer to add Synapse to your `~/.zshrc`:
+Then add Synapse to your shell:
 
 ```bash
-synapse install
+synapse install   # adds eval "$(synapse)" to ~/.zshrc
 ```
 
-This adds `eval "$(synapse)"` to your shell config (before `compinit` if present, so completions load correctly). Then restart your shell or run:
+Restart your shell, or run `eval "$(synapse)"` to activate immediately.
+
+## Quick Start
 
 ```bash
-eval "$(synapse)"
-```
-
-Alternatively, add the eval line to `~/.zshrc` manually — useful if `synapse` isn't on your `PATH`:
-
-```bash
-# In ~/.zshrc
-eval "$(/path/to/synapse)"
-```
-
-### Development
-
-For local development, build and activate in one step:
-
-```bash
-source dev/test.sh
-```
-
-## CLI
-
-```bash
-synapse                               # Show help (terminal) or output init code (piped)
-synapse install                       # Add eval "$(synapse)" to ~/.zshrc
-synapse add <command>                 # Discover completions for a command via --help
-synapse scan                          # Generate completions from project files (Makefile, etc.)
-synapse run-generator <cmd>           # Run a generator command with timeout
-synapse translate <query> --cwd <dir> # Translate NL to shell command (TSV output)
-```
-
-Common examples:
-
-```bash
-# Add completions for a specific command
+# Generate completions for a command
 synapse add curl
 
-# Generate project completions
+# Generate completions from project files in cwd
 synapse scan
 
-# Translate natural language (usually called by the plugin, not directly)
-synapse translate "find large files" --cwd /home/user
+# Natural language mode (after configuring an LLM)
+# Type in your shell:
+? find files larger than 100MB
 ```
-
-## Key Bindings
-
-In NL mode (after typing `? query`):
-
-- `Enter`: translate query and show results dropdown
-- `Up/Down Arrow`: navigate NL results
-- `Enter/Tab`: accept selected result
-- `Esc`: dismiss dropdown
-
-Tab completion uses standard zsh compsys bindings (works with fzf-tab, zsh-autocomplete, etc.).
-
-### Recommended Companion Tools
-
-Synapse is designed to complement these tools:
-
-- **[zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions)** — inline ghost text suggestions from history
-- **[fzf-tab](https://github.com/Aloxaf/fzf-tab)** — fuzzy Tab completion menu (works with Synapse's generated completions)
-- **[Atuin](https://atuin.sh/)** — enhanced shell history with cross-machine sync
 
 ## Configuration
 
-Copy `config.example.toml` to `~/.config/synapse/config.toml` and customize.
-
-Important sections:
-
-- `[spec]`: controls auto-generation, `--help` discovery, and generator behavior.
-- `[llm]`: provider/model/base URL, plus NL settings.
-- `[completions]`: output directory, gap-only mode.
-- `[security]`: command blocklists.
-
-## Architecture
-
-Synapse uses a **one-shot CLI model** — no daemon, no persistent process. The plugin calls `synapse translate` as a subprocess for NL queries. Completions are generated as static compsys files.
-
-- **`src/cli/`** — Clap-based CLI: `add`, `scan`, `run-generator`, `translate`, `shell`, `install`.
-- **`src/spec.rs`** — Data model: `CommandSpec`, `SubcommandSpec`, `OptionSpec`, `ArgSpec`, `GeneratorSpec`.
-- **`src/spec_store.rs`** — Spec lookup and caching (project specs, discovered specs).
-- **`src/spec_autogen.rs`** — Auto-generation from project files (Makefile, package.json, etc.).
-- **`src/compsys_export/`** — Converts specs to zsh `_arguments` completion functions.
-- **`src/llm/`** — LLM client, prompt construction, response parsing, path scrubbing.
-- **`src/zsh_completion/`** — Scans fpath for existing completions (gap detection).
-- **`plugin/synapse.zsh`** — Shell integration: NL mode, dropdown UI, keybindings, `synapse` wrapper.
-
-Discovery writes compsys files directly — the compsys file IS the persistent cache. Discovery is user-driven via `synapse add`.
-
-## Development
-
-### Build and Test
+Copy the example config:
 
 ```bash
-cargo build
-cargo test
-cargo clippy
-cargo fmt --check
+mkdir -p ~/.config/synapse
+cp config.example.toml ~/.config/synapse/config.toml
 ```
 
-### Pre-commit Hooks
+### NL translation
 
-```bash
-./scripts/setup-hooks.sh
+The `? query` prefix requires an OpenAI-compatible endpoint. Any provider that exposes `/v1/chat/completions` works — OpenAI, LM Studio, Ollama, etc.
+
+**Local (LM Studio, no API key needed):**
+
+```toml
+[llm]
+enabled = true
+provider = "openai"
+base_url = "http://127.0.0.1:1234"
+model = "qwen2.5-coder-7b-instruct-mlx"
 ```
 
-## Repository Layout
+**Cloud (OpenAI):**
 
-- `src/`: Rust CLI, spec engine, compsys export, NL translation.
-- `plugin/synapse.zsh`: Zsh integration and keybindings.
-- `tests/`: integration and unit tests.
-- `config.example.toml`: full configuration reference.
+```toml
+[llm]
+enabled = true
+provider = "openai"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4o-mini"
+```
+
+See [`config.example.toml`](config.example.toml) for all options.
+
+## CLI Reference
+
+| Command | Description |
+|---|---|
+| `synapse` | Show help (terminal) or output init code (piped) |
+| `synapse install` | Add `eval "$(synapse)"` to `~/.zshrc` |
+| `synapse add <cmd>` | Generate completions for a command |
+| `synapse scan` | Generate completions from project files |
+| `synapse translate <query>` | Translate NL to shell command (TSV) |
+
+## Key Bindings
+
+After typing `? query` and pressing Enter:
+
+| Key | Action |
+|---|---|
+| `Up/Down` | Navigate results |
+| `Enter/Tab` | Accept selected command |
+| `Esc` | Dismiss |
 
 ## License
 

@@ -44,10 +44,6 @@ impl LlmClient {
             return None;
         }
 
-        if config.provider != "openai" {
-            return None;
-        }
-
         let base_url = config
             .base_url
             .as_deref()

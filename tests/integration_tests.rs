@@ -103,11 +103,7 @@ fn test_translate_no_llm() {
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path().join("synapse");
     std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(
-        config_dir.join("config.toml"),
-        "[llm]\nenabled = false\nnatural_language = false\n",
-    )
-    .unwrap();
+    std::fs::write(config_dir.join("config.toml"), "[llm]\nenabled = false\n").unwrap();
 
     let output = cargo_bin_cmd!("synapse")
         .args(["translate", "list all files", "--cwd", "/tmp"])
@@ -219,11 +215,7 @@ fn test_translate_passes_recent_commands_and_env_hints() {
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path().join("synapse");
     std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(
-        config_dir.join("config.toml"),
-        "[llm]\nenabled = false\nnatural_language = false\n",
-    )
-    .unwrap();
+    std::fs::write(config_dir.join("config.toml"), "[llm]\nenabled = false\n").unwrap();
 
     let output = cargo_bin_cmd!("synapse")
         .args([

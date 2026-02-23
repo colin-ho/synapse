@@ -12,19 +12,17 @@ discover_blocklist = []                # commands to never auto-discover
 command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 
 [llm]
-enabled = true                         # enable LLM-powered features (spec discovery, NL translation)
-provider = "openai"                    # only supported provider (also used for local OpenAI-compatible endpoints)
+enabled = true                         # enable LLM-powered features (NL translation)
 api_key_env = "LMSTUDIO_API_KEY"       # env var name containing the API key (placeholder is accepted for local endpoints)
 base_url = "http://127.0.0.1:1234"    # API base URL (default: LM Studio local endpoint)
 model = "gpt-4o-mini"                  # model to use
 timeout_ms = 10000                     # per-request timeout
-natural_language = true                # enable ? prefix mode for NL -> command translation
 nl_max_suggestions = 3                 # number of alternative commands to generate for NL queries
+temperature = 0.3                      # LLM temperature (lower = more deterministic)
 
 # LM Studio (local) example:
 # [llm]
 # enabled = true
-# provider = "openai"
 # api_key_env = "LMSTUDIO_API_KEY"
 # base_url = "http://127.0.0.1:1234"
 # model = "qwen2.5-coder-7b-instruct-mlx"

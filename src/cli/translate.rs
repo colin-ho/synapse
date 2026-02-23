@@ -21,11 +21,6 @@ pub(super) async fn translate(
 ) -> anyhow::Result<()> {
     let config = Config::load();
 
-    if !config.llm.natural_language {
-        print_error("Natural language mode is disabled");
-        return Ok(());
-    }
-
     if query.len() < crate::config::NL_MIN_QUERY_LENGTH {
         print_error(&format!(
             "Natural language query too short (minimum {} characters)",
@@ -58,7 +53,7 @@ pub(super) async fn translate(
     let temperature = if max_suggestions <= 1 {
         config.llm.temperature
     } else {
-        config.llm.temperature_multi
+        (config.llm.temperature + 0.4).min(1.0)
     };
 
     let result = match llm_client

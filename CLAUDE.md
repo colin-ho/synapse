@@ -81,7 +81,7 @@ Discovery writes compsys files directly — the compsys file IS the persistent c
 
 User config at `~/.config/synapse/config.toml`. See `config.example.toml` for all options. Parsed in `src/config.rs`.
 
-Sections: `[general]`, `[spec]`, `[security]`, `[llm]`, `[completions]`.
+Sections: `[spec]`, `[security]`, `[llm]`, `[completions]`.
 
 ## Testing Patterns
 
