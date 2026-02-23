@@ -17,33 +17,49 @@ Synapse is a spec engine and NL translation layer for Zsh. It auto-discovers CLI
 
 - macOS or Linux
 - Zsh
-- Rust toolchain (if building from source)
 
-## Quick Start
+## Installation
 
-### 1) Build
-
-```bash
-cargo build --release
-```
-
-### 2) Activate in Zsh
-
-Option A (if `synapse` is on your `PATH`): add to `~/.zshrc` automatically
+### Quick install
 
 ```bash
-./target/release/synapse install
+curl -fsSL https://raw.githubusercontent.com/colin-ho/synapse/main/scripts/install.sh | sh
 ```
 
-Option B (works without installing to `PATH`): manual line in `~/.zshrc`
+### From source
+
+Requires the [Rust toolchain](https://rustup.rs/).
 
 ```bash
-eval "$(/absolute/path/to/synapse)"
+git clone https://github.com/colin-ho/synapse.git
+cd synapse
+cargo install --path .
 ```
 
-Then restart your shell.
+### Shell setup
 
-For local development from this repository:
+Run the installer to add Synapse to your `~/.zshrc`:
+
+```bash
+synapse install
+```
+
+This adds `eval "$(synapse)"` to your shell config (before `compinit` if present, so completions load correctly). Then restart your shell or run:
+
+```bash
+eval "$(synapse)"
+```
+
+Alternatively, add the eval line to `~/.zshrc` manually — useful if `synapse` isn't on your `PATH`:
+
+```bash
+# In ~/.zshrc
+eval "$(/path/to/synapse)"
+```
+
+### Development
+
+For local development, build and activate in one step:
 
 ```bash
 source dev/test.sh
