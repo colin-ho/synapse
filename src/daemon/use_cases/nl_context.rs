@@ -11,8 +11,6 @@ const MAX_CWD_ENTRIES: usize = 50;
 const MAX_FLAGS_PER_TOOL: usize = 20;
 
 pub(super) struct PreparedNlContext {
-    pub(super) os: String,
-    pub(super) project_type_key: String,
     pub(super) context: NlTranslationContext,
 }
 
@@ -63,15 +61,11 @@ pub(super) async fn prepare_nl_context(
         }
         None => None,
     };
-    let project_type_key = project_type.as_deref().unwrap_or("").to_string();
-
     let project_commands = extract_project_commands(state, &cwd_path).await;
     let relevant_specs = extract_relevant_specs(state, &query, &cwd_path).await;
     let few_shot_examples = state.get_few_shot_examples(&query);
 
     PreparedNlContext {
-        os: os.clone(),
-        project_type_key,
         context: NlTranslationContext {
             query,
             cwd,

@@ -22,10 +22,7 @@ pub(crate) async fn run_generator(req: RunGeneratorRequest, state: &RuntimeState
         ..Default::default()
     };
 
-    let values = state
-        .spec_store
-        .run_generator(&generator, &cwd, crate::spec::SpecSource::Discovered)
-        .await;
+    let values = state.spec_store.run_generator(&generator, &cwd).await;
 
     Response::CompleteResult(CompleteResultResponse {
         values: values

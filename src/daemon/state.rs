@@ -12,7 +12,6 @@ use regex::Regex;
 use crate::config::Config;
 use crate::llm::LlmClient;
 use crate::logging::InteractionLogger;
-use crate::nl_cache::NlCache;
 use crate::spec_store::SpecStore;
 
 pub(super) type SharedWriter =
@@ -23,7 +22,6 @@ pub(super) struct RuntimeState {
     pub(super) interaction_logger: InteractionLogger,
     pub(super) config: Config,
     pub(super) llm_client: Option<Arc<LlmClient>>,
-    pub(super) nl_cache: NlCache,
     /// Cached project root per cwd.
     pub(super) project_root_cache: Cache<String, Option<PathBuf>>,
     /// Cached project type per project root.
@@ -91,7 +89,6 @@ impl RuntimeState {
         interaction_logger: InteractionLogger,
         config: Config,
         llm_client: Option<Arc<LlmClient>>,
-        nl_cache: NlCache,
     ) -> Self {
         let context_ttl = Duration::from_secs(300); // 5 min
         let compiled_blocklist = CompiledBlocklist::new(&config.security.command_blocklist);
@@ -111,7 +108,6 @@ impl RuntimeState {
             interaction_logger,
             config,
             llm_client,
-            nl_cache,
             project_root_cache: Cache::builder()
                 .max_capacity(50)
                 .time_to_live(context_ttl)

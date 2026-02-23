@@ -44,25 +44,6 @@ pub(crate) async fn translate_natural_language(
 
     let prepared = prepare_nl_context(&req, state).await;
 
-    if let Some(cached) = state
-        .nl_cache
-        .get(
-            &req.query,
-            &req.cwd,
-            &prepared.os,
-            &prepared.project_type_key,
-        )
-        .await
-    {
-        let suggestions = suggestion_items_from_pairs(
-            cached
-                .items
-                .into_iter()
-                .map(|item| (item.command, item.warning)),
-        );
-        return Response::SuggestionList(SuggestionListResponse { suggestions });
-    }
-
     let max_suggestions = state.config.llm.nl_max_suggestions;
     let temperature = if max_suggestions <= 1 {
         state.config.llm.temperature
@@ -97,25 +78,6 @@ pub(crate) async fn translate_natural_language(
             message: "All NL translations were empty or blocked by security policy".into(),
         };
     }
-
-    state
-        .nl_cache
-        .insert(
-            &req.query,
-            &req.cwd,
-            &prepared.os,
-            &prepared.project_type_key,
-            crate::nl_cache::NlCacheEntry {
-                items: valid_items
-                    .iter()
-                    .map(|item| crate::nl_cache::NlCacheItem {
-                        command: item.command.clone(),
-                        warning: item.warning.clone(),
-                    })
-                    .collect(),
-            },
-        )
-        .await;
 
     if let Some(first) = valid_items.first() {
         state.interaction_logger.log_interaction(

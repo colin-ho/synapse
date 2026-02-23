@@ -136,12 +136,7 @@ impl SpecStore {
         &self.config
     }
 
-    pub async fn run_generator(
-        &self,
-        generator: &GeneratorSpec,
-        cwd: &Path,
-        source: crate::spec::SpecSource,
-    ) -> Vec<String> {
-        generator::run_generator(self, generator, cwd, source).await
+    pub async fn run_generator(&self, generator: &GeneratorSpec, cwd: &Path) -> Vec<String> {
+        generator::run_generator(self, generator, cwd).await
     }
 }

@@ -202,19 +202,11 @@ pub(super) async fn start_daemon(
         config.logging.max_log_size_mb,
     );
 
-    let nl_cache = crate::nl_cache::NlCache::new();
-
     let shutdown = CancellationToken::new();
 
     let state = Arc::new(
-        RuntimeState::new(
-            spec_store,
-            interaction_logger,
-            config.clone(),
-            llm_client,
-            nl_cache,
-        )
-        .with_shutdown_token(shutdown.clone()),
+        RuntimeState::new(spec_store, interaction_logger, config.clone(), llm_client)
+            .with_shutdown_token(shutdown.clone()),
     );
 
     let result = run_server(listener, state, shutdown).await;

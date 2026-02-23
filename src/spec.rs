@@ -18,8 +18,6 @@ pub struct CommandSpec {
     pub aliases: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version_command: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subcommands: Vec<SubcommandSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -40,7 +38,6 @@ impl Default for CommandSpec {
             name: String::new(),
             aliases: Vec::new(),
             description: None,
-            version_command: None,
             subcommands: Vec::new(),
             options: Vec::new(),
             args: Vec::new(),
@@ -81,8 +78,6 @@ pub struct OptionSpec {
     pub takes_arg: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arg_generator: Option<GeneratorSpec>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub exclusive_with: Vec<String>,
 }
 
 /// Argument position definition
@@ -176,28 +171,4 @@ pub enum ArgTemplate {
     Directories,
     EnvVars,
     History,
-}
-
-impl CommandSpec {
-    /// Find a subcommand by name or alias
-    pub fn find_subcommand(&self, name: &str) -> Option<&SubcommandSpec> {
-        self.subcommands
-            .iter()
-            .find(|s| s.name == name || s.aliases.iter().any(|a| a == name))
-    }
-}
-
-impl SubcommandSpec {
-    /// Find a nested subcommand by name or alias
-    pub fn find_subcommand(&self, name: &str) -> Option<&SubcommandSpec> {
-        self.subcommands
-            .iter()
-            .find(|s| s.name == name || s.aliases.iter().any(|a| a == name))
-    }
-}
-
-pub fn find_option<'a>(options: &'a [OptionSpec], token: &str) -> Option<&'a OptionSpec> {
-    options
-        .iter()
-        .find(|opt| opt.long.as_deref() == Some(token) || opt.short.as_deref() == Some(token))
 }
