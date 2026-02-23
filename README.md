@@ -1,21 +1,17 @@
 # Synapse
 
-Synapse is an intelligent Zsh completion daemon that auto-discovers CLI specs and exports them as compsys completion functions, with built-in natural language to command translation.
+Synapse is a spec engine and NL translation layer for Zsh. It auto-discovers CLI specs and exports them as compsys completion functions, with built-in natural language to command translation.
 
-It is built as:
-- A Rust daemon (`src/`) that discovers specs, generates compsys completions, and handles NL translation over a Unix socket.
-- A Zsh plugin (`plugin/synapse.zsh`) that provides NL translation mode, command execution reporting, and daemon lifecycle management.
+- A Rust CLI (`src/`) that discovers specs, generates compsys completions, runs generators, and translates NL queries.
+- A Zsh plugin (`plugin/synapse.zsh`) that provides NL translation mode (`? query` prefix) and dropdown UI.
 
 ## Features
 
 - Compsys completion generation from CLI specs (gap-filling for commands without existing zsh completions).
-- Natural language to command translation (`? query` prefix).
+- Natural language to command translation (`? query` prefix via LLM).
 - Spec system with:
   - project auto-generated specs (Makefile, package.json, Cargo.toml, docker-compose, Justfile)
   - command discovery from `--help` (writes compsys files directly)
-- Optional LLM-powered features:
-  - natural language to command translation (`? ...`)
-- Built-in probe tool for protocol-level debugging (`synapse probe`).
 
 ## Requirements
 
@@ -56,27 +52,25 @@ source dev/test.sh
 ## CLI
 
 ```bash
-synapse start [--foreground] [-v|-vv|-vvv] [--log-file PATH] [--socket-path PATH]
-synapse status [--socket-path PATH]
-synapse stop [--socket-path PATH]
-synapse install
-synapse generate-completions [--output-dir PATH] [--force] [--no-gap-check]
-synapse complete <command> [context...] [--cwd PATH]
-synapse probe --request '<json>' [--socket-path PATH]
-synapse probe --stdio [--socket-path PATH]
+synapse                               # Show help (terminal) or output init code (piped)
+synapse install                       # Add eval "$(synapse)" to ~/.zshrc
+synapse add <command>                 # Discover completions for a command via --help
+synapse scan                          # Generate completions from project files (Makefile, etc.)
+synapse run-generator <cmd>           # Run a generator command with timeout
+synapse translate <query> --cwd <dir> # Translate NL to shell command (TSV output)
 ```
 
 Common examples:
 
 ```bash
-# Run daemon in foreground with debug logs
-cargo run -- start --foreground -vv
+# Add completions for a specific command
+synapse add curl
 
-# Check daemon status
-synapse status
+# Generate project completions
+synapse scan
 
-# Ping the daemon protocol
-synapse probe --request '{"type":"ping"}'
+# Translate natural language (usually called by the plugin, not directly)
+synapse translate "find large files" --cwd /home/user
 ```
 
 ## Key Bindings
@@ -100,10 +94,7 @@ Synapse is designed to complement these tools:
 
 ## Configuration
 
-Copy `config.example.toml` to your platform config location:
-
-- macOS: `~/Library/Application Support/synapse/config.toml`
-- Linux: `~/.config/synapse/config.toml`
+Copy `config.example.toml` to `~/.config/synapse/config.toml` and customize.
 
 Important sections:
 
@@ -111,33 +102,24 @@ Important sections:
 - `[llm]`: provider/model/base URL, plus NL settings.
 - `[completions]`: output directory, gap-only mode.
 - `[security]`: path/env scrubbing and command blocklists.
-- `[logging]`: interaction log path and rotation size.
 
 Security note:
 `[spec].trust_project_generators` is `false` by default. Keep this disabled unless you trust the repository you are working in.
 
-## Architecture Overview
+## Architecture
 
-1. The Zsh plugin sends newline-delimited JSON requests over a Unix socket.
-2. The daemon resolves specs and returns results as TSV protocol frames.
+Synapse uses a **one-shot CLI model** — no daemon, no persistent process. The plugin calls `synapse translate` as a subprocess for NL queries. Completions are generated as static compsys files.
 
-Core request types:
+- **`src/cli/`** — Clap-based CLI: `add`, `scan`, `run-generator`, `translate`, `shell`, `install`.
+- **`src/spec.rs`** — Data model: `CommandSpec`, `SubcommandSpec`, `OptionSpec`, `ArgSpec`, `GeneratorSpec`.
+- **`src/spec_store.rs`** — Spec lookup and caching (project specs, discovered specs).
+- **`src/spec_autogen.rs`** — Auto-generation from project files (Makefile, package.json, etc.).
+- **`src/compsys_export/`** — Converts specs to zsh `_arguments` completion functions.
+- **`src/llm/`** — LLM client, prompt construction, response parsing, path scrubbing.
+- **`src/zsh_completion/`** — Scans fpath for existing completions (gap detection).
+- **`plugin/synapse.zsh`** — Shell integration: NL mode, dropdown UI, keybindings, `synapse` wrapper.
 
-- `natural_language`
-- `command_executed`
-- `complete`
-- `ping`
-- `shutdown`
-- `reload_config`
-- `clear_cache`
-
-## Specs and Discovery
-
-Spec resolution (for the `Complete` handler):
-
-1. Project auto-generated specs (Makefile, package.json, etc.)
-
-Discovery of unknown commands (triggered by `command_executed`) writes compsys completion files directly to `~/.synapse/completions/`. The compsys file IS the persistent cache.
+Discovery writes compsys files directly — the compsys file IS the persistent cache. Discovery is user-driven via `synapse add`.
 
 ## Development
 
@@ -145,29 +127,22 @@ Discovery of unknown commands (triggered by `command_executed`) writes compsys c
 
 ```bash
 cargo build
-cargo build --release
 cargo test
-cargo test --test integration_tests
-cargo clippy -- -D warnings
+cargo clippy
 cargo fmt --check
 ```
 
-### Tooling
+### Pre-commit Hooks
 
 ```bash
-# Install pre-commit hook (fmt + clippy)
 ./scripts/setup-hooks.sh
-
-# Generate coverage reports (requires cargo-llvm-cov)
-./scripts/coverage
 ```
 
 ## Repository Layout
 
-- `src/`: Rust daemon, protocol, spec engine, compsys export, NL translation.
+- `src/`: Rust CLI, spec engine, compsys export, NL translation.
 - `plugin/synapse.zsh`: Zsh integration and keybindings.
-- `tests/`: integration and behavior tests.
-- `docs/`: operational and testing playbooks.
+- `tests/`: integration and unit tests.
 - `config.example.toml`: full configuration reference.
 
 ## License

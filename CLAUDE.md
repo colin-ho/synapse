@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Synapse is a **spec engine + NL translation layer** for Zsh. It discovers/generates CLI specs (from `--help` parsing and project files) and exports them as compsys `_arguments` completion functions. It also provides natural language to command translation via the `? query` prefix. Synapse integrates with the existing zsh ecosystem (zsh-autosuggestions for ghost text, fzf-tab for fuzzy menus, Atuin for history search).
 
-It consists of a Rust daemon communicating over a Unix domain socket with a thin Zsh plugin.
+It consists of a Rust CLI binary and a thin Zsh plugin. There is no daemon — all commands are one-shot processes.
 
 ## Build & Development Commands
 
@@ -21,11 +21,6 @@ cargo clippy                         # Lint
 cargo fmt                            # Format
 ```
 
-Run the daemon in foreground for development:
-```bash
-cargo run -- start --foreground -vv
-```
-
 Dev workflow — build and activate in the current shell:
 ```bash
 cargo build && eval "$(./target/debug/synapse)"
@@ -33,22 +28,18 @@ source dev/test.sh                   # Convenience: builds + activates
 source dev/test.sh --release         # Same with release build
 ```
 
-Running from `target/` auto-detects dev mode and creates a unique per-workspace socket so multiple worktrees don't conflict.
+Running from `target/` auto-detects dev mode (sets `SYNAPSE_BIN`, sources the workspace plugin directly).
 
 ### CLI
 
 | Command | Description |
 |---|---|
-| `synapse` | If run in a terminal: install to `~/.zshrc`. If piped: output shell init code. |
-| `synapse start` | Start the daemon (with `--foreground`, `-v`/`-vv`/`-vvv`, `--log-file`, `--socket-path`) |
-| `synapse stop` | Stop the daemon |
-| `synapse status` | Show daemon status |
+| `synapse` | If run in a terminal: show help. If piped: output shell init code. |
 | `synapse install` | Add `eval "$(synapse)"` to `~/.zshrc` |
 | `synapse add <cmd>` | Add completions for a command via `--help` parsing or completion generators (with `--output-dir`) |
 | `synapse scan` | Scan project files in cwd and write completion files (with `--output-dir`, `--force`, `--no-gap-check`) |
-| `synapse complete <cmd> [ctx...]` | Query daemon for dynamic completion values |
-| `synapse run-generator <cmd>` | Run a generator command through the daemon's timeout/caching (with `--cwd`, `--strip-prefix`, `--split-on`) |
-| `synapse probe` | Protocol-level debugging (with `--request`, `--stdio`) |
+| `synapse run-generator <cmd>` | Run a generator command with timeout (with `--cwd`, `--strip-prefix`, `--split-on`) |
+| `synapse translate <query>` | Translate natural language to shell command, output TSV (with `--cwd`, `--recent-command`, `--env-hint`) |
 
 ## Setup
 
@@ -59,22 +50,21 @@ Install pre-commit hooks (runs `cargo fmt --check` and `cargo clippy` before eac
 
 ## Architecture
 
-### Two-Process Model
+### CLI + Plugin Model
 
-1. **Zsh Plugin** (`plugin/synapse.zsh`) — Thin shell layer providing NL translation mode (`? query` prefix), command execution reporting (warms spec caches), connection management, and daemon lifecycle. Uses `recursive-edit` with a `synapse-dropdown` keymap for NL result navigation.
+1. **Zsh Plugin** (`plugin/synapse.zsh`) — Thin shell layer providing NL translation mode (`? query` prefix), recent command tracking, and dropdown UI for NL results. Calls `synapse translate` as a subprocess. Uses a `synapse-dropdown` keymap for result navigation.
 
-2. **Rust Daemon** (`src/main.rs`) — Single long-running Tokio async process serving all terminal sessions concurrently over a Unix domain socket at `$XDG_RUNTIME_DIR/synapse.sock`.
+2. **Rust CLI** (`src/cli/`) — One-shot commands. Each invocation loads config, does its work, and exits. No persistent process.
 
 ### Core Capabilities
 
 1. **Spec Engine** — Discovers/generates CLI specs and exports them as compsys `_arguments` completion functions. Generated files go to `~/.synapse/completions/` and are added to `fpath` by shell init.
-2. **NL Translator** — `? query` prefix translates natural language to shell commands via LLM.
-3. **Background Tasks** — Dynamic completion serving, system zsh completion file parsing for NL context.
+2. **NL Translator** — `? query` prefix translates natural language to shell commands via LLM. The plugin calls `synapse translate` and parses TSV output.
 
 ### Spec System
 
 - **Data model** (`src/spec.rs`) — `CommandSpec`, `SubcommandSpec`, `OptionSpec`, `ArgSpec`, `GeneratorSpec`, `ArgTemplate`. All spec structs derive `Serialize` for TOML round-tripping.
-- **Spec store** (`src/spec_store.rs`) — Caches project specs per-cwd (5min TTL), runs generators with timeout and caching. Provides `discover_command` for user-driven discovery via `synapse add`. Commands run in a sandboxed temp directory.
+- **Spec store** (`src/spec_store.rs`) — Caches project specs per-cwd (5min TTL). Provides `discover_command` for user-driven discovery via `synapse add`. Commands run in a sandboxed temp directory.
 - **Compsys export** (`src/compsys_export.rs`) — Converts `CommandSpec` into zsh `_arguments` completion functions. Handles options, subcommands, args, generators, templates, aliases, and recursive commands.
 - **Auto-generation** (`src/spec_autogen.rs`) — Generates specs from project files. Dynamic tools (make, npm/yarn/pnpm/bun, docker-compose, just) use `GeneratorSpec` commands that run at completion time for always-current results. Static tools (Cargo.toml, Python) are parsed at spec generation time. Use `synapse scan` to write compsys files from project specs.
 - **Discovered specs** — Generated by `synapse add <cmd>` via completion generators or `--help` regex parsing. Written directly as compsys files to `~/.synapse/completions/`.
@@ -83,23 +73,20 @@ Discovery writes compsys files directly — the compsys file IS the persistent c
 
 ### Key Subsystems
 
-- **Security** — Path scrubbing in `src/llm.rs` (`scrub_env_values`), command blocklist in `src/daemon/state.rs` (`CompiledBlocklist`).
-- **Caching** — Spec store uses `moka::future::Cache` with TTL for hot paths.
-- **Sessions** (`src/session.rs`) — Per-session state (cwd tracking) identified by 12-char hex IDs.
-- **Protocol** (`src/protocol.rs`) — Newline-delimited JSON requests, TSV responses. Request types: NaturalLanguage, CommandExecuted, CwdChanged, Complete, RunGenerator, Ping, Shutdown, ReloadConfig, ClearCache. Response types: SuggestionList, CompleteResult, Pong, Ack, Error.
-- **Logging** — Daemon tracing log at `~/.synapse/daemon.log`.
+- **Security** — Path scrubbing in `src/llm/scrub.rs`, command blocklist in `src/cli/translate.rs` (`CompiledBlocklist`).
+- **Caching** — Spec store uses `moka::future::Cache` with TTL for project specs and discovered specs.
 - **Zsh completion scanner** (`src/zsh_completion.rs`) — Gap detection: scans fpath for existing compsys functions to avoid generating duplicates.
+- **Shell init** (`src/cli/shell.rs`) — `eval "$(synapse)"` outputs init code: sets `SYNAPSE_BIN`, adds completions dir to fpath, sources the plugin. Dev mode auto-detected when running from `target/`.
 
 ### Config
 
 User config at `~/.config/synapse/config.toml`. See `config.example.toml` for all options. Parsed in `src/config.rs`.
 
-Sections: `[general]`, `[spec]`, `[security]`, `[llm]`, `[completions]`, `[logging]`.
+Sections: `[general]`, `[spec]`, `[security]`, `[llm]`, `[completions]`.
 
 ## Testing Patterns
 
-- Integration tests live in `tests/` (integration_tests, probe_tests).
-- Tests that mutate env vars use `Mutex<()>` for serialization.
-- Daemon lifecycle tests create in-process `UnixListener` instances.
-- `tempfile::TempDir` and `tempfile::NamedTempFile` are used for isolated test directories.
+- Integration tests live in `tests/integration_tests.rs` — subprocess tests via `assert_cmd`.
+- Unit tests for TSV wire format, blocklist, and shell setup live alongside their source in `src/cli/`.
+- `tempfile::TempDir` is used for isolated test directories and config overrides.
 - Spec tests create temp directories with project files (Cargo.toml, Makefile) to test auto-generation and completion.

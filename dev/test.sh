@@ -2,11 +2,10 @@
 # dev/test.sh — Source this to test local Synapse changes in the current shell.
 #
 # Usage:
-#   source dev/test.sh              # Build debug, start daemon, source plugin
+#   source dev/test.sh              # Build debug, source plugin
 #   source dev/test.sh --release    # Same but with release build
 #
-# Re-sourcing is safe: kills the old daemon first, reconnects.
-# Daemon is cleaned up automatically when the shell exits.
+# Re-sourcing is safe: reloads the plugin with the freshly-built binary.
 
 # Must be sourced, not executed
 if [[ "$ZSH_EVAL_CONTEXT" != *:file ]]; then

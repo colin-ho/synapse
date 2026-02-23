@@ -2,7 +2,6 @@
 # Copy to ~/.config/synapse/config.toml and customize
 
 [general]
-# socket_path = "/tmp/synapse.sock"     # auto-detected if omitted
 log_level = "warn"                      # "error" | "warn" | "info" | "debug" | "trace"
 
 [spec]
@@ -39,8 +38,8 @@ nl_max_suggestions = 3                 # number of alternative commands to gener
 # model = "qwen2.5-coder-7b-instruct-mlx"
 
 # Override LLM settings for spec discovery only.
-# Discovery runs asynchronously in the background (never blocks typing) and results
-# are cached for 1 week, so a slower but more capable cloud model is ideal here.
+# Discovery results are cached for 1 week, so a slower but more capable
+# cloud model is ideal here.
 # All fields are optional -- unset fields inherit from [llm].
 #
 # [llm.discovery]
@@ -53,6 +52,3 @@ nl_max_suggestions = 3                 # number of alternative commands to gener
 [completions]
 # output_dir = "~/.synapse/completions"              # override output directory
 gap_only = true                        # only generate for commands without existing compsys functions
-
-[logging]
-daemon_log = "~/.synapse/daemon.log"               # set to "" to disable file logging
