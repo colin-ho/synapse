@@ -3,13 +3,6 @@ if [[ -n "$_SYNAPSE_LOADED" ]]; then
     _synapse_cleanup 2>/dev/null
 fi
 _SYNAPSE_LOADED=1
-typeset -g _SYNAPSE_SESSION_ID=""
-typeset -g _SYNAPSE_SOCKET_FD=""
-typeset -g _SYNAPSE_CONNECTED=0
-typeset -g _SYNAPSE_RECONNECT_ATTEMPTS=0
-typeset -g _SYNAPSE_MAX_RECONNECT=3
-typeset -g _SYNAPSE_LAST_RECONNECT_TIME=0
-typeset -gi _SYNAPSE_DISCONNECT_WARNED=0
 typeset -gi _SYNAPSE_RECENT_CMD_MAX=10
 typeset -ga _SYNAPSE_RECENT_COMMANDS=()
 typeset -gi _SYNAPSE_DROPDOWN_INDEX=0
@@ -20,13 +13,7 @@ typeset -ga _SYNAPSE_DROPDOWN_DESCS=()
 typeset -gi _SYNAPSE_DROPDOWN_MAX_VISIBLE=8
 typeset -gi _SYNAPSE_DROPDOWN_SCROLL=0
 typeset -g _SYNAPSE_NL_PREFIX="?"
-zmodload zsh/net/socket 2>/dev/null || { return; }
 zmodload zsh/zle 2>/dev/null || { return; }
-zmodload zsh/system 2>/dev/null  # for zsystem flock
-zmodload zsh/datetime 2>/dev/null  # for EPOCHSECONDS
-_synapse_generate_session_id() {
-    _SYNAPSE_SESSION_ID="$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-}
 _synapse_find_binary() {
     if [[ -n "$SYNAPSE_BIN" ]] && [[ -x "$SYNAPSE_BIN" ]]; then
         echo "$SYNAPSE_BIN"
@@ -41,73 +28,6 @@ _synapse_find_binary() {
     done
     return 1
 }
-_synapse_socket_path() {
-    if [[ -n "$SYNAPSE_SOCKET" ]]; then
-        echo "$SYNAPSE_SOCKET"
-    elif [[ -n "$XDG_RUNTIME_DIR" ]]; then
-        echo "${XDG_RUNTIME_DIR}/synapse.sock"
-    else
-        echo "/tmp/synapse-$(id -u).sock"
-    fi
-}
-_synapse_pid_path() {
-    local sock="$(_synapse_socket_path)"
-    echo "${sock%.sock}.pid"
-}
-_synapse_lock_path() {
-    local sock="$(_synapse_socket_path)"
-    echo "${sock%.sock}.lock"
-}
-_synapse_daemon_running() {
-    local pid_file="$(_synapse_pid_path)"
-    [[ -f "$pid_file" ]] || return 1
-    local pid="$(< "$pid_file")"
-    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
-}
-_synapse_ensure_daemon() {
-    setopt local_options no_monitor
-    _synapse_daemon_running && return 0
-    local bin
-    bin="$(_synapse_find_binary)" || return 1
-    local lock_file="$(_synapse_lock_path)"
-    local lock_fd
-    if ! zsystem flock -t 0 -f lock_fd "$lock_file" 2>/dev/null; then
-        return 0  # Another shell is starting it
-    fi
-    if _synapse_daemon_running; then
-        exec {lock_fd}>&-
-        return 0
-    fi
-    "$bin" start &>/dev/null &
-    disown
-    local i
-    for i in 1 2 3 4 5; do
-        sleep 0.1
-        if _synapse_daemon_running; then
-            exec {lock_fd}>&-
-            return 0
-        fi
-    done
-    exec {lock_fd}>&-
-    return 1
-}
-_synapse_connect() {
-    _synapse_disconnect
-    local sock="$(_synapse_socket_path)"
-    [[ -S "$sock" ]] || return 1
-    zsocket "$sock" 2>/dev/null || return 1
-    _SYNAPSE_SOCKET_FD="$REPLY"
-    _SYNAPSE_CONNECTED=1
-    return 0
-}
-_synapse_disconnect() {
-    if [[ -n "$_SYNAPSE_SOCKET_FD" ]]; then
-        exec {_SYNAPSE_SOCKET_FD}>&- 2>/dev/null
-        _SYNAPSE_SOCKET_FD=""
-    fi
-    _SYNAPSE_CONNECTED=0
-    POSTDISPLAY=""
-}
 _synapse_buffer_has_nl_prefix() {
     local prefix_len=${#_SYNAPSE_NL_PREFIX}
     (( prefix_len > 0 )) || return 1
@@ -117,68 +37,6 @@ _synapse_buffer_has_nl_prefix() {
 }
 _synapse_nl_query_from_buffer() {
     echo "${BUFFER[$(( ${#_SYNAPSE_NL_PREFIX} + 2 )),-1]}"
-}
-_synapse_request() {
-    local json="$1"
-    local timeout="${2:-0.05}"
-    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return 1
-    [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return 1
-    print -u "$_SYNAPSE_SOCKET_FD" "$json" 2>/dev/null || return 1
-    local response="" reads=0
-    local max_reads=$(( timeout / 0.01 ))
-    max_reads="${max_reads%.*}"
-    [[ -n "$max_reads" ]] || max_reads=5
-    (( max_reads < 1 )) && max_reads=1
-    while (( reads++ < max_reads )); do
-        if read -t 0.01 -u "$_SYNAPSE_SOCKET_FD" response 2>/dev/null; then
-            echo "$response"
-            return 0
-        fi
-    done
-    return 1
-}
-_synapse_json_escape() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    value="${value//$'\t'/\\t}"
-    echo "$value"
-}
-_synapse_send_event() {
-    local event_type="$1"
-    local command="$2"
-    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return 0
-    [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return 0
-    local escaped_cwd="$(_synapse_json_escape "$PWD")"
-    if [[ "$event_type" == "command_executed" ]]; then
-        [[ -n "$command" ]] || return 0
-        local escaped_cmd="$(_synapse_json_escape "$command")"
-        print -u "$_SYNAPSE_SOCKET_FD" "{\"type\":\"command_executed\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"command\":\"${escaped_cmd}\",\"cwd\":\"${escaped_cwd}\"}" 2>/dev/null
-        return 0
-    fi
-    if [[ "$event_type" == "cwd_changed" ]]; then
-        print -u "$_SYNAPSE_SOCKET_FD" "{\"type\":\"cwd_changed\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"cwd\":\"${escaped_cwd}\"}" 2>/dev/null
-    fi
-}
-_synapse_build_nl_request() {
-    local escaped_query="$(_synapse_json_escape "$1")"
-    local escaped_cwd="$(_synapse_json_escape "$2")"
-    local items=() cmd
-    for cmd in "${_SYNAPSE_RECENT_COMMANDS[@]}"; do
-        items+=("\"$(_synapse_json_escape "$cmd")\"")
-    done
-    local recent="[]"
-    (( ${#items[@]} )) && recent="[${(j:,:)items}]"
-    local hints=() key val
-    for key in PATH VIRTUAL_ENV; do
-        val="${(P)key}"
-        [[ -n "$val" ]] || continue
-        hints+=("\"${key}\":\"$(_synapse_json_escape "$val")\"")
-    done
-    local env="{}"
-    (( ${#hints[@]} )) && env="{${(j:,:)hints}}"
-    echo "{\"type\":\"natural_language\",\"session_id\":\"${_SYNAPSE_SESSION_ID}\",\"query\":\"${escaped_query}\",\"cwd\":\"${escaped_cwd}\",\"recent_commands\":${recent},\"env_hints\":${env}}"
 }
 _synapse_render_dropdown() {
     if [[ $_SYNAPSE_DROPDOWN_COUNT -eq 0 ]]; then
@@ -298,12 +156,6 @@ _synapse_parse_suggestion_list() {
     done
     _SYNAPSE_DROPDOWN_COUNT=$count
 }
-_synapse_drain_stale() {
-    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || return
-    [[ -n "$_SYNAPSE_SOCKET_FD" ]] || return
-    local _junk
-    while read -t 0 -u "$_SYNAPSE_SOCKET_FD" _junk 2>/dev/null; do :; done
-}
 _synapse_set_status_message() {
     local text="$1"
     local color="${2:-8}"
@@ -312,7 +164,6 @@ _synapse_set_status_message() {
     region_highlight=("${base_offset} $(( base_offset + ${#POSTDISPLAY} )) fg=${color}")
 }
 _synapse_nl_execute() {
-    [[ $_SYNAPSE_CONNECTED -eq 1 ]] || { zle .accept-line; return; }
     local query
     query="$(_synapse_nl_query_from_buffer)"
     if [[ -z "$query" ]]; then
@@ -321,14 +172,18 @@ _synapse_nl_execute() {
     fi
     _synapse_set_status_message "thinking..." 8
     zle -R
-    _synapse_drain_stale
-    local json
-    json="$(_synapse_build_nl_request "$query" "$PWD")"
+    local bin
+    bin="$(_synapse_find_binary)" || { zle .accept-line; return; }
+    local -a args=(translate "$query" --cwd "$PWD")
+    local cmd; for cmd in "${_SYNAPSE_RECENT_COMMANDS[@]}"; do
+        args+=(--recent-command "$cmd")
+    done
+    local key val; for key in PATH VIRTUAL_ENV; do
+        val="${(P)key}"; [[ -n "$val" ]] && args+=(--env-hint "${key}=${val}")
+    done
     local response
-    response="$(_synapse_request "$json" 30.0)" || {
-        _synapse_set_status_message "[timed out waiting for translation]" 1
-        zle -R
-        return
+    response="$(command "$bin" "${args[@]}" 2>/dev/null)" || {
+        _synapse_set_status_message "[translation failed]" 1; zle -R; return
     }
     local -a _tsv_fields
     IFS=$'\t' read -rA _tsv_fields <<< "$response"
@@ -402,43 +257,17 @@ _synapse_dropdown_close_and_insert() {
     _synapse_dropdown_exit
 }
 _synapse_precmd() {
-    if [[ $_SYNAPSE_CONNECTED -eq 0 ]]; then
-        if [[ $_SYNAPSE_DISCONNECT_WARNED -eq 0 ]]; then
-            print -u2 "[synapse] daemon not reachable"
-            _SYNAPSE_DISCONNECT_WARNED=1
-        fi
-        local now="$EPOCHSECONDS"
-        local elapsed=$(( now - _SYNAPSE_LAST_RECONNECT_TIME ))
-        if [[ $elapsed -ge 30 ]]; then
-            _SYNAPSE_RECONNECT_ATTEMPTS=0
-            _SYNAPSE_LAST_RECONNECT_TIME="$now"
-        fi
-        if [[ $_SYNAPSE_RECONNECT_ATTEMPTS -lt $_SYNAPSE_MAX_RECONNECT ]]; then
-            (( _SYNAPSE_RECONNECT_ATTEMPTS++ ))
-            _synapse_ensure_daemon
-            _synapse_connect
-            if [[ $_SYNAPSE_CONNECTED -eq 1 ]]; then
-                _SYNAPSE_DISCONNECT_WARNED=0
-            fi
-        fi
-    fi
     _synapse_clear_dropdown
 }
 _synapse_preexec() {
     local cmd="$1"
     _SYNAPSE_RECENT_COMMANDS=("$cmd" "${_SYNAPSE_RECENT_COMMANDS[@]:0:$(( _SYNAPSE_RECENT_CMD_MAX - 1 ))}")
-    _synapse_send_event "command_executed" "$cmd"
     _synapse_clear_dropdown
 }
-_synapse_chpwd() {
-    _synapse_send_event "cwd_changed"
-}
 _synapse_cleanup() {
-    _synapse_disconnect
     _synapse_clear_dropdown
     add-zsh-hook -d precmd _synapse_precmd 2>/dev/null
     add-zsh-hook -d preexec _synapse_preexec 2>/dev/null
-    add-zsh-hook -d chpwd _synapse_chpwd 2>/dev/null
     (( $+functions[add-zle-hook-widget] )) && add-zle-hook-widget -d zle-line-pre-redraw _synapse_pre_redraw 2>/dev/null
     zle -A .accept-line accept-line 2>/dev/null
     bindkey -D synapse-dropdown &>/dev/null
@@ -484,7 +313,6 @@ _synapse_register_completion() {
     compdef "$func" "$cmd"
 }
 _synapse_init() {
-    _synapse_generate_session_id
     zle -N synapse-tab-accept _synapse_tab_accept
     zle -N synapse-dropdown-down _synapse_dropdown_down
     zle -N synapse-dropdown-up _synapse_dropdown_up
@@ -512,12 +340,9 @@ _synapse_init() {
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _synapse_precmd
     add-zsh-hook preexec _synapse_preexec
-    add-zsh-hook chpwd _synapse_chpwd
     autoload -Uz add-zle-hook-widget 2>/dev/null
     if (( $+functions[add-zle-hook-widget] )); then
         add-zle-hook-widget zle-line-pre-redraw _synapse_pre_redraw
     fi
-    _synapse_ensure_daemon
-    _synapse_connect
 }
 _synapse_init

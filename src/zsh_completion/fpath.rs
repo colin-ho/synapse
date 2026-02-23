@@ -53,16 +53,3 @@ pub(super) fn scan_available_commands() -> HashSet<String> {
 
     commands
 }
-
-pub(super) fn find_completion_file(command: &str) -> Option<PathBuf> {
-    let target = format!("_{command}");
-
-    for dir in resolve_fpath_dirs() {
-        let candidate = dir.join(&target);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    None
-}

@@ -29,17 +29,6 @@ fn detect_dev_mode() -> Option<(PathBuf, PathBuf)> {
     }
 }
 
-/// Produce an 8-char hex hash of a path for unique socket names.
-/// Uses FNV-1a for deterministic output across Rust versions.
-fn workspace_hash(path: &std::path::Path) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in path.to_string_lossy().as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{:08x}", (hash & 0xFFFF_FFFF) as u32)
-}
-
 /// Find the plugin file. In dev mode, uses workspace root; otherwise searches relative to binary.
 /// If no on-disk plugin is found, extracts the embedded plugin to a data directory.
 fn find_plugin_path(
@@ -111,7 +100,7 @@ fn extract_embedded_plugin_at(data_dir: &std::path::Path) -> anyhow::Result<Path
 }
 
 /// Output shell initialization code to stdout.
-pub(super) fn print_init_code() -> anyhow::Result<()> {
+pub fn print_init_code() -> anyhow::Result<()> {
     if let Some((exe, workspace_root)) = detect_dev_mode() {
         print_dev_init_code(&exe, &workspace_root)?;
     } else {
@@ -128,10 +117,6 @@ fn print_dev_init_code(
     workspace_root: &std::path::Path,
 ) -> anyhow::Result<()> {
     let plugin_path = find_plugin_path(exe, Some(workspace_root))?;
-    let hash = workspace_hash(workspace_root);
-    let socket_path = format!("/tmp/synapse-dev-{hash}.sock");
-    let pid_path = format!("/tmp/synapse-dev-{hash}.pid");
-    let log_path = format!("/tmp/synapse-dev-{hash}.log");
     let profile = exe
         .parent()
         .and_then(|p| p.file_name())
@@ -141,55 +126,17 @@ fn print_dev_init_code(
     // Status on stderr (not captured by eval's $())
     eprintln!("synapse dev ({profile})");
     eprintln!("  workspace: {}", workspace_root.display());
-    eprintln!("  socket:    {socket_path}");
-    eprintln!("  logs:      tail -f {log_path}");
 
     print!(
         r#"# synapse dev mode
 export SYNAPSE_BIN="{exe}"
-export SYNAPSE_SOCKET="{socket}"
 # Synapse completions — add to fpath before compinit
 _synapse_completions_dir="$HOME/.synapse/completions"
 [[ -d "$_synapse_completions_dir" ]] && fpath=("$_synapse_completions_dir" $fpath)
-# Stop existing dev daemon on this socket
-if [[ -f "{pid}" ]] && kill -0 $(<"{pid}") 2>/dev/null; then
-    kill $(<"{pid}") 2>/dev/null
-    command sleep 0.1
-fi
-command rm -f "{socket}" "{pid}"
-# Start daemon with dev logging
-"{exe}" start --foreground --socket-path "{socket}" --log-file "{log}" -vv &>/dev/null &
-disown
-_synapse_i=0
-while [[ ! -S "{socket}" ]] && (( _synapse_i < 50 )); do command sleep 0.1; (( _synapse_i++ )); done
-unset _synapse_i
 source "{plugin}"
-if [[ -S "{socket}" ]]; then
-    echo "synapse dev: ready" >&2
-else
-    echo "synapse dev: daemon failed to start. check: tail -f {log}" >&2
-fi
-_synapse_dev_cleanup() {{
-    if [[ -n "$SYNAPSE_SOCKET" ]]; then
-        local pid_file="${{SYNAPSE_SOCKET%.sock}}.pid"
-        if [[ -f "$pid_file" ]]; then
-            local pid=$(<"$pid_file")
-            [[ -n "$pid" ]] && kill "$pid" 2>/dev/null
-            rm -f "$pid_file"
-        fi
-        rm -f "$SYNAPSE_SOCKET"
-    fi
-    unset SYNAPSE_SOCKET SYNAPSE_BIN
-}}
-if [[ -z "$_SYNAPSE_DEV_TRAP_SET" ]]; then
-    _SYNAPSE_DEV_TRAP_SET=1
-    trap '_synapse_dev_cleanup' EXIT
-fi
-    "#,
+echo "synapse dev: ready" >&2
+"#,
         exe = exe.display(),
-        socket = socket_path,
-        pid = pid_path,
-        log = log_path,
         plugin = plugin_path.display(),
     );
     Ok(())
@@ -205,7 +152,7 @@ fn print_normal_init_code(exe: &std::path::Path) -> anyhow::Result<()> {
 _synapse_completions_dir="$HOME/.synapse/completions"
 [[ -d "$_synapse_completions_dir" ]] && fpath=("$_synapse_completions_dir" $fpath)
 source "{plugin}"
-    "#,
+"#,
         exe = exe.display(),
         plugin = plugin_path.display(),
     );
@@ -215,7 +162,7 @@ source "{plugin}"
 /// Idempotently add the init line to a shell RC file.
 /// If `compinit` is found in the file, the init line is inserted before it
 /// (synapse must add to fpath before compinit scans). Otherwise, appends.
-pub(super) fn setup_shell_rc(rc_file: &str) -> anyhow::Result<()> {
+pub fn setup_shell_rc(rc_file: &str) -> anyhow::Result<()> {
     let path = rc_file.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
     let path = PathBuf::from(path);
 
@@ -270,4 +217,48 @@ fn find_compinit_line_start(contents: &str) -> Option<usize> {
         offset += line.len() + 1;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_embedded_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = extract_embedded_plugin_at(dir.path());
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, EMBEDDED_PLUGIN);
+    }
+
+    #[test]
+    fn test_setup_shell_rc_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".zshrc");
+        std::fs::write(&rc, "# existing content\n").unwrap();
+
+        setup_shell_rc(rc.to_str().unwrap()).unwrap();
+        let after_first = std::fs::read_to_string(&rc).unwrap();
+        assert!(after_first.contains(r#"eval "$(synapse)""#));
+
+        setup_shell_rc(rc.to_str().unwrap()).unwrap();
+        let after_second = std::fs::read_to_string(&rc).unwrap();
+        assert_eq!(after_first, after_second);
+    }
+
+    #[test]
+    fn test_setup_inserts_before_compinit() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".zshrc");
+        std::fs::write(&rc, "autoload -Uz compinit\ncompinit\n").unwrap();
+
+        setup_shell_rc(rc.to_str().unwrap()).unwrap();
+        let content = std::fs::read_to_string(&rc).unwrap();
+        let synapse_pos = content.find("synapse").unwrap();
+        let compinit_pos = content.find("compinit").unwrap();
+        assert!(synapse_pos < compinit_pos);
+    }
 }

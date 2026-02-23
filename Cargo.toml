@@ -25,14 +25,10 @@ toml = "1"
 clap = { version = "4", features = ["derive"] }
 moka = { version = "0.12", features = ["future"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
-nix = { version = "0.31", features = ["signal", "fs", "user"] }
 thiserror = "2"
 anyhow = "1"
-tokio-util = { version = "0.7", features = ["codec", "rt"] }
-futures-util = { version = "0.3", features = ["sink"] }
 cargo_toml = "0.22"
 gix-discover = "0.47"
 gix-ref = "0.59"

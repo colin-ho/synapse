@@ -5,8 +5,6 @@ use std::{num::NonZeroUsize, path::PathBuf};
 
 /// Maximum character length for suggestion text before truncation.
 pub const MAX_SUGGESTION_LENGTH: usize = 200;
-/// Debounce delay in ms for NL requests.
-pub const NL_DEBOUNCE_MS: u64 = 50;
 /// Minimum interval in ms between LLM API calls.
 pub const RATE_LIMIT_MS: u64 = 200;
 /// Minimum characters for NL queries.
@@ -26,17 +24,13 @@ pub struct Config {
     pub general: GeneralConfig,
     pub spec: SpecConfig,
     pub security: SecurityConfig,
-    pub logging: LoggingConfig,
     pub llm: LlmConfig,
     pub completions: CompletionsConfig,
-    #[serde(skip)]
-    cli_socket_override: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct GeneralConfig {
-    pub socket_path: Option<String>,
     pub log_level: String,
 }
 
@@ -66,13 +60,6 @@ pub struct SecurityConfig {
     pub scrub_paths: bool,
     pub command_blocklist: Vec<String>,
     pub scrub_env_keys: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(default)]
-pub struct LoggingConfig {
-    /// Daemon log file path. Set to empty string to disable file logging.
-    pub daemon_log: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -126,7 +113,6 @@ pub struct CompletionsConfig {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
-            socket_path: None,
             log_level: "warn".into(),
         }
     }
@@ -163,14 +149,6 @@ impl Default for SecurityConfig {
                 "*_PASSWORD".into(),
                 "*_CREDENTIALS".into(),
             ],
-        }
-    }
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            daemon_log: "~/.synapse/daemon.log".into(),
         }
     }
 }
@@ -220,8 +198,6 @@ impl LlmDiscoveryConfig {
                 .clone()
                 .unwrap_or_else(|| parent.api_key_env.clone()),
             // If provider is overridden, don't inherit parent's base_url
-            // (e.g. switching from local OpenAI endpoint to hosted OpenAI — the
-            // local base_url would be wrong). Use discovery's base_url or None.
             base_url: if provider_changed {
                 self.base_url.clone()
             } else {
@@ -245,74 +221,26 @@ impl LlmDiscoveryConfig {
 
 impl Config {
     pub fn load() -> Self {
-        let config_path = dirs::config_dir()
-            .map(|d| d.join("synapse").join("config.toml"))
+        let config_path = std::env::var("XDG_CONFIG_HOME")
+            .ok()
+            .map(|d| PathBuf::from(d).join("synapse").join("config.toml"))
+            .or_else(|| dirs::config_dir().map(|d| d.join("synapse").join("config.toml")))
             .unwrap_or_else(|| PathBuf::from("~/.config/synapse/config.toml"));
 
         if config_path.exists() {
             match std::fs::read_to_string(&config_path) {
                 Ok(contents) => match toml::from_str(&contents) {
-                    Ok(config) => {
-                        tracing::info!("Loaded config from {}", config_path.display());
-                        return config;
-                    }
+                    Ok(config) => return config,
                     Err(e) => {
                         eprintln!("[synapse] Failed to parse {}: {e}", config_path.display());
-                        tracing::warn!("Failed to parse config: {e}, using defaults");
                     }
                 },
                 Err(e) => {
                     eprintln!("[synapse] Failed to read {}: {e}", config_path.display());
-                    tracing::warn!("Failed to read config: {e}, using defaults");
                 }
             }
         }
 
         Config::default()
-    }
-
-    pub fn with_socket_override(mut self, path: Option<PathBuf>) -> Self {
-        if let Some(p) = path {
-            self.cli_socket_override = Some(p.to_string_lossy().into_owned());
-        }
-        self
-    }
-
-    pub fn socket_path(&self) -> PathBuf {
-        if let Some(ref path) = self.cli_socket_override {
-            return PathBuf::from(path);
-        }
-
-        if let Ok(path) = std::env::var("SYNAPSE_SOCKET") {
-            if !path.is_empty() {
-                return PathBuf::from(path);
-            }
-        }
-
-        if let Some(ref path) = self.general.socket_path {
-            return PathBuf::from(path);
-        }
-
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            return PathBuf::from(runtime_dir).join("synapse.sock");
-        }
-
-        let uid = nix::unistd::getuid();
-        PathBuf::from(format!("/tmp/synapse-{}.sock", uid))
-    }
-
-    pub fn pid_path(&self) -> PathBuf {
-        let sock = self.socket_path();
-        sock.with_extension("pid")
-    }
-
-    /// Returns the configured daemon log path, or `None` if set to empty string.
-    pub fn daemon_log_path(&self) -> Option<PathBuf> {
-        let raw = &self.logging.daemon_log;
-        if raw.is_empty() {
-            return None;
-        }
-        let path = raw.replace('~', &dirs::home_dir().unwrap_or_default().to_string_lossy());
-        Some(PathBuf::from(path))
     }
 }

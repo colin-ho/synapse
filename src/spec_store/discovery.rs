@@ -74,33 +74,6 @@ const DISCOVERY_BLOCKLIST: &[&str] = &[
 const MAX_HELP_OUTPUT_BYTES: usize = 256 * 1024;
 
 impl SpecStore {
-    /// Warm caches for a command after execution. Safe strategies only:
-    /// Parse system zsh completion file into cache (pure file reads, no execution).
-    pub async fn warm_command_cache(&self, command: &str, cwd: Option<&Path>) {
-        let lookup_cwd = cwd.unwrap_or(Path::new("/"));
-
-        if self.lookup(command, lookup_cwd).await.is_some() {
-            return;
-        }
-
-        if self
-            .parsed_system_specs
-            .get(&command.to_string())
-            .await
-            .is_none()
-        {
-            let command_name = command.to_string();
-            let result = tokio::task::spawn_blocking(move || {
-                crate::zsh_completion::find_and_parse(&command_name)
-            })
-            .await
-            .unwrap_or(None);
-            self.parsed_system_specs
-                .insert(command.to_string(), result)
-                .await;
-        }
-    }
-
     pub fn can_discover_command(&self, command: &str) -> bool {
         self.config.discover_from_help
             && !DISCOVERY_BLOCKLIST.contains(&command)

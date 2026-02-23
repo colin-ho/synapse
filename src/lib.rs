@@ -1,9 +1,8 @@
+pub mod cli;
 pub mod compsys_export;
 pub mod config;
-pub mod daemon;
 pub mod llm;
 pub mod project;
-pub mod protocol;
 pub mod spec;
 pub mod spec_autogen;
 pub mod spec_store;
