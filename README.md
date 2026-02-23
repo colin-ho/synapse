@@ -8,15 +8,15 @@ Most CLI tools ship without Zsh completions. Synapse fills the gap — it genera
 
 Run `synapse add <cmd>` to generate tab completions for any command, or `synapse scan` to pick up project-level targets (Makefile, package.json, Cargo.toml, docker-compose, Justfile).
 
-https://github.com/user-attachments/assets/add.mp4
+https://github.com/user-attachments/assets/b019d91f-5532-4492-a7b7-0c30793e7e6c
+
 
 ### Natural language mode
 
 Type `? find large files` and get a dropdown of real shell commands, powered by any OpenAI-compatible LLM (local or cloud).
 
-https://github.com/user-attachments/assets/nl.mp4
+https://github.com/user-attachments/assets/2925a3ea-5ca7-497e-875b-f8b54ea0e269
 
-Synapse complements [fzf-tab](https://github.com/Aloxaf/fzf-tab), [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions), and [Atuin](https://atuin.sh/). No daemon, no background process.
 
 ## Requirements
 
@@ -52,7 +52,7 @@ Restart your shell, or run `eval "$(synapse)"` to activate immediately.
 
 ```bash
 # Generate completions for a command
-synapse add curl
+synapse add cargo
 
 # Generate completions from project files in cwd
 synapse scan
@@ -116,7 +116,3 @@ After typing `? query` and pressing Enter:
 | `Up/Down` | Navigate results |
 | `Enter/Tab` | Accept selected command |
 | `Esc` | Dismiss |
-
-## License
-
-MIT
