@@ -12,10 +12,6 @@ pub fn scan_available_commands() -> HashSet<String> {
     fpath::scan_available_commands()
 }
 
-pub fn parse_zsh_completion(command: &str, content: &str) -> CommandSpec {
-    parser::parse_zsh_completion(command, content)
-}
-
 pub async fn try_completion_generator(
     command: &str,
     timeout: std::time::Duration,

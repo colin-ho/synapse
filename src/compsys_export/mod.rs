@@ -17,10 +17,6 @@ pub fn completions_dir() -> PathBuf {
         .join("completions")
 }
 
-pub fn export_command_spec(spec: &CommandSpec) -> String {
-    export::export_command_spec(spec)
-}
-
 pub fn write_completion_file(spec: &CommandSpec, dir: &Path) -> io::Result<PathBuf> {
     filesystem::write_completion_file(spec, dir)
 }

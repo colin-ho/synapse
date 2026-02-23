@@ -24,8 +24,7 @@ pub(super) async fn add_command(
         std::process::exit(1);
     }
 
-    let cwd = std::env::current_dir().ok();
-    match spec_store.discover_command(&command, cwd.as_deref()).await {
+    match spec_store.discover_command(&command).await {
         Some((spec, path)) => {
             let n_opts = spec.options.len();
             let n_subs = spec.subcommands.len();

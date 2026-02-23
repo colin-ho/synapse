@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Source priority for specs (higher priority shadows lower).
 /// Variant order matters: derived `Ord` uses declaration order,
 /// so later variants compare greater (= higher priority).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecSource {
     Discovered,
     ProjectAuto,

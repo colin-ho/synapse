@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use crate::spec::CommandSpec;
 
-use super::{export_command_spec, GenerationReport};
+use super::export::export_command_spec;
+use super::GenerationReport;
 
 pub(super) fn write_completion_file(spec: &CommandSpec, dir: &Path) -> io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;

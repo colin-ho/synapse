@@ -14,7 +14,10 @@ pub(super) fn export_command_spec(spec: &CommandSpec) -> String {
     out.push_str(&format!("# Source: {source_label}\n"));
     out.push_str(&format!(
         "# Generated: {}\n",
-        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
     ));
     out.push_str("# Regenerate with: synapse generate-completions --force\n\n");
 

@@ -205,7 +205,6 @@ pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<Com
 
     for tool in tools {
         let Some(binary_path) = tool.binary_path else {
-            tracing::debug!("Project CLI tool {} not built yet, skipping", tool.name);
             continue;
         };
 
@@ -228,7 +227,6 @@ pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<Com
             if !help_text.trim().is_empty() {
                 let spec = crate::spec_store::parse_help_basic(&tool.name, &help_text);
                 if !spec.subcommands.is_empty() || !spec.options.is_empty() {
-                    tracing::info!("Generated spec for project CLI tool: {}", tool.name);
                     specs.push(spec);
                 }
             }

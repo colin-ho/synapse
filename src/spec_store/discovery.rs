@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tokio::process::Command;
@@ -89,14 +89,13 @@ impl SpecStore {
         let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
         let mut spec = crate::zsh_completion::try_completion_generator(command, timeout).await?;
         spec.source = SpecSource::Discovered;
-        tracing::info!("Completion generator produced spec for {command}");
         Some(spec)
     }
 
-    async fn discover_with_help(&self, command: &str, cwd: Option<&Path>) -> Option<CommandSpec> {
+    async fn discover_with_help(&self, command: &str) -> Option<CommandSpec> {
         let timeout = Duration::from_millis(crate::config::DISCOVER_TIMEOUT_MS);
         let args: Vec<String> = Vec::new();
-        let help_text = self.fetch_help_output(command, &args, timeout, cwd).await?;
+        let help_text = self.fetch_help_output(command, &args, timeout).await?;
 
         let mut spec = parse_help_basic(command, &help_text);
         spec.source = SpecSource::Discovered;
@@ -105,12 +104,7 @@ impl SpecStore {
 
     /// Run discovery for a command and return the spec + compsys file path.
     /// Tries completion generators first (structured), then `--help` regex.
-    /// No LLM, no subcommand recursion.
-    pub async fn discover_command(
-        &self,
-        command: &str,
-        cwd: Option<&Path>,
-    ) -> Option<(CommandSpec, PathBuf)> {
+    pub async fn discover_command(&self, command: &str) -> Option<(CommandSpec, PathBuf)> {
         if !self.can_discover_command(command) {
             return None;
         }
@@ -119,7 +113,7 @@ impl SpecStore {
             return self.write_and_cache_discovered(command, spec).await;
         }
 
-        let spec = self.discover_with_help(command, cwd).await?;
+        let spec = self.discover_with_help(command).await?;
         self.write_and_cache_discovered(command, spec).await
     }
 
@@ -139,17 +133,8 @@ impl SpecStore {
 
         let path = match crate::compsys_export::write_completion_file(&spec, &self.completions_dir)
         {
-            Ok(path) => {
-                tracing::info!(
-                    "Wrote compsys completion for {command} at {}",
-                    path.display()
-                );
-                path
-            }
-            Err(err) => {
-                tracing::warn!("Failed to write compsys completion for {command}: {err}");
-                return None;
-            }
+            Ok(path) => path,
+            Err(_) => return None,
         };
 
         self.discovered_cache
@@ -164,7 +149,6 @@ impl SpecStore {
         args: &[String],
         help_flag: &str,
         timeout: Duration,
-        _cwd: Option<&Path>,
     ) -> Option<String> {
         let result = tokio::time::timeout(timeout, async {
             let scratch = std::env::temp_dir().join("synapse-discovery");
@@ -196,14 +180,8 @@ impl SpecStore {
                     None
                 }
             }
-            Ok(Err(err)) => {
-                tracing::debug!("Failed to run {command} {help_flag}: {err}");
-                None
-            }
-            Err(_) => {
-                tracing::debug!("{command} {help_flag} timed out");
-                None
-            }
+            Ok(Err(_)) => None,
+            Err(_) => None,
         }
     }
 
@@ -212,11 +190,10 @@ impl SpecStore {
         command: &str,
         args: &[String],
         timeout: Duration,
-        cwd: Option<&Path>,
     ) -> Option<String> {
         for help_flag in ["--help", "-h"] {
             if let Some(text) = self
-                .run_help_command(command, args, help_flag, timeout, cwd)
+                .run_help_command(command, args, help_flag, timeout)
                 .await
             {
                 if !text.trim().is_empty() {

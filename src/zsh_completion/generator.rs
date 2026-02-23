@@ -45,10 +45,6 @@ pub(super) async fn try_completion_generator(
 
         let spec = parse_zsh_completion(command, &stdout);
         if !spec.options.is_empty() || !spec.subcommands.is_empty() {
-            tracing::info!(
-                "Completion generator succeeded for {command} with args {:?}",
-                args
-            );
             return Some(spec);
         }
     }

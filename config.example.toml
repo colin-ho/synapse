@@ -1,9 +1,6 @@
 # Synapse configuration
 # Copy to ~/.config/synapse/config.toml and customize
 
-[general]
-log_level = "warn"                      # "error" | "warn" | "info" | "debug" | "trace"
-
 [spec]
 enabled = true
 auto_generate = true                   # auto-generate specs from project files
@@ -25,7 +22,6 @@ api_key_env = "LMSTUDIO_API_KEY"       # env var name containing the API key (pl
 base_url = "http://127.0.0.1:1234"    # API base URL (default: LM Studio local endpoint)
 model = "gpt-4o-mini"                  # model to use
 timeout_ms = 10000                     # per-request timeout
-max_calls_per_discovery = 20           # cap LLM calls during recursive subcommand discovery
 natural_language = true                # enable ? prefix mode for NL -> command translation
 nl_max_suggestions = 3                 # number of alternative commands to generate for NL queries
 
@@ -36,18 +32,6 @@ nl_max_suggestions = 3                 # number of alternative commands to gener
 # api_key_env = "LMSTUDIO_API_KEY"
 # base_url = "http://127.0.0.1:1234"
 # model = "qwen2.5-coder-7b-instruct-mlx"
-
-# Override LLM settings for spec discovery only.
-# Discovery results are cached for 1 week, so a slower but more capable
-# cloud model is ideal here.
-# All fields are optional -- unset fields inherit from [llm].
-#
-# [llm.discovery]
-# provider = "openai"
-# api_key_env = "OPENAI_DISCOVERY_API_KEY"
-# model = "gpt-4.1-mini"
-# timeout_ms = 30000
-# max_calls_per_discovery = 30
 
 [completions]
 # output_dir = "~/.synapse/completions"              # override output directory

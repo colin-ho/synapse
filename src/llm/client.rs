@@ -47,10 +47,6 @@ impl LlmClient {
         }
 
         if config.provider != "openai" {
-            tracing::warn!(
-                "Unsupported LLM provider '{}' (only 'openai' is supported), disabling LLM",
-                config.provider
-            );
             return None;
         }
 
@@ -66,13 +62,8 @@ impl LlmClient {
             _ => {
                 // For local OpenAI-compatible endpoints (LM Studio, etc.), allow a placeholder.
                 if base_url.as_deref().is_some_and(is_local_base_url) {
-                    tracing::info!(
-                        "LLM key env {} missing; using placeholder key for local endpoint",
-                        config.api_key_env
-                    );
                     "lm-studio".to_string()
                 } else {
-                    tracing::debug!("LLM disabled: env var {} is empty", config.api_key_env);
                     return None;
                 }
             }
@@ -113,71 +104,25 @@ impl LlmClient {
 
         let resp = match detect_client.get(&models_url).send().await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Model auto-detect: failed to reach {models_url}: {e}");
-                return None;
-            }
+            Err(_) => return None,
         };
 
         let models_resp: ModelsResponse = match resp.json().await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Model auto-detect: failed to parse /v1/models response: {e}");
-                return None;
-            }
+            Err(_) => return None,
         };
 
         if models_resp.data.is_empty() {
-            tracing::warn!("Model auto-detect: no models loaded at {models_url}");
             return None;
         }
 
         if models_resp.data.iter().any(|m| m.id == self.model) {
-            tracing::info!(
-                "Model auto-detect: configured model '{}' is available",
-                self.model
-            );
             return Some(self.model.clone());
         }
 
         let new_model = models_resp.data[0].id.clone();
-        tracing::info!(
-            "Model auto-detect: configured '{}' not found, switching to '{}'",
-            self.model,
-            new_model
-        );
         self.model = new_model.clone();
         Some(new_model)
-    }
-
-    /// Startup health check: verify the LLM endpoint is reachable.
-    /// Returns true if any response is received (even errors like 405).
-    /// Does NOT activate backoff — this is a one-time startup check.
-    pub async fn probe_health(&self) -> bool {
-        let url = url_with_v1_path(
-            self.base_url.as_deref().unwrap_or("https://api.openai.com"),
-            "models",
-        );
-
-        let health_client = match Client::builder().timeout(Duration::from_secs(3)).build() {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        let result = health_client.get(&url).send().await;
-
-        match result {
-            Ok(_) => {
-                tracing::info!("LLM health check: endpoint reachable at {url}");
-                true
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "LLM health check: endpoint unreachable at {url}: {e} — LLM features will be unavailable until the endpoint comes online"
-                );
-                false
-            }
-        }
     }
 
     /// Translate a natural language query into one or more shell commands.
@@ -279,7 +224,6 @@ impl LlmClient {
     }
 
     async fn activate_backoff(&self) {
-        tracing::warn!("LLM API error, activating 5-minute backoff");
         *self.backoff_until.lock().await = Some(Instant::now() + Duration::from_secs(300));
         self.backoff_active.store(true, Ordering::Relaxed);
     }
