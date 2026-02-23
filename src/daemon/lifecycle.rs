@@ -6,7 +6,6 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
-use crate::logging::InteractionLogger;
 use crate::spec_store::SpecStore;
 
 use super::server::run_server;
@@ -197,15 +196,10 @@ pub(super) async fn start_daemon(
         completions_dir,
     ));
 
-    let interaction_logger = InteractionLogger::new(
-        config.interaction_log_path(),
-        config.logging.max_log_size_mb,
-    );
-
     let shutdown = CancellationToken::new();
 
     let state = Arc::new(
-        RuntimeState::new(spec_store, interaction_logger, config.clone(), llm_client)
+        RuntimeState::new(spec_store, config.clone(), llm_client)
             .with_shutdown_token(shutdown.clone()),
     );
 

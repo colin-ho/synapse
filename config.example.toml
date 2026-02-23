@@ -55,6 +55,4 @@ nl_max_suggestions = 3                 # number of alternative commands to gener
 gap_only = true                        # only generate for commands without existing compsys functions
 
 [logging]
-interaction_log = "~/.synapse/interactions.jsonl"
-max_log_size_mb = 50                    # rotate after this size
 daemon_log = "~/.synapse/daemon.log"               # set to "" to disable file logging

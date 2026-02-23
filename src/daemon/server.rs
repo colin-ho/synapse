@@ -64,8 +64,7 @@ pub(super) async fn run_server(
         }
     }
 
-    // Flush interaction log by dropping the logger (which drops the channel sender)
-    tracing::debug!("Draining connections and flushing logs");
+    tracing::debug!("Draining connections");
 
     Ok(())
 }

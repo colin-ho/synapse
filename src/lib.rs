@@ -2,7 +2,6 @@ pub mod compsys_export;
 pub mod config;
 pub mod daemon;
 pub mod llm;
-pub mod logging;
 pub mod project;
 pub mod protocol;
 pub mod spec;

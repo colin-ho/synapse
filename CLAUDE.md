@@ -87,7 +87,7 @@ Discovery writes compsys files directly — the compsys file IS the persistent c
 - **Caching** — Spec store uses `moka::future::Cache` with TTL for hot paths.
 - **Sessions** (`src/session.rs`) — Per-session state (cwd tracking) identified by 12-char hex IDs.
 - **Protocol** (`src/protocol.rs`) — Newline-delimited JSON requests, TSV responses. Request types: NaturalLanguage, CommandExecuted, CwdChanged, Complete, RunGenerator, Ping, Shutdown, ReloadConfig, ClearCache. Response types: SuggestionList, CompleteResult, Pong, Ack, Error.
-- **Logging** (`src/logging.rs`) — Append-only JSONL interaction log at `~/.synapse/interactions.jsonl` with rotation at 50MB. Daemon tracing log at `~/.synapse/daemon.log`.
+- **Logging** — Daemon tracing log at `~/.synapse/daemon.log`.
 - **Zsh completion scanner** (`src/zsh_completion.rs`) — Gap detection: scans fpath for existing compsys functions to avoid generating duplicates.
 
 ### Config

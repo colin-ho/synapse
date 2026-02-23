@@ -63,7 +63,6 @@ pub(super) async fn prepare_nl_context(
     };
     let project_commands = extract_project_commands(state, &cwd_path).await;
     let relevant_specs = extract_relevant_specs(state, &query, &cwd_path).await;
-    let few_shot_examples = state.get_few_shot_examples(&query);
 
     PreparedNlContext {
         context: NlTranslationContext {
@@ -77,7 +76,6 @@ pub(super) async fn prepare_nl_context(
             project_commands,
             cwd_entries,
             relevant_specs,
-            few_shot_examples,
         },
     }
 }

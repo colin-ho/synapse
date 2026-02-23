@@ -14,8 +14,6 @@ pub struct NlTranslationContext {
     pub cwd_entries: Vec<String>,
     /// Known flags for tools mentioned in the query.
     pub relevant_specs: HashMap<String, Vec<String>>,
-    /// Few-shot examples from accepted interaction history: (query, command).
-    pub few_shot_examples: Vec<(String, String)>,
 }
 
 pub struct NlTranslationItem {
@@ -113,13 +111,6 @@ pub fn build_nl_prompt(
         user.push_str("- Recent commands:\n");
         for cmd in ctx.recent_commands.iter().take(5) {
             user.push_str(&format!("{cmd}\n"));
-        }
-    }
-
-    if !ctx.few_shot_examples.is_empty() {
-        user.push_str("\nExamples of commands you've previously generated:\n");
-        for (query, command) in ctx.few_shot_examples.iter().take(5) {
-            user.push_str(&format!("Q: \"{query}\"\nA: {command}\n\n"));
         }
     }
 

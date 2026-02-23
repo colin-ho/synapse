@@ -79,20 +79,6 @@ pub(crate) async fn translate_natural_language(
         };
     }
 
-    if let Some(first) = valid_items.first() {
-        state.interaction_logger.log_interaction(
-            &req.session_id,
-            crate::protocol::InteractionAction::Accept,
-            &format!("? {}", req.query),
-            &first.command,
-            SuggestionSource::Llm,
-            NL_SUGGESTION_CONFIDENCE,
-            &req.cwd,
-            Some(&req.query),
-        );
-        state.record_interaction_example(req.query.clone(), first.command.clone());
-    }
-
     let suggestions = suggestion_items_from_pairs(
         valid_items
             .into_iter()

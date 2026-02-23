@@ -93,8 +93,6 @@ struct EvalCase {
     cwd_entries: Vec<String>,
     #[serde(default)]
     relevant_specs: HashMap<String, Vec<String>>,
-    #[serde(default)]
-    few_shot_examples: Vec<(String, String)>,
     expected: Vec<ExpectedCommand>,
 }
 
@@ -213,7 +211,6 @@ fn build_context(case: &EvalCase, query_suffix: &str) -> NlTranslationContext {
         project_commands: case.project_commands.clone(),
         cwd_entries: case.cwd_entries.clone(),
         relevant_specs: case.relevant_specs.clone(),
-        few_shot_examples: case.few_shot_examples.clone(),
     }
 }
 
