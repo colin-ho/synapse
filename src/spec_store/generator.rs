@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-use crate::spec::{GeneratorSpec, SpecSource};
+use crate::spec::GeneratorSpec;
 
 use super::{GeneratorCacheEntry, SpecStore};
 
@@ -11,7 +11,6 @@ pub(super) async fn run_generator(
     store: &SpecStore,
     generator: &GeneratorSpec,
     cwd: &Path,
-    _source: SpecSource,
 ) -> Vec<String> {
     let cache_key = (generator.command.clone(), cwd.to_path_buf());
 

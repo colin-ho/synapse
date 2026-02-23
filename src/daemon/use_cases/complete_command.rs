@@ -88,7 +88,7 @@ pub(crate) async fn complete_command(req: CompleteRequest, state: &RuntimeState)
         if let Some(ref generator) = arg.generator {
             let gen_values = state
                 .spec_store
-                .run_generator(generator, cwd_ref.unwrap_or(Path::new("/")), spec.source)
+                .run_generator(generator, cwd_ref.unwrap_or(Path::new("/")))
                 .await;
             values.extend(gen_values.into_iter().map(|value| CompleteResultItem {
                 value,

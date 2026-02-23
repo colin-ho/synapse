@@ -16,7 +16,7 @@ use crate::spec::{ArgSpec, CommandSpec, GeneratorSpec, OptionSpec, SubcommandSpe
 /// `npm run`, `docker compose`, and `just` resolve their config relative to
 /// CWD, so we parse from there to match what the user would actually see
 /// (important in monorepos where subdirectories have their own config files).
-pub fn generate_specs(_root: &Path, cwd: &Path) -> Vec<CommandSpec> {
+pub fn generate_specs(cwd: &Path) -> Vec<CommandSpec> {
     let mut specs = Vec::new();
     const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
     const COMPOSE_FILES: &[&str] = &[

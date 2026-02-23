@@ -51,17 +51,14 @@ impl SpecStore {
             return cached;
         }
 
-        let scan_depth = self.config.scan_depth;
         let auto_generate = self.config.auto_generate;
         let cwd_owned = cwd.to_path_buf();
 
         let mut specs = tokio::task::spawn_blocking(move || {
             let mut specs = HashMap::new();
-            let project_root = crate::project::find_project_root(&cwd_owned, scan_depth);
-            let scan_root = project_root.as_deref().unwrap_or(&cwd_owned);
 
             if auto_generate {
-                let auto_specs = spec_autogen::generate_specs(scan_root, &cwd_owned);
+                let auto_specs = spec_autogen::generate_specs(&cwd_owned);
                 for mut spec in auto_specs {
                     if !specs.contains_key(&spec.name) {
                         spec.source = SpecSource::ProjectAuto;
