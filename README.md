@@ -101,10 +101,7 @@ Important sections:
 - `[spec]`: controls auto-generation, `--help` discovery, and generator behavior.
 - `[llm]`: provider/model/base URL, plus NL settings.
 - `[completions]`: output directory, gap-only mode.
-- `[security]`: path/env scrubbing and command blocklists.
-
-Security note:
-`[spec].trust_project_generators` is `false` by default. Keep this disabled unless you trust the repository you are working in.
+- `[security]`: command blocklists.
 
 ## Architecture
 

@@ -42,14 +42,13 @@ pub(super) async fn translate(
         })
         .collect();
 
-    let mut llm_client =
-        match crate::llm::LlmClient::from_config(&config.llm, config.security.scrub_paths) {
-            Some(client) => client,
-            None => {
-                print_error("LLM client not configured (set llm.enabled and API key)");
-                return Ok(());
-            }
-        };
+    let mut llm_client = match crate::llm::LlmClient::from_config(&config.llm) {
+        Some(client) => client,
+        None => {
+            print_error("LLM client not configured (set llm.enabled and API key)");
+            return Ok(());
+        }
+    };
     llm_client.auto_detect_model().await;
 
     let context =
@@ -113,15 +112,12 @@ async fn prepare_nl_context(
     config: &Config,
 ) -> NlTranslationContext {
     let os = detect_os();
-    let scrubbed_env_hints =
-        crate::llm::scrub_env_values(env_hints, &config.security.scrub_env_keys);
-
     let cwd_str = cwd.to_string_lossy().to_string();
     let scan_depth = config.spec.scan_depth;
 
     let (project_root, available_tools, git_branch, cwd_entries) = tokio::join!(
         async { crate::project::find_project_root(cwd, scan_depth) },
-        async { extract_available_tools(&scrubbed_env_hints) },
+        async { extract_available_tools(env_hints) },
         async { crate::project::read_git_branch_for_path(cwd) },
         async { read_cwd_entries(cwd).await },
     );

@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::{num::NonZeroUsize, path::PathBuf};
+use std::path::PathBuf;
 
 // --- Hardcoded internal constants (previously configurable) ---
 
@@ -11,9 +11,6 @@ pub const NL_MIN_QUERY_LENGTH: usize = 5;
 pub const GENERATOR_TIMEOUT_MS: u64 = 5_000;
 /// Timeout in ms for each --help invocation during discovery.
 pub const DISCOVER_TIMEOUT_MS: u64 = 2_000;
-/// Maximum age in seconds before re-discovering a command (7 days).
-pub const DISCOVER_MAX_AGE_SECS: u64 = 604_800;
-
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
@@ -28,17 +25,9 @@ pub struct Config {
 pub struct SpecConfig {
     pub enabled: bool,
     pub auto_generate: bool,
-    pub max_list_results: NonZeroUsize,
-    /// Whether to trust and run project-built CLI tools during discovery.
-    /// Disabled by default for security: a malicious repo could include
-    /// binaries that execute arbitrary code when run with --help.
-    pub trust_project_generators: bool,
     pub scan_depth: usize,
     /// Discover specs by running `command --help` for unknown commands
     pub discover_from_help: bool,
-    /// Auto-discover specs for CLI tools built by the current project.
-    /// This only runs when `trust_project_generators` is also enabled.
-    pub discover_project_cli: bool,
     /// Commands to never run --help on
     pub discover_blocklist: Vec<String>,
 }
@@ -46,9 +35,7 @@ pub struct SpecConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SecurityConfig {
-    pub scrub_paths: bool,
     pub command_blocklist: Vec<String>,
-    pub scrub_env_keys: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -71,13 +58,11 @@ pub struct LlmConfig {
     pub temperature_multi: f32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
 pub struct CompletionsConfig {
     /// Override the output directory for generated completions
     pub output_dir: Option<String>,
-    /// Only generate for commands without existing compsys functions
-    pub gap_only: bool,
 }
 
 // --- Defaults ---
@@ -87,11 +72,8 @@ impl Default for SpecConfig {
         Self {
             enabled: true,
             auto_generate: true,
-            max_list_results: NonZeroUsize::new(50).unwrap(),
-            trust_project_generators: false,
             scan_depth: 3,
             discover_from_help: true,
-            discover_project_cli: false,
             discover_blocklist: Vec::new(),
         }
     }
@@ -100,18 +82,10 @@ impl Default for SpecConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            scrub_paths: true,
             command_blocklist: vec![
                 "export *=".into(),
                 "curl -u".into(),
                 r#"curl -H "Authorization*"#.into(),
-            ],
-            scrub_env_keys: vec![
-                "*_KEY".into(),
-                "*_SECRET".into(),
-                "*_TOKEN".into(),
-                "*_PASSWORD".into(),
-                "*_CREDENTIALS".into(),
             ],
         }
     }
@@ -130,15 +104,6 @@ impl Default for LlmConfig {
             nl_max_suggestions: 3,
             temperature: 0.3,
             temperature_multi: 0.7,
-        }
-    }
-}
-
-impl Default for CompletionsConfig {
-    fn default() -> Self {
-        Self {
-            output_dir: None,
-            gap_only: true,
         }
     }
 }

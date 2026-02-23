@@ -11,7 +11,6 @@ use super::prompt::{
     build_nl_prompt, NlTranslationContext, NlTranslationItem, NlTranslationResult,
 };
 use super::response::{detect_destructive_command, extract_commands};
-use super::scrub_home_paths;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -36,12 +35,11 @@ pub struct LlmClient {
     /// Set on API errors, cleared after 5 minutes.
     backoff_active: AtomicBool,
     backoff_until: Mutex<Option<Instant>>,
-    scrub_paths: bool,
 }
 
 impl LlmClient {
     /// Construct an LlmClient from config. Returns `None` if disabled or API key is unset.
-    pub fn from_config(config: &LlmConfig, scrub_paths: bool) -> Option<Self> {
+    pub fn from_config(config: &LlmConfig) -> Option<Self> {
         if !config.enabled {
             return None;
         }
@@ -83,7 +81,6 @@ impl LlmClient {
             rate_limiter: Mutex::new(Instant::now() - Duration::from_secs(1)),
             backoff_active: AtomicBool::new(false),
             backoff_until: Mutex::new(None),
-            scrub_paths,
         })
     }
 
@@ -132,8 +129,7 @@ impl LlmClient {
         max_suggestions: usize,
         temperature: f32,
     ) -> Result<NlTranslationResult, LlmError> {
-        let cwd = self.scrub_if_enabled(&ctx.cwd);
-        let (system_prompt, user_prompt) = build_nl_prompt(ctx, &cwd, max_suggestions);
+        let (system_prompt, user_prompt) = build_nl_prompt(ctx, &ctx.cwd, max_suggestions);
 
         let messages = vec![
             OpenAIMessage {
@@ -164,14 +160,6 @@ impl LlmClient {
             .collect();
 
         Ok(NlTranslationResult { items })
-    }
-
-    fn scrub_if_enabled(&self, value: &str) -> String {
-        if self.scrub_paths {
-            scrub_home_paths(value)
-        } else {
-            value.to_string()
-        }
     }
 
     async fn request_completion_raw(

@@ -14,17 +14,13 @@ name = "synapse"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "process", "time"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 clap = { version = "4", features = ["derive"] }
-moka = { version = "0.12", features = ["future"] }
 dirs = "6"
 thiserror = "2"
 anyhow = "1"
-cargo_toml = "0.22"
-gix-discover = "0.47"
-gix-ref = "0.59"
 regex = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 

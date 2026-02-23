@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::time::Duration;
 
 use crate::spec::{ArgSpec, CommandSpec, GeneratorSpec, OptionSpec, SubcommandSpec};
 
@@ -171,7 +170,6 @@ fn docker_compose_spec() -> CommandSpec {
 
     CommandSpec {
         name: "docker".to_string(),
-        description: Some("Docker Compose (project-local)".into()),
         subcommands: vec![SubcommandSpec {
             name: "compose".into(),
             subcommands,
@@ -191,47 +189,4 @@ fn justfile_spec() -> CommandSpec {
         )],
         ..Default::default()
     }
-}
-
-/// Discover specs for CLI tools built by the current project by running `--help`.
-/// Only runs if the binary has actually been built.
-pub async fn discover_project_cli_specs(root: &Path, timeout_ms: u64) -> Vec<CommandSpec> {
-    let tools = crate::project::detect_project_cli_tools(root);
-    let mut specs = Vec::new();
-    let timeout = Duration::from_millis(timeout_ms);
-
-    let scratch = std::env::temp_dir().join("synapse-discovery");
-    let _ = std::fs::create_dir_all(&scratch);
-
-    for tool in tools {
-        let Some(binary_path) = tool.binary_path else {
-            continue;
-        };
-
-        let result = tokio::time::timeout(timeout, async {
-            let mut cmd = tokio::process::Command::new(&binary_path);
-            cmd.arg("--help");
-            crate::spec_store::sandbox_command(&mut cmd, &scratch);
-            cmd.output().await
-        })
-        .await;
-
-        if let Ok(Ok(output)) = result {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let help_text = if stdout.trim().is_empty() {
-                String::from_utf8_lossy(&output.stderr).to_string()
-            } else {
-                stdout.to_string()
-            };
-
-            if !help_text.trim().is_empty() {
-                let spec = crate::spec_store::parse_help_basic(&tool.name, &help_text);
-                if !spec.subcommands.is_empty() || !spec.options.is_empty() {
-                    specs.push(spec);
-                }
-            }
-        }
-    }
-
-    specs
 }

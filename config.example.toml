@@ -4,15 +4,11 @@
 [spec]
 enabled = true
 auto_generate = true                   # auto-generate specs from project files
-max_list_results = 50                  # max items in dropdown list
-trust_project_generators = false       # trust project-built CLIs during discovery (requires discover_project_cli=true)
 scan_depth = 3                         # max levels to walk up for project files (ignored inside git repos)
 discover_from_help = true              # auto-discover specs by running --help on unknown commands
-discover_project_cli = false           # discover specs for project-built CLIs (requires trust_project_generators=true)
 discover_blocklist = []                # commands to never auto-discover
 
 [security]
-scrub_paths = true                      # redact home directory in API payloads
 command_blocklist = ["export *=", "curl -u", "curl -H \"Authorization*\""]
 
 [llm]
@@ -35,4 +31,3 @@ nl_max_suggestions = 3                 # number of alternative commands to gener
 
 [completions]
 # output_dir = "~/.synapse/completions"              # override output directory
-gap_only = true                        # only generate for commands without existing compsys functions

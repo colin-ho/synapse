@@ -110,36 +110,20 @@ impl SpecStore {
         }
 
         if let Some(spec) = self.discover_with_generator(command).await {
-            return self.write_and_cache_discovered(command, spec).await;
+            return self.write_discovered(command, spec);
         }
 
         let spec = self.discover_with_help(command).await?;
-        self.write_and_cache_discovered(command, spec).await
+        self.write_discovered(command, spec)
     }
 
-    pub(super) async fn write_and_cache_discovered(
-        &self,
-        command: &str,
-        spec: CommandSpec,
-    ) -> Option<(CommandSpec, PathBuf)> {
-        let in_index = self
-            .zsh_index
-            .read()
-            .map(|idx| idx.contains(command))
-            .unwrap_or(false);
-        if in_index {
+    fn write_discovered(&self, command: &str, spec: CommandSpec) -> Option<(CommandSpec, PathBuf)> {
+        if self.zsh_index.contains(command) {
             return None;
         }
 
-        let path = match crate::compsys_export::write_completion_file(&spec, &self.completions_dir)
-        {
-            Ok(path) => path,
-            Err(_) => return None,
-        };
-
-        self.discovered_cache
-            .insert(command.to_string(), spec.clone())
-            .await;
+        let path =
+            crate::compsys_export::write_completion_file(&spec, &self.completions_dir).ok()?;
         Some((spec, path))
     }
 

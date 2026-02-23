@@ -73,8 +73,7 @@ Discovery writes compsys files directly — the compsys file IS the persistent c
 
 ### Key Subsystems
 
-- **Security** — Path scrubbing in `src/llm/scrub.rs`, command blocklist in `src/cli/translate.rs` (`CompiledBlocklist`).
-- **Caching** — Spec store uses `moka::future::Cache` with TTL for project specs and discovered specs.
+- **Security** — Command blocklist in `src/cli/translate.rs` (`CompiledBlocklist`).
 - **Zsh completion scanner** (`src/zsh_completion.rs`) — Gap detection: scans fpath for existing compsys functions to avoid generating duplicates.
 - **Shell init** (`src/cli/shell.rs`) — `eval "$(synapse)"` outputs init code: sets `SYNAPSE_BIN`, adds completions dir to fpath, sources the plugin. Dev mode auto-detected when running from `target/`.
 
