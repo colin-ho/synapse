@@ -8,9 +8,14 @@ mod run_generator;
 mod scan;
 pub mod shell;
 mod translate;
+pub mod update;
 
 #[derive(Parser)]
-#[command(name = "synapse", about = "Intelligent Zsh command suggestions")]
+#[command(
+    name = "synapse",
+    about = "Intelligent Zsh command suggestions",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -60,6 +65,12 @@ enum Commands {
         #[arg(long)]
         output_dir: Option<PathBuf>,
     },
+    /// Check for updates or self-update the synapse binary
+    Update {
+        /// Only check and cache the latest version (for background use)
+        #[arg(long)]
+        check: bool,
+    },
     /// Translate natural language to a shell command
     Translate {
         /// The natural language query
@@ -106,6 +117,9 @@ pub async fn run() -> anyhow::Result<()> {
             split_on,
         }) => {
             run_generator::run_generator(command, cwd, strip_prefix, split_on).await?;
+        }
+        Some(Commands::Update { check }) => {
+            update::run(check).await?;
         }
         Some(Commands::Translate {
             query,

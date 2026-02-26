@@ -144,10 +144,16 @@ echo "synapse dev: ready" >&2
 fn print_normal_init_code(exe: &std::path::Path) -> anyhow::Result<()> {
     let plugin_path = find_plugin_path(exe, None)?;
 
+    // Update notification (cache read only, no network)
+    if let Some(version) = super::update::cached_update_available() {
+        eprintln!("synapse: update available ({version}). Run: synapse update");
+    }
+
     print!(
         r#"export SYNAPSE_BIN="{exe}"
 fpath=("$HOME/.synapse/completions" $fpath)
 source "{plugin}"
+(command "$SYNAPSE_BIN" update --check &>/dev/null &)
 "#,
         exe = exe.display(),
         plugin = plugin_path.display(),

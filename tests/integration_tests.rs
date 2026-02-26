@@ -6,6 +6,36 @@ fn test_cli_help() {
 }
 
 #[test]
+fn test_version_flag() {
+    let output = cargo_bin_cmd!("synapse")
+        .arg("--version")
+        .output()
+        .expect("Failed to run synapse --version");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("synapse"),
+        "Expected version output, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_update_check_no_crash() {
+    // update --check should succeed even without network (errors are swallowed)
+    let output = cargo_bin_cmd!("synapse")
+        .args(["update", "--check"])
+        .output()
+        .expect("Failed to run synapse update --check");
+
+    assert!(
+        output.status.success(),
+        "update --check should not crash: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn test_run_generator_echo() {
     let output = cargo_bin_cmd!("synapse")
         .args(["run-generator", "echo hello", "--cwd", "/tmp"])
