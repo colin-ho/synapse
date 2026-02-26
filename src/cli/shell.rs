@@ -130,9 +130,7 @@ fn print_dev_init_code(
     print!(
         r#"# synapse dev mode
 export SYNAPSE_BIN="{exe}"
-# Synapse completions — add to fpath before compinit
-_synapse_completions_dir="$HOME/.synapse/completions"
-[[ -d "$_synapse_completions_dir" ]] && fpath=("$_synapse_completions_dir" $fpath)
+fpath=("$HOME/.synapse/completions" $fpath)
 source "{plugin}"
 echo "synapse dev: ready" >&2
 "#,
@@ -148,9 +146,7 @@ fn print_normal_init_code(exe: &std::path::Path) -> anyhow::Result<()> {
 
     print!(
         r#"export SYNAPSE_BIN="{exe}"
-# Synapse completions — add to fpath before compinit
-_synapse_completions_dir="$HOME/.synapse/completions"
-[[ -d "$_synapse_completions_dir" ]] && fpath=("$_synapse_completions_dir" $fpath)
+fpath=("$HOME/.synapse/completions" $fpath)
 source "{plugin}"
 "#,
         exe = exe.display(),

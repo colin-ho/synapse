@@ -209,6 +209,26 @@ fn test_scan_empty_dir() {
 }
 
 #[test]
+fn test_init_output_includes_fpath_unconditionally() {
+    // Regression: init code used to guard fpath addition with [[ -d ... ]],
+    // which broke completions on fresh installs where the directory didn't exist yet.
+    let output = cargo_bin_cmd!("synapse")
+        .output()
+        .expect("Failed to run synapse init");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#"fpath=("$HOME/.synapse/completions" $fpath)"#),
+        "Expected unconditional fpath addition, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("[[ -d"),
+        "fpath should not be guarded by directory existence check"
+    );
+}
+
+#[test]
 fn test_translate_passes_recent_commands_and_env_hints() {
     // Verify the CLI accepts --recent-command and --env-hint flags without error.
     // We disable LLM so this is just an arg-parsing smoke test.
